@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: rendered
+---
+DRIVER_ERROR: the runner exploded
+next: retry once; escalate if it recurs

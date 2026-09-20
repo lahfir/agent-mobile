@@ -1,0 +1,7 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: terminate
+---
+Terminate {
+    terminated: "com.example.todo",
+}

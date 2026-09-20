@@ -1,0 +1,7 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: screenshot
+---
+Screenshot {
+    png_base64: "iVBORw0KGgoAAAANSUhEUg",
+}

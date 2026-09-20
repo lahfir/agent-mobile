@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: rendered
+---
+UNAUTHORIZED: driver message
+next: fix AGENT_MOBILE_TOKEN; do not retry unchanged

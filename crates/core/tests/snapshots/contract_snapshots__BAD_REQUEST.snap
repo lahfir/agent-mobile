@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: rendered
+---
+BAD_REQUEST: driver message
+next: fix the request; do not retry unchanged

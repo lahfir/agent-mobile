@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: failure.render()
+---
+usage: tap expects <ref> or <x> <y>
+next: fix the command line and retry

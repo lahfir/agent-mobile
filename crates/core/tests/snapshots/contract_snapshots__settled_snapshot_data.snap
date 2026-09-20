@@ -1,0 +1,77 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: snap
+---
+Snapshot {
+    app: "com.example.todo",
+    snapshot_id: "upii2see",
+    ref_count: 3,
+    complete: true,
+    settled: true,
+    reads: 2,
+    text: "@upii2see:e1 application \"ToDo\" at=0,0 size=440x956\n  @upii2see:e2 textfield \"Title\" value=\"\" at=16,120 size=408x44 [focused]",
+    tree: Node {
+        role: "application",
+        name: "ToDo",
+        value: "",
+        ref_id: "@upii2see:e1",
+        states: [],
+        available_actions: [],
+        bounds: Bounds {
+            x: 0.0,
+            y: 0.0,
+            width: 440.0,
+            height: 956.0,
+        },
+        native_id: None,
+        children: [
+            Node {
+                role: "textfield",
+                name: "Title",
+                value: "",
+                ref_id: "@upii2see:e2",
+                states: [
+                    "focused",
+                ],
+                available_actions: [
+                    "Tap",
+                    "Type",
+                    "Clear",
+                ],
+                bounds: Bounds {
+                    x: 16.0,
+                    y: 120.0,
+                    width: 408.0,
+                    height: 44.0,
+                },
+                native_id: Some(
+                    NativeId {
+                        kind: "ax_identifier",
+                        value: "todo.title",
+                    },
+                ),
+                children: [],
+            },
+            Node {
+                role: "button",
+                name: "Add",
+                value: "",
+                ref_id: "@upii2see:e3",
+                states: [
+                    "disabled",
+                ],
+                available_actions: [
+                    "Tap",
+                ],
+                bounds: Bounds {
+                    x: 388.0,
+                    y: 52.0,
+                    width: 44.0,
+                    height: 44.0,
+                },
+                native_id: None,
+                children: [],
+            },
+        ],
+    },
+}
