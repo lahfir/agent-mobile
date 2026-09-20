@@ -1,0 +1,50 @@
+[workspace]
+members  = ["crates/core"]
+resolver = "2"
+
+[workspace.package]
+edition      = "2024"
+rust-version = "1.89"
+license      = "Apache-2.0"
+version      = "0.1.0"
+
+[workspace.dependencies]
+agent-mobile-core = { path = "crates/core" }
+
+[package]
+name                 = "agent-mobile"
+description          = "CLI that lets AI agents drive iOS and Android apps through a snapshot -> act loop"
+edition.workspace    = true
+rust-version.workspace = true
+license.workspace    = true
+version.workspace    = true
+
+[dependencies]
+agent-mobile-core = { workspace = true }
+
+[lints]
+workspace = true
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = true
+
+[workspace.lints.rust]
+unsafe_code     = "deny"
+missing_docs    = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+pedantic                        = { level = "warn", priority = -1 }
+cognitive_complexity            = "deny"
+too_many_lines                  = "deny"
+excessive_nesting               = "deny"
+dbg_macro                       = "deny"
+todo                            = "deny"
+unimplemented                   = "deny"
+unwrap_used                     = "deny"
+expect_used                     = "deny"
+panic                           = "deny"
+allow_attributes_without_reason = "deny"
+module_name_repetitions         = "allow"

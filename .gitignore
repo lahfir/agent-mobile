@@ -8,3 +8,5 @@ docs/experiments/
 **/dd-device/
 *.xcresult
 xcuserdata/
+
+target/

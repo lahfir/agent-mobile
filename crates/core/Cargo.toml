@@ -1,0 +1,11 @@
+[package]
+name                   = "agent-mobile-core"
+description            = "Contract types, text formatter, wire client, and device control for agent-mobile"
+publish                = false
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+version.workspace      = true
+
+[lints]
+workspace = true

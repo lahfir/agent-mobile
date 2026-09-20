@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Pre-commit hook: the same gates as CI. Enable once per clone: git config core.hooksPath .githooks
+# Bypass a single commit only when necessary: git commit --no-verify
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.(rs|toml)$'; then
+    echo "pre-commit: no Rust changes staged, skipping"
+    exit 0
+fi
+
+run() {
+    local label="$1"
+    shift
+    printf '\033[1;34m> %s\033[0m\n' "$label"
+    if ! "$@"; then
+        printf '\033[1;31mx %s failed; commit refused\033[0m\n' "$label" >&2
+        exit 1
+    fi
+}
+
+run "source rules (400 lines, no inline comments, docs <= 15 lines)" scripts/check-rust-source.sh
+run "cargo fmt" cargo fmt --all -- --check
+run "cargo clippy" cargo clippy --all-targets -- -D warnings
+run "cargo test" cargo test --workspace
+printf '\033[1;32mok pre-commit passed\033[0m\n'
