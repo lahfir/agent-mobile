@@ -26,7 +26,7 @@ final class Driver {
         case "activate":
             bundle = try str(p, "bundle_id"); app().activate(); return try settledSnapshot()
         case "terminate":
-            app().terminate(); return ["terminated": bundle]
+            let old = bundle; app().terminate(); bundle = "com.apple.springboard"; return ["terminated": old]
         case "snapshot":
             if let b = p["app"] as? String { bundle = b }
             return try settledSnapshot()
@@ -135,7 +135,7 @@ final class Driver {
         }
         var node: [String: Any] = ["role": role, "name": name, "value": value, "ref_id": ref, "states": states,
                                    "available_actions": actions,
-                                   "bounds": ["x": Double(f.minX), "y": Double(f.minY), "w": Double(f.width), "h": Double(f.height)]]
+                                   "bounds": ["x": Double(f.minX), "y": Double(f.minY), "width": Double(f.width), "height": Double(f.height)]]
         if !n.identifier.isEmpty { node["native_id"] = ["kind": "ax_identifier", "value": n.identifier] }
         node["children"] = n.children.map { build($0, pdepth: printed ? pdepth + 1 : pdepth, lines: &lines) }
         return node
@@ -244,23 +244,29 @@ final class AgentMobileServer: XCTestCase {
         let token = env["AGENT_MOBILE_TOKEN"] ?? ""
         let bindAddr = env["AGENT_MOBILE_BIND"] ?? "127.0.0.1"
         let srv = HTTPServer(port: port, bindAddr: bindAddr) { req in
-            if token.isEmpty || req.headers["authorization"] != "Bearer \(token)" {
-                return (401, ["version": "0.1-probe", "ok": false, "error": ["code": "UNAUTHORIZED", "message": "Authorization: Bearer <AGENT_MOBILE_TOKEN> required"]])
-            }
             let cmd = String(req.path.split(separator: "?").first ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let params = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
             let t0 = Date()
+            if token.isEmpty || req.headers["authorization"] != "Bearer \(token)" {
+                return (401, ["version": "1", "ok": false, "error": ["code": "UNAUTHORIZED", "message": "Authorization: Bearer <AGENT_MOBILE_TOKEN> required"]])
+            }
+            if req.headers["x-agent-mobile-version"] != "1" {
+                return (409, ["version": "1", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": "BAD_REQUEST", "message": "X-Agent-Mobile-Version must be 1"]])
+            }
+            let params = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
             return DispatchQueue.main.sync {
                 do {
                     let data = try AgentMobileServer.drv.handle(cmd, params)
-                    return (200, ["version": "0.1-probe", "ok": true, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "data": data])
+                    return (200, ["version": "1", "ok": true, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "data": data])
                 } catch let e as DrvError {
-                    return (409, ["version": "0.1-probe", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": e.code, "message": e.msg]])
+                    return (409, ["version": "1", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": e.code, "message": e.msg]])
                 } catch {
-                    return (500, ["version": "0.1-probe", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": "DRIVER_ERROR", "message": "\(error)"]])
+                    return (500, ["version": "1", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": "DRIVER_ERROR", "message": "\(error)"]])
                 }
             }
         }
+        #if targetEnvironment(simulator)
+        XCUIDevice.shared.press(.home)
+        #endif
         srv.start()
         while true { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2)) }
     }
