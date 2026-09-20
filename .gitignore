@@ -1,0 +1,10 @@
+.DS_Store
+.claude/settings.local.json
+# local reference material, not published
+docs/research/
+docs/experiments/
+# Xcode build output
+**/dd/
+**/dd-device/
+*.xcresult
+xcuserdata/
