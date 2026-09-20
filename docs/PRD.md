@@ -190,7 +190,9 @@ HTTP status per code is read from the driver's response builder.
 
 ## 6. Phases
 
-### 6.0 Done (P0) — what is proven
+### 6.0 P0 — Research and probes (complete)
+
+P0 is the first phase and it is finished. What it proved:
 
 - Research: 13 tracks, synthesized in `docs/research/README.md`.
 - Experiment 5, simulator: an agent created a Calendar event by ref with no scripted steps; a stale ref was rejected in 4 ms.
