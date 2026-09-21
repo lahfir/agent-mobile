@@ -1,20 +1,14 @@
 //! Text rendering (KTD12, R5, R10): the snapshot header plus printed-node
 //! lines identical to the driver's own text mode, and one-line shapes for the
-//! non-tree replies. Error envelopes render through the registry.
+//! non-tree replies. Callers gate on `env.ok` — error envelopes render
+//! through [`crate::error::Failure::render`], not here.
 
 use crate::contract::{Data, Envelope, Node, Snapshot};
-use crate::error::Failure;
 
-/// Render one reply for text mode. Error envelopes delegate to
-/// [`Failure::render`]; `screenshot` yields raw base64 for stdout.
+/// Render one successful reply for text mode; `screenshot` yields raw base64
+/// for stdout.
 #[must_use]
 pub fn render(env: &Envelope) -> String {
-    if !env.ok {
-        return env.error.as_ref().map_or_else(
-            || Failure::local("empty error envelope", "report a bug").render(),
-            |e| Failure::from_error_body(e).render(),
-        );
-    }
     match &env.data {
         Some(Data::Snapshot(snap)) => render_snapshot(env, snap),
         Some(Data::Status(s)) => {

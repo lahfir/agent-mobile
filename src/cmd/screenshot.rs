@@ -10,13 +10,13 @@ use super::Ctx;
 /// Run `screenshot [output-path]`.
 pub fn run(ctx: &Ctx, output: Option<&str>) -> Result<i32, Failure> {
     let session = ctx.session()?;
-    let reply = session.wire.call("screenshot", &serde_json::json!({}))?;
+    let env = session.wire.call("screenshot", &serde_json::json!({}))?;
     let path = if ctx.json { None } else { output };
     let Some(path) = path else {
-        return Ok(ctx.finish(&session, reply.envelope));
+        return Ok(ctx.finish(env));
     };
-    let Some(Data::Screenshot(shot)) = &reply.envelope.data else {
-        return Ok(ctx.finish(&session, reply.envelope));
+    let Some(Data::Screenshot(shot)) = &env.data else {
+        return Ok(ctx.finish(env));
     };
     let bytes = b64::decode(&shot.png_base64)?;
     std::fs::write(path, &bytes)?;

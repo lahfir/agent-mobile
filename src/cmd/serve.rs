@@ -3,19 +3,16 @@
 //! token and URL once, and supervises until the runner dies (KTD7, KTD8).
 
 use std::fs::OpenOptions;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::ios;
-use agent_mobile_core::process::{ServeChild, mint_token, tcp_ready};
+use agent_mobile_core::process::{BOOT_BUDGET, BOOT_POLL, ServeChild, mint_token, tcp_ready};
 use agent_mobile_core::state::{SessionEntry, StateStore};
 use agent_mobile_core::wire::Wire;
 
 use super::{Ctx, Session};
-
-/// How long `serve` waits for the runner to bind the port; a cold build can
-/// take minutes, so the budget is generous and progress streams to stderr.
-const BOOT_BUDGET: Duration = Duration::from_secs(240);
 
 /// Verbatim fragments of the certificate trust refusal (Experiments 7, 8);
 /// `lazy` scans the same log for them.
@@ -24,18 +21,6 @@ pub(crate) const TRUST_MARKERS: &[&str] = &[
     "certificate is not trusted",
     "Developer App Certificate",
 ];
-
-/// What `await_driver` observed while the runner came up.
-enum Boot {
-    /// The port accepts TCP; the driver is serving.
-    Ready,
-    /// The log carried the trust refusal; the human must re-trust.
-    TrustRefused,
-    /// The runner exited before binding.
-    Died,
-    /// Nothing happened inside the budget.
-    Timeout,
-}
 
 /// Run `serve <device>`; blocks for the life of the driver.
 pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
@@ -67,26 +52,7 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     );
     let url = ios::driver_url(&device, ios::DEFAULT_PORT);
     let addr = url.trim_start_matches("http://").to_owned();
-    let booted = match await_driver(&mut child, &addr) {
-        Boot::Ready => None,
-        Boot::TrustRefused => Some(Failure::local(
-            "the development certificate is not trusted on the device",
-            "on the device: Settings > General > VPN & Device Management > \
-             trust your Developer App certificate, then rerun `serve`",
-        )),
-        Boot::Died => Some(Failure::local(
-            format!("the driver exited before binding; see {}", log.display()),
-            "check the log for the failing step and retry `serve`",
-        )),
-        Boot::Timeout => Some(Failure::local(
-            format!(
-                "the driver did not bind {addr} within {}s",
-                BOOT_BUDGET.as_secs()
-            ),
-            format!("check the log at {} and retry `serve`", log.display()),
-        )),
-    };
-    if let Some(failure) = booted {
+    if let Err(failure) = await_driver(&mut child, &addr, &log) {
         let _ = store.remove_token(&token_file);
         return Err(failure);
     }
@@ -102,13 +68,11 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     if let Some(app) = &ctx.app {
         let session = Session {
             wire: Wire::new(&url, &token),
-            device: Some(device.name.clone()),
-            last_snapshot_id: None,
         };
-        let reply = session
+        let env = session
             .wire
             .call("launch", &serde_json::json!({ "bundle_id": app }))?;
-        let code = ctx.finish(&session, reply.envelope);
+        let code = ctx.finish(env);
         if code != 0 {
             return Ok(code);
         }
@@ -186,23 +150,37 @@ fn reclaim_or_conflict(store: &StateStore, device: &ios::Device) -> Result<(), F
     Ok(())
 }
 
-/// Poll the port, the log tail, and the child until one settles.
-fn await_driver(child: &mut ServeChild, addr: &str) -> Boot {
+/// Poll the port, the log tail, and the child until one settles; `Ok` means
+/// the port accepts TCP and the driver is serving.
+fn await_driver(child: &mut ServeChild, addr: &str, log: &Path) -> Result<(), Failure> {
     let deadline = Instant::now() + BOOT_BUDGET;
     while Instant::now() < deadline {
         if tcp_ready(addr) {
-            return Boot::Ready;
+            return Ok(());
         }
         let out = child.new_output();
         if TRUST_MARKERS.iter().any(|m| out.contains(m)) {
-            return Boot::TrustRefused;
+            return Err(Failure::local(
+                "the development certificate is not trusted on the device",
+                "on the device: Settings > General > VPN & Device Management > \
+                 trust your Developer App certificate, then rerun `serve`",
+            ));
         }
         if matches!(child.try_wait(), Ok(Some(_))) {
-            return Boot::Died;
+            return Err(Failure::local(
+                format!("the driver exited before binding; see {}", log.display()),
+                "check the log for the failing step and retry `serve`",
+            ));
         }
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(BOOT_POLL);
     }
-    Boot::Timeout
+    Err(Failure::local(
+        format!(
+            "the driver did not bind {addr} within {}s",
+            BOOT_BUDGET.as_secs()
+        ),
+        format!("check the log at {} and retry `serve`", log.display()),
+    ))
 }
 
 /// Block on the runner; whatever ends it, the state entry goes with it.

@@ -4,7 +4,7 @@
 
 use agent_mobile_core::b64;
 use agent_mobile_core::contract::{Envelope, Ref, trim_snapshot};
-use agent_mobile_core::error::{EXIT_ERROR, EXIT_USAGE, Failure};
+use agent_mobile_core::error::{EXIT_USAGE, Failure};
 use agent_mobile_core::format::{render, screenshot_written};
 
 fn fail(msg: &str) -> Failure {
@@ -19,7 +19,11 @@ fn fixture(name: &str) -> Result<Envelope, Failure> {
 }
 
 fn render_fixture(name: &str) -> Result<String, Failure> {
-    Ok(render(&fixture(name)?))
+    let env = fixture(name)?;
+    if let Some(err) = &env.error {
+        return Ok(Failure::from_error_body(err).render());
+    }
+    Ok(render(&env))
 }
 
 macro_rules! snap {
@@ -222,22 +226,6 @@ fn malformed_refs_are_usage_errors() -> Result<(), Failure> {
             Err(f) => assert_eq!(f.exit_code(), EXIT_USAGE, "{bad:?} must exit 2"),
             Ok(_) => return Err(fail(&format!("{bad:?} must not parse as a ref"))),
         }
-    }
-    Ok(())
-}
-
-#[test]
-fn superseded_ref_rejected_locally_without_round_trip() -> Result<(), Failure> {
-    let r = Ref::parse("@old:e4")?;
-    r.check_current("old")?;
-    match r.check_current("new") {
-        Err(f) => {
-            assert_eq!(f.exit_code(), EXIT_ERROR);
-            let text = f.render();
-            assert!(text.contains("STALE_REF"));
-            assert!(text.contains("re-snapshot"));
-        }
-        Ok(()) => return Err(fail("superseded ref must be rejected")),
     }
     Ok(())
 }

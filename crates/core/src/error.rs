@@ -1,7 +1,7 @@
 //! Error registry: the six wire codes, their HTTP statuses, the next-action
 //! hint each prints, and the single exit-code mapping every verb inherits.
 
-use crate::contract::{ErrorBody, PROTOCOL_VERSION};
+use crate::contract::ErrorBody;
 
 /// Exit code for every failure that carries a wire code, plus the synthesized
 /// transport and version-mismatch failures.
@@ -65,16 +65,6 @@ impl ErrorCode {
         }
     }
 
-    /// HTTP status the driver sends alongside the code.
-    #[must_use]
-    pub fn http_status(self) -> u16 {
-        match self {
-            Self::StaleRef | Self::AmbiguousTarget | Self::BadRequest | Self::UnknownCommand => 409,
-            Self::Unauthorized => 401,
-            Self::DriverError => 500,
-        }
-    }
-
     /// The next-action hint the code prints in text mode.
     #[must_use]
     pub fn next_action(self) -> &'static str {
@@ -119,17 +109,12 @@ pub enum Failure {
         message: String,
     },
     /// A local failure outside the wire contract, e.g. an unwritable state
-    /// dir or a failed spawn; exits 1.
+    /// dir, a failed spawn, or a protocol version mismatch; exits 1.
     Local {
         /// What failed.
         message: String,
         /// What to do about it.
         next: String,
-    },
-    /// The envelope `version` differs from [`PROTOCOL_VERSION`]; fatal.
-    VersionMismatch {
-        /// Version string the driver actually sent.
-        found: String,
     },
 }
 
@@ -180,23 +165,12 @@ impl Failure {
         }
     }
 
-    /// Build the fatal version-mismatch failure.
-    #[must_use]
-    pub fn version_mismatch(found: &str) -> Self {
-        Self::VersionMismatch {
-            found: found.to_owned(),
-        }
-    }
-
     /// The single exit-code table: usage exits 2, everything else exits 1.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Usage { .. } => EXIT_USAGE,
-            Self::Driver { .. }
-            | Self::Transport { .. }
-            | Self::Local { .. }
-            | Self::VersionMismatch { .. } => EXIT_ERROR,
+            Self::Driver { .. } | Self::Transport { .. } | Self::Local { .. } => EXIT_ERROR,
         }
     }
 
@@ -219,12 +193,6 @@ impl Failure {
             Self::Local { message, next } => {
                 format!("error: {message}\nnext: {next}")
             }
-            Self::VersionMismatch { found } => format!(
-                "version mismatch: driver speaks protocol \"{found}\"; \
-                 this CLI requires \"{PROTOCOL_VERSION}\"\n\
-                 next: upgrade agent-mobile and the driver together; \
-                 both must speak protocol version \"{PROTOCOL_VERSION}\""
-            ),
         }
     }
 }

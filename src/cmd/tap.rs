@@ -8,8 +8,11 @@ use super::{Ctx, round_trip};
 
 /// Run `tap` with the one-or-two positional split.
 pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
-    let (body, parsed) = match args {
-        [r] => (serde_json::json!({ "ref": r }), Some(Ref::parse(r)?)),
+    let body = match args {
+        [r] => {
+            Ref::parse(r)?;
+            serde_json::json!({ "ref": r })
+        }
         [x, y] => {
             let x = x.parse::<f64>().map_err(|_| {
                 Failure::usage(format!(
@@ -21,15 +24,12 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
                     "tap takes a ref or an x y point; {y:?} is not a number"
                 ))
             })?;
-            (serde_json::json!({ "x": x, "y": y }), None)
+            serde_json::json!({ "x": x, "y": y })
         }
         _ => {
             return Err(Failure::usage("tap takes a ref or an x y point"));
         }
     };
     let session = ctx.session()?;
-    if let Some(r) = &parsed {
-        session.check_fresh(r)?;
-    }
     round_trip(ctx, &session, "tap", &body)
 }

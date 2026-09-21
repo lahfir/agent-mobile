@@ -261,18 +261,3 @@ fn usage_failures_exit_2() {
     assert_eq!(failure.exit_code(), EXIT_USAGE);
     insta::assert_snapshot!("usage_render", failure.render());
 }
-
-#[test]
-fn http_statuses_match_driver() {
-    let expected = [
-        (ErrorCode::StaleRef, 409),
-        (ErrorCode::AmbiguousTarget, 409),
-        (ErrorCode::BadRequest, 409),
-        (ErrorCode::UnknownCommand, 409),
-        (ErrorCode::Unauthorized, 401),
-        (ErrorCode::DriverError, 500),
-    ];
-    for (code, status) in expected {
-        assert_eq!(code.http_status(), status);
-    }
-}

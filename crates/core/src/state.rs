@@ -7,7 +7,6 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -26,41 +25,30 @@ pub const URL_ENV: &str = "AGENT_MOBILE_URL";
 pub const TOKEN_ENV: &str = "AGENT_MOBILE_TOKEN";
 
 /// One device's live session: where the driver listens, which process owns
-/// it, when it started, and which token file holds the bearer.
+/// it, and which token file holds the bearer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionEntry {
     /// Base URL of the driver, e.g. `http://127.0.0.1:8770`.
     pub url: String,
     /// Pid of the process that owns the session.
     pub pid: u32,
-    /// Unix seconds when the session was recorded.
-    pub started_at: u64,
     /// Token file name inside `tokens/`; the token never appears here.
     pub token_file: String,
     /// Pid of the `xcodebuild` runner `serve` spawned — the owned child to
     /// reap when the serve pid dies without cleanup (KTD17).
     #[serde(default)]
     pub runner_pid: Option<u32>,
-    /// Latest snapshot id the driver minted for this device, enabling local
-    /// stale-ref rejection without a round trip.
-    #[serde(default)]
-    pub last_snapshot_id: Option<String>,
 }
 
 impl SessionEntry {
-    /// Record a session that started now.
+    /// Record a session.
     #[must_use]
     pub fn new(url: String, pid: u32, token_file: String) -> Self {
-        let started_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
         Self {
             url,
             pid,
-            started_at,
             token_file,
             runner_pid: None,
-            last_snapshot_id: None,
         }
     }
 }
@@ -116,15 +104,6 @@ impl std::fmt::Debug for ResolvedEndpoint {
             .field("token", &"<redacted>")
             .finish()
     }
-}
-
-/// What an invocation resolved to: a live endpoint or nothing usable.
-#[derive(Debug)]
-pub enum ResolveOutcome {
-    /// URL and token are both known.
-    Ready(ResolvedEndpoint),
-    /// No usable session; the caller may lazy-start or ask the user to serve.
-    NoSession,
 }
 
 /// File-backed session store rooted at `~/.agent-mobile` (or an injected dir
@@ -254,19 +233,6 @@ impl StateStore {
         self.save(&state)
     }
 
-    /// Record the driver's newest snapshot id for `device`; absent entry is
-    /// not an error.
-    ///
-    /// # Errors
-    /// Returns [`Failure::Local`] when the state cannot be saved.
-    pub fn record_snapshot(&self, device: &str, snapshot_id: &str) -> Result<(), Failure> {
-        let mut state = self.load();
-        if let Some(entry) = state.devices.get_mut(device) {
-            entry.last_snapshot_id = Some(snapshot_id.to_owned());
-        }
-        self.save(&state)
-    }
-
     /// Remember `device` as the default for future invocations (`--device`).
     ///
     /// # Errors
@@ -327,11 +293,12 @@ impl StateStore {
     }
 
     /// Resolve the endpoint for one invocation, honoring the env overrides.
+    /// `None` means no usable session — the caller may lazy-start a driver.
     ///
     /// # Errors
     /// Returns [`Failure::Usage`] when exactly one override var is set and no
     /// state entry completes the pair.
-    pub fn resolve(&self, device: Option<&str>) -> Result<ResolveOutcome, Failure> {
+    pub fn resolve(&self, device: Option<&str>) -> Result<Option<ResolvedEndpoint>, Failure> {
         self.resolve_with(device, env_val(URL_ENV), env_val(TOKEN_ENV))
     }
 
@@ -344,7 +311,7 @@ impl StateStore {
         device: Option<&str>,
         env_url: Option<String>,
         env_token: Option<String>,
-    ) -> Result<ResolveOutcome, Failure> {
+    ) -> Result<Option<ResolvedEndpoint>, Failure> {
         let url_set = env_url.is_some();
         let token_set = env_token.is_some();
         let state = self.load();
@@ -355,7 +322,7 @@ impl StateStore {
         let url = env_url.or_else(|| entry.as_ref().map(|e| e.url.clone()));
         let token = env_token.or_else(|| entry.and_then(|e| self.read_token(&e).ok()));
         match (url, token) {
-            (Some(url), Some(token)) => Ok(ResolveOutcome::Ready(ResolvedEndpoint {
+            (Some(url), Some(token)) => Ok(Some(ResolvedEndpoint {
                 url,
                 device: name,
                 token,
@@ -366,7 +333,7 @@ impl StateStore {
             (Some(_), None) if url_set => Err(Failure::usage(
                 "AGENT_MOBILE_URL is set but no token is known; set AGENT_MOBILE_TOKEN or run `agent-mobile serve`",
             )),
-            _ => Ok(ResolveOutcome::NoSession),
+            _ => Ok(None),
         }
     }
 }

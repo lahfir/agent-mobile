@@ -15,9 +15,6 @@ pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
         body["ref"] = serde_json::json!(r.to_string());
     }
     let session = ctx.session()?;
-    if let Some(r) = &target {
-        session.check_fresh(r)?;
-    }
     round_trip(ctx, &session, "type", &body)
 }
 

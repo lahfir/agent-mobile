@@ -2,5 +2,5 @@
 source: crates/core/tests/contract_snapshots.rs
 expression: failure.render()
 ---
-version mismatch: driver speaks protocol "0.1-probe"; this CLI requires "1"
+error: version mismatch: driver speaks protocol "0.1-probe"; this CLI requires "1"
 next: upgrade agent-mobile and the driver together; both must speak protocol version "1"

@@ -1,8 +1,7 @@
 //! Command dispatch and the shared plumbing every verb inherits: session
-//! resolution, local ref checks, snapshot bookkeeping, and the
-//! stdout/stderr + exit-code output contract (KTD5, KTD12).
+//! resolution and the stdout/stderr + exit-code output contract (KTD5,
+//! KTD12).
 
-pub mod activate;
 pub mod devices;
 pub mod home;
 pub mod launch;
@@ -19,11 +18,11 @@ pub mod r#type;
 
 use serde_json::Value;
 
-use agent_mobile_core::contract::{Data, Envelope, Ref, trim_snapshot};
+use agent_mobile_core::contract::{Data, Envelope, trim_snapshot};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::format;
-use agent_mobile_core::state::{ResolveOutcome, StateStore, URL_ENV};
-use agent_mobile_core::wire::{Reply, Wire};
+use agent_mobile_core::state::{StateStore, URL_ENV};
+use agent_mobile_core::wire::Wire;
 
 use crate::cli::{Cli, Command};
 
@@ -36,24 +35,10 @@ pub struct Ctx {
     store: StateStore,
 }
 
-/// A resolved driver endpoint plus the bookkeeping needed to validate refs
-/// locally and record fresh snapshot ids.
+/// A resolved driver endpoint. Ref freshness is the driver's job — it holds
+/// the live tree and answers `STALE_REF` itself; the CLI stays stateless.
 pub struct Session {
     wire: Wire,
-    device: Option<String>,
-    last_snapshot_id: Option<String>,
-}
-
-impl Session {
-    /// Reject a ref minted under a different snapshot than this session's
-    /// latest — locally, before any round trip. No recorded id means the
-    /// driver alone decides.
-    fn check_fresh(&self, r: &Ref) -> Result<(), Failure> {
-        match &self.last_snapshot_id {
-            Some(id) => r.check_current(id),
-            None => Ok(()),
-        }
-    }
 }
 
 impl Ctx {
@@ -87,7 +72,7 @@ impl Ctx {
     /// for `serve` to reclaim: its `runner_pid` reaps any orphaned runner
     /// still holding the port (KTD7).
     fn ready_session(&self) -> Result<Option<Session>, Failure> {
-        let ResolveOutcome::Ready(ep) = self.store.resolve(self.device.as_deref())? else {
+        let Some(ep) = self.store.resolve(self.device.as_deref())? else {
             return Ok(None);
         };
         let env_pinned = std::env::var(URL_ENV).is_ok();
@@ -103,19 +88,15 @@ impl Ctx {
         }
         Ok(Some(Session {
             wire: Wire::new(&ep.url, ep.token()),
-            device: ep.device.clone(),
-            last_snapshot_id: entry.and_then(|e| e.last_snapshot_id),
         }))
     }
 
-    /// Emit one reply: record the snapshot id, honor `--max-depth`, then
-    /// write text or JSON to stdout — driver failures go to stderr with the
-    /// registry hint.
-    fn finish(&self, session: &Session, mut env: Envelope) -> i32 {
+    /// Emit one reply: honor `--max-depth`, then write text or JSON to
+    /// stdout — driver failures go to stderr with the registry hint.
+    fn finish(&self, mut env: Envelope) -> i32 {
         if let (Some(depth), Some(Data::Snapshot(snap))) = (self.max_depth, env.data.as_mut()) {
             trim_snapshot(snap, depth);
         }
-        self.record_snapshot(session, &env);
         if self.json {
             match serde_json::to_string(&env) {
                 Ok(line) => emit(&line),
@@ -138,18 +119,6 @@ impl Ctx {
             f.exit_code()
         }
     }
-
-    /// Persist the driver's newest snapshot id for the resolved device;
-    /// failures warn on stderr but never sink a successful verb.
-    fn record_snapshot(&self, session: &Session, env: &Envelope) {
-        let (Some(device), Some(Data::Snapshot(snap)), true) = (&session.device, &env.data, env.ok)
-        else {
-            return;
-        };
-        if let Err(e) = self.store.record_snapshot(device, &snap.snapshot_id) {
-            eprintln!("warning: {}", e.render());
-        }
-    }
 }
 
 /// Run `cli` to completion; the process exit code is the return value.
@@ -162,13 +131,10 @@ pub fn dispatch(cli: &Cli) -> Result<i32, Failure> {
         Command::Tap { args } => Ctx::new(cli).and_then(|ctx| tap::run(&ctx, args)),
         Command::Type { args } => Ctx::new(cli).and_then(|ctx| r#type::run(&ctx, args)),
         Command::Swipe { direction, target } => {
-            Ctx::new(cli).and_then(|ctx| swipe::run(&ctx, *direction, target.as_deref()))
+            Ctx::new(cli).and_then(|ctx| swipe::run(&ctx, direction, target.as_deref()))
         }
         Command::Home => Ctx::new(cli).and_then(|ctx| home::run(&ctx)),
         Command::Launch { bundle_id } => Ctx::new(cli).and_then(|ctx| launch::run(&ctx, bundle_id)),
-        Command::Activate { bundle_id } => {
-            Ctx::new(cli).and_then(|ctx| activate::run(&ctx, bundle_id))
-        }
         Command::Screenshot { output } => {
             Ctx::new(cli).and_then(|ctx| screenshot::run(&ctx, output.as_deref()))
         }
@@ -195,6 +161,6 @@ pub fn emit(line: &str) {
 
 /// One wire round trip plus [`Ctx::finish`]; the shape every thin verb shares.
 pub fn round_trip(ctx: &Ctx, session: &Session, verb: &str, body: &Value) -> Result<i32, Failure> {
-    let reply: Reply = session.wire.call(verb, body)?;
-    Ok(ctx.finish(session, reply.envelope))
+    let env = session.wire.call(verb, body)?;
+    Ok(ctx.finish(env))
 }

@@ -83,7 +83,7 @@ fn stale_ref_409_parses_code_and_exits_1() -> Result<(), Failure> {
     let wire = Wire::new(&base, "tok");
     let reply = wire.call("tap", &serde_json::json!({"ref":"@x:e1"}))?;
     let _ = join.join();
-    let envelope = reply.envelope;
+    let envelope = reply;
     assert!(!envelope.ok);
     let err = envelope.error.ok_or_else(|| fail("missing error body"))?;
     assert_eq!(err.code, "STALE_REF");
@@ -102,7 +102,7 @@ fn unauthorized_401_omits_command_and_hints_token() -> Result<(), Failure> {
     let wire = Wire::new(&base, "wrong");
     let reply = wire.call("status", &serde_json::json!({}))?;
     let _ = join.join();
-    let envelope = reply.envelope;
+    let envelope = reply;
     assert!(envelope.command.is_none());
     assert!(envelope.elapsed_ms.is_none());
     let err = envelope.error.ok_or_else(|| fail("missing error body"))?;
@@ -139,10 +139,13 @@ fn envelope_version_mismatch_fails_fast() -> Result<(), Failure> {
     let result = wire.call("status", &serde_json::json!({}));
     let _ = join.join();
     match result {
-        Err(Failure::VersionMismatch { found }) => assert_eq!(found, "2"),
+        Err(Failure::Local { message, .. }) => {
+            assert!(message.contains("\"2\""), "{message}");
+            assert!(message.contains("version mismatch"), "{message}");
+        }
         Err(other) => {
             return Err(fail(&format!(
-                "expected VersionMismatch, got {}",
+                "expected a local failure, got {}",
                 other.render()
             )));
         }
@@ -194,8 +197,8 @@ fn snapshot_envelope_parses_typed_data() -> Result<(), Failure> {
     let wire = Wire::new(&base, "tok");
     let reply = wire.call("snapshot", &serde_json::json!({}))?;
     let _ = join.join();
-    assert!(reply.envelope.ok);
-    let Data::Snapshot(snap) = reply.envelope.data.ok_or_else(|| fail("missing data"))? else {
+    assert!(reply.ok);
+    let Data::Snapshot(snap) = reply.data.ok_or_else(|| fail("missing data"))? else {
         return Err(fail("expected Snapshot data"));
     };
     assert_eq!(snap.snapshot_id, "abc");
@@ -234,10 +237,7 @@ fn driver_returned_driver_error_retries_once() -> Result<(), Failure> {
     let wire = Wire::new(&base, "tok");
     let reply = wire.call("tap", &serde_json::json!({"x":1.0,"y":2.0}))?;
     let _ = join.join();
-    let err = reply
-        .envelope
-        .error
-        .ok_or_else(|| fail("missing error body"))?;
+    let err = reply.error.ok_or_else(|| fail("missing error body"))?;
     let rendered = Failure::from_error_body(&err).render();
     assert!(rendered.contains("retry once"));
     assert!(
@@ -254,10 +254,7 @@ fn unknown_command_parses_code() -> Result<(), Failure> {
     let wire = Wire::new(&base, "tok");
     let reply = wire.call("bogus", &serde_json::json!({}))?;
     let _ = join.join();
-    let err = reply
-        .envelope
-        .error
-        .ok_or_else(|| fail("missing error body"))?;
+    let err = reply.error.ok_or_else(|| fail("missing error body"))?;
     assert_eq!(err.code, "UNKNOWN_COMMAND");
     Ok(())
 }

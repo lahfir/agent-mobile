@@ -14,15 +14,6 @@ use crate::error::{ErrorCode, Failure};
 /// Default ceiling for one call; the driver has no timeout of its own.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A well-formed driver reply: the typed envelope plus the raw body so
-/// `--json` passes bytes through untouched, including error replies.
-pub struct Reply {
-    /// Parsed envelope.
-    pub envelope: Envelope,
-    /// Raw reply body as sent by the driver.
-    pub raw: String,
-}
-
 /// Configured client bound to one driver base URL and bearer token.
 pub struct Wire {
     agent: ureq::Agent,
@@ -58,9 +49,9 @@ impl Wire {
     ///
     /// # Errors
     /// [`Failure::Transport`] on refused, timed-out, or other transport
-    /// failures; [`Failure::VersionMismatch`] on a non-`"1"` envelope version;
+    /// failures; [`Failure::Local`] on a non-`"1"` envelope version;
     /// [`ErrorCode::DriverError`] on an unparseable reply body.
-    pub fn call(&self, verb: &str, body: &Value) -> Result<Reply, Failure> {
+    pub fn call(&self, verb: &str, body: &Value) -> Result<Envelope, Failure> {
         let url = format!("{}/{verb}", self.base);
         let mut resp = self
             .agent
@@ -84,6 +75,6 @@ impl Wire {
             )
         })?;
         envelope.check_version()?;
-        Ok(Reply { envelope, raw })
+        Ok(envelope)
     }
 }

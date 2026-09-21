@@ -18,7 +18,6 @@ COMMANDS
                                  swipe the app, or one element
   home                           press Home; returns the springboard tree
   launch <bundle_id>             cold-start the app; kills saved state
-  activate <bundle_id>           resume a running app; keeps its state
   screenshot [path]              PNG to a file, or base64 to stdout
   stop                           terminate the active app; the driver stays up
   skills                         this page
@@ -55,9 +54,8 @@ OUTPUT CONTRACT
   complete=false means --max-depth trimmed nodes below the printed depth.
   Exit codes: 0 ok, 1 driver or transport failure, 2 usage error.
 
-LAUNCH VS ACTIVATE
-  launch cold-starts and destroys saved state; activate resumes what is
-  already running. Default to activate; use launch only for a clean start.
+LAUNCH
+  launch cold-starts and destroys saved state; use it for a clean start.
 ";
 
 /// Run `skills`; prints the guide, no wire involved.

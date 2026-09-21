@@ -5,18 +5,13 @@
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::ios;
-use agent_mobile_core::process::BootLock;
+use agent_mobile_core::process::{BOOT_BUDGET, BOOT_POLL, BootLock};
 
 use super::{Ctx, Session, ensure_state_dir};
-
-/// Whole-boot ceiling: a cold xcodebuild plus sim boot can take minutes.
-const BOOT_BUDGET: Duration = Duration::from_secs(240);
-/// How often the waiter re-reads state.
-const POLL: Duration = Duration::from_millis(500);
 
 /// Resolve a session, booting a driver first when none exists.
 pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
@@ -40,7 +35,7 @@ pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
         if let Some(s) = ctx.ready_session()? {
             return Ok(s);
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(BOOT_POLL);
     }
 }
 
@@ -91,7 +86,7 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
                 format!("check the log at {} and retry", log.display()),
             ));
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(BOOT_POLL);
     }
 }
 

@@ -28,18 +28,14 @@ pub fn run(json: bool) -> Result<i32, Failure> {
         super::emit(&line);
         return Ok(0);
     }
+    let opt = |v: Option<String>| v.map_or_else(String::new, |v| format!(" {v}"));
     for d in &devices {
-        let os =
-            d.os.as_ref()
-                .map_or_else(String::new, |v| format!(" os=\"{v}\""));
-        let st = d
-            .state
-            .as_ref()
-            .map_or_else(String::new, |v| format!(" state={v}"));
-        let serving = state
+        let os = opt(d.os.as_ref().map(|v| format!("os=\"{v}\"")));
+        let st = opt(d.state.as_ref().map(|v| format!("state={v}")));
+        let serving = opt(state
             .devices
             .get(&d.name)
-            .map_or_else(String::new, |e| format!(" serving={}", e.url));
+            .map(|e| format!("serving={}", e.url)));
         super::emit(&format!(
             "name=\"{}\" udid={} kind={}{}{}{}",
             d.name, d.udid, d.kind, os, st, serving

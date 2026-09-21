@@ -217,21 +217,14 @@ fn unreachable_driver_names_the_remedy() -> Result<(), Failure> {
 }
 
 #[test]
-fn stale_ref_from_state_fails_before_network() -> Result<(), Failure> {
-    let home = tmp_home("localstale")?;
-    let store = StateStore::at(&home.join(".agent-mobile"));
-    store.write_token("sim", "tok")?;
-    store.upsert(
-        "sim",
-        &SessionEntry::new(
-            "http://127.0.0.1:1".to_owned(),
-            std::process::id(),
-            "sim".to_owned(),
-        ),
-    )?;
-    store.record_snapshot("sim", "newest")?;
-    let out = run(&["tap", "@older:e1", "--device", "sim"], &home, &[])?;
+fn stale_ref_from_driver_exits_1_with_resnapshot_hint() -> Result<(), Failure> {
+    let home = tmp_home("stale")?;
+    let s = stub(&[STALE])?;
+    let out = run_wired(&["tap", "@older:e1"], &home, &s)?;
     assert_eq!(code(&out), 1);
+    let captured = s.captured()?;
+    let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
+    assert_eq!(v["ref"], "@older:e1");
     let err = stderr(&out);
     assert!(err.contains("STALE_REF"), "{err}");
     assert!(err.contains("re-snapshot"), "{err}");

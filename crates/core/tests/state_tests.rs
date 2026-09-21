@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use agent_mobile_core::error::{EXIT_USAGE, Failure};
 use agent_mobile_core::secret::write_secret;
-use agent_mobile_core::state::{ResolveOutcome, SessionEntry, StateStore};
+use agent_mobile_core::state::{SessionEntry, StateStore};
 
 static SEQ: AtomicUsize = AtomicUsize::new(0);
 
@@ -32,10 +32,8 @@ fn entry(url: &str) -> SessionEntry {
     SessionEntry {
         url: url.to_owned(),
         pid: 4242,
-        started_at: 1_700_000_000,
         token_file: "dev".to_owned(),
         runner_pid: None,
-        last_snapshot_id: None,
     }
 }
 
@@ -86,8 +84,8 @@ fn env_override_wins_without_mutating_state() -> Result<(), Failure> {
         Some("http://env:9".to_owned()),
         Some("env-token".to_owned()),
     )?;
-    let ResolveOutcome::Ready(ep) = out else {
-        return Err(fail("expected Ready"));
+    let Some(ep) = out else {
+        return Err(fail("expected an endpoint"));
     };
     assert_eq!(ep.url, "http://env:9");
     assert_eq!(ep.token(), "env-token");
@@ -108,8 +106,8 @@ fn partial_env_override_completes_from_state() -> Result<(), Failure> {
     store.write_token("dev", "state-token")?;
     store.upsert("sim", &entry("http://127.0.0.1:8770"))?;
     let out = store.resolve_with(Some("sim"), Some("http://env:9".to_owned()), None)?;
-    let ResolveOutcome::Ready(ep) = out else {
-        return Err(fail("expected Ready"));
+    let Some(ep) = out else {
+        return Err(fail("expected an endpoint"));
     };
     assert_eq!(ep.url, "http://env:9");
     assert_eq!(ep.token(), "state-token");
@@ -124,8 +122,8 @@ fn corrupt_state_loads_stale() -> Result<(), Failure> {
     let store = StateStore::at(&tmp.0);
     assert!(store.load().devices.is_empty());
     match store.resolve_with(Some("sim"), None, None)? {
-        ResolveOutcome::NoSession => {}
-        ResolveOutcome::Ready(_) => return Err(fail("corrupt state must not resolve")),
+        None => {}
+        Some(_) => return Err(fail("corrupt state must not resolve")),
     }
     Ok(())
 }
@@ -137,8 +135,8 @@ fn canary_token_never_appears_in_debug() -> Result<(), Failure> {
     store.write_token("dev", "canary-7f3c9a-token")?;
     store.upsert("sim", &entry("http://127.0.0.1:8770"))?;
     let out = store.resolve_with(Some("sim"), None, None)?;
-    let ResolveOutcome::Ready(ep) = out else {
-        return Err(fail("expected Ready"));
+    let Some(ep) = out else {
+        return Err(fail("expected an endpoint"));
     };
     let dbg = format!("{ep:?}");
     assert!(!dbg.contains("canary-7f3c9a-token"), "Debug leaked a token");
@@ -177,14 +175,14 @@ fn upsert_remove_and_default_device_round_trip() -> Result<(), Failure> {
     assert!(store.entry("sim").is_some());
     store.remember_device("sim")?;
     match store.resolve_with(None, None, None)? {
-        ResolveOutcome::Ready(ep) => assert_eq!(ep.url, "http://a:1"),
-        ResolveOutcome::NoSession => return Err(fail("default device must resolve")),
+        Some(ep) => assert_eq!(ep.url, "http://a:1"),
+        None => return Err(fail("default device must resolve")),
     }
     store.remove("sim")?;
     assert!(store.entry("sim").is_none());
     match store.resolve_with(None, None, None)? {
-        ResolveOutcome::NoSession => {}
-        ResolveOutcome::Ready(_) => return Err(fail("removed entry must not resolve")),
+        None => {}
+        Some(_) => return Err(fail("removed entry must not resolve")),
     }
     Ok(())
 }

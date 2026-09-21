@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ErrorCode, Failure};
+use crate::error::Failure;
 
 /// Protocol version both sides must speak; fixed at `"1"` for P1 and bumped
 /// only on a breaking change.
@@ -45,12 +45,22 @@ impl Envelope {
     /// [`PROTOCOL_VERSION`].
     ///
     /// # Errors
-    /// Returns [`Failure::VersionMismatch`] on any other version.
+    /// Returns [`Failure::Local`] on any other version.
     pub fn check_version(&self) -> Result<(), Failure> {
         if self.version == PROTOCOL_VERSION {
             Ok(())
         } else {
-            Err(Failure::version_mismatch(&self.version))
+            Err(Failure::local(
+                format!(
+                    "version mismatch: driver speaks protocol \"{}\"; \
+                     this CLI requires \"{PROTOCOL_VERSION}\"",
+                    self.version
+                ),
+                format!(
+                    "upgrade agent-mobile and the driver together; \
+                     both must speak protocol version \"{PROTOCOL_VERSION}\""
+                ),
+            ))
         }
     }
 }
@@ -181,8 +191,8 @@ pub struct NativeId {
 }
 
 /// A parsed `@<snapshot_id>:e<N>` element ref (R3). Refs are minted per
-/// snapshot and die with it; [`Ref::check_current`] rejects a superseded ref
-/// locally before any round trip.
+/// snapshot and die with it; the driver rejects a superseded ref with
+/// `STALE_REF` — freshness is checked against the live tree, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
     /// Snapshot id the ref was minted under.
@@ -215,22 +225,6 @@ impl Ref {
             snapshot_id: id.to_owned(),
             index,
         })
-    }
-
-    /// Reject a ref minted under a different snapshot id — locally, with the
-    /// re-snapshot hint, before any round trip.
-    ///
-    /// # Errors
-    /// Returns a [`ErrorCode::StaleRef`] failure when `snapshot_id` differs.
-    pub fn check_current(&self, snapshot_id: &str) -> Result<(), Failure> {
-        if self.snapshot_id == snapshot_id {
-            Ok(())
-        } else {
-            Err(Failure::driver(
-                ErrorCode::StaleRef,
-                format!("{self} is from a superseded snapshot; re-snapshot"),
-            ))
-        }
     }
 }
 

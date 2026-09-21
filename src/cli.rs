@@ -1,7 +1,7 @@
 //! Command-line surface (KTD16): derive parser, global flags, and the
 //! argument shapes each verb validates in code.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 /// Drive iOS apps through a snapshot -> act loop.
 #[derive(Debug, Parser)]
@@ -54,7 +54,8 @@ pub enum Command {
     /// Swipe up, down, left, or right — on a ref, or the whole app.
     Swipe {
         /// Direction to swipe.
-        direction: Direction,
+        #[arg(value_parser = ["up", "down", "left", "right"])]
+        direction: String,
         /// Optional `@<snapshot>:e<N>` ref to swipe on.
         target: Option<String>,
     },
@@ -63,11 +64,6 @@ pub enum Command {
     /// Cold-start a bundle id; kills any saved app state.
     Launch {
         /// Bundle id to launch, e.g. `com.apple.mobilecal`.
-        bundle_id: String,
-    },
-    /// Foreground an already-running app without relaunching it.
-    Activate {
-        /// Bundle id to resume.
         bundle_id: String,
     },
     /// Write a PNG screenshot to a path, or base64 to stdout.
@@ -79,30 +75,4 @@ pub enum Command {
     Stop,
     /// Print the one-page agent guide.
     Skills,
-}
-
-/// Swipe directions accepted by the driver; anything else fails client-side.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum Direction {
-    /// Toward the top of the screen.
-    Up,
-    /// Toward the bottom of the screen.
-    Down,
-    /// Toward the left edge.
-    Left,
-    /// Toward the right edge.
-    Right,
-}
-
-impl Direction {
-    /// The wire value the driver expects.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Up => "up",
-            Self::Down => "down",
-            Self::Left => "left",
-            Self::Right => "right",
-        }
-    }
 }

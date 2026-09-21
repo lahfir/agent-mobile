@@ -1,5 +1,5 @@
 //! `launch`: cold-start a bundle id; the driver kills saved app state
-//! (KTD17 — the skills page teaches `activate` for resumes).
+//! (KTD17).
 
 use agent_mobile_core::error::Failure;
 

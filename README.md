@@ -66,7 +66,6 @@ agent-mobile serve "iPhone 17 Pro Max" # prints the session token once when read
 | `swipe <up\|down\|left\|right> [<ref>]` | swipe the app, or one element |
 | `home` | press Home; returns the springboard tree |
 | `launch <bundle_id>` | cold-start an app; kills saved state |
-| `activate <bundle_id>` | foreground a running app; keeps its state |
 | `screenshot [path]` | PNG to a file, or base64 to stdout |
 | `stop` | terminate the active app; the driver stays up |
 | `skills` | print the one-page agent guide |
@@ -132,7 +131,7 @@ automatically, or pass it per call via `AGENT_MOBILE_URL`.
 
 - Every call is `POST /<command>` with a JSON body, `Authorization: Bearer <token>`, and
   `X-Agent-Mobile-Version: 1`. Missing or wrong token -> 401.
-- Commands: `status`; `launch {bundle_id}`; `activate {bundle_id}`; `terminate`;
+- Commands: `status`; `launch {bundle_id}`; `terminate`;
   `snapshot {app?}`; `tap {ref} | {x,y}`; `type {text, ref?}`;
   `swipe {direction: up|down|left|right, ref?}`; `home`; `screenshot` (PNG base64).
 - Response envelope: `{version, ok, command, elapsed_ms, data}` or

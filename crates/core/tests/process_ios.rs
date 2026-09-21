@@ -234,18 +234,6 @@ fn tcp_ready_tracks_a_bound_listener() -> TestResult {
 }
 
 #[test]
-fn wait_tcp_times_out_on_dead_port() {
-    let start = Instant::now();
-    let ready = process::wait_tcp(
-        "127.0.0.1:1",
-        Duration::from_millis(120),
-        Duration::from_millis(40),
-    );
-    assert!(!ready);
-    assert!(start.elapsed() >= Duration::from_millis(100));
-}
-
-#[test]
 fn boot_lock_is_atomic_and_drops() -> TestResult {
     let dir = tmp("bootlock")?;
     let path = dir.join("boot.lock");

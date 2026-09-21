@@ -17,6 +17,12 @@ use crate::error::Failure;
 /// Token alphabet: 24 lowercase hex chars from 12 random bytes.
 const TOKEN_BYTES: usize = 12;
 
+/// Whole-boot ceiling shared by `serve` and lazy start; a cold xcodebuild
+/// plus a simulator boot can take minutes.
+pub const BOOT_BUDGET: Duration = Duration::from_secs(240);
+/// Poll interval for boot waits in `serve` and lazy start.
+pub const BOOT_POLL: Duration = Duration::from_millis(500);
+
 /// Mint a bearer token from `/dev/urandom`; never a default, never logged.
 ///
 /// # Errors
@@ -194,20 +200,6 @@ pub fn tcp_ready(addr: &str) -> bool {
     addrs
         .into_iter()
         .any(|a| TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
-}
-
-/// Wait until `addr` accepts TCP or `budget` expires; `poll` ms apart.
-/// Returns `true` when the port came up.
-#[must_use]
-pub fn wait_tcp(addr: &str, budget: Duration, poll: Duration) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < budget {
-        if tcp_ready(addr) {
-            return true;
-        }
-        std::thread::sleep(poll);
-    }
-    false
 }
 
 /// Atomic boot lockfile (KTD7): `create_new` either wins or reports the

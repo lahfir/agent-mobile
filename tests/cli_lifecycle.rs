@@ -1,5 +1,5 @@
-//! Lifecycle verbs and the skills guide: launch, activate, home, stop,
-//! screenshot routing, and the two-way help/guide accuracy check.
+//! Lifecycle verbs and the skills guide: launch, home, stop, screenshot
+//! routing, and the two-way help/guide accuracy check.
 
 mod common;
 
@@ -28,20 +28,6 @@ fn launch_sends_bundle_id_and_returns_snapshot() -> Result<(), Failure> {
     let v = body_of(req)?;
     assert_eq!(v["bundle_id"], "com.apple.mobilecal");
     assert!(stdout(&out).contains("snapshot=@snap1"), "{}", stdout(&out));
-    Ok(())
-}
-
-#[test]
-fn activate_sends_bundle_id_and_returns_snapshot() -> Result<(), Failure> {
-    let home = tmp_home("activate")?;
-    let s = stub(&[SNAPSHOT])?;
-    let out = run_wired(&["activate", "com.x"], &home, &s)?;
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.captured()?;
-    let req = captured.first().ok_or_else(|| fail("no request"))?;
-    assert!(req.contains("POST /activate "), "{req}");
-    let v = body_of(req)?;
-    assert_eq!(v["bundle_id"], "com.x");
     Ok(())
 }
 
@@ -198,7 +184,6 @@ fn skills_guide_teaches_ref_lifecycle_and_recovery() -> Result<(), Failure> {
         "re-snapshot",
         "settled=false",
         "tap <x> <y>",
-        "activate",
         "AGENT_MOBILE_URL",
     ] {
         assert!(text.contains(needle), "skills missing {needle:?}");
