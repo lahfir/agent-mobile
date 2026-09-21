@@ -32,13 +32,13 @@ sims = [d for rt, ds in devs.items() if "iOS" in rt for d in ds if "iPhone" in d
 print(sims[0]["udid"] if sims else "")')
 [ -n "$SIM_UDID" ] || { echo "no iPhone simulator found; create one first" >&2; exit 1; }
 
-(cd fixtures/driver && xcodebuild build-for-testing \
-  -project ToDo.xcodeproj -scheme ToDo \
+(cd drivers/ios && xcodebuild build-for-testing \
+  -project AgentMobileDriver.xcodeproj -scheme AgentMobileDriver \
   -destination "platform=iOS Simulator,id=$SIM_UDID" \
   -derivedDataPath ./dd CODE_SIGNING_ALLOWED=NO >/dev/null)
 
 rm -rf npm/runner
 mkdir -p npm/runner
-cp fixtures/driver/dd/Build/Products/*.xctestrun npm/runner/
-cp -R fixtures/driver/dd/Build/Products/Debug-iphonesimulator npm/runner/
+cp drivers/ios/dd/Build/Products/*.xctestrun npm/runner/
+cp -R drivers/ios/dd/Build/Products/Debug-iphonesimulator npm/runner/
 echo "staged npm/runner ($(ls npm/runner/*.xctestrun | wc -l | tr -d ' ') xctestrun, $(du -sh npm/runner | cut -f1))"

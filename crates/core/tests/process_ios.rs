@@ -97,9 +97,9 @@ fn serve_command_sim_args_and_runner_env() -> TestResult {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let joined = args.join(" ");
-    assert!(joined.contains("test -project ToDo.xcodeproj -scheme ToDo"));
+    assert!(joined.contains("test -project AgentMobileDriver.xcodeproj -scheme AgentMobileDriver"));
     assert!(joined.contains("platform=iOS Simulator,id=9B7CEE9E-0000-4000-8000-0123456789AB"));
-    assert!(joined.contains("-only-testing:ToDoUITests/AgentMobileServer/testServe"));
+    assert!(joined.contains("-only-testing:AgentMobileDriver/AgentMobileServer/testServe"));
     assert!(joined.contains("CODE_SIGNING_ALLOWED=NO"));
     assert_eq!(
         env_of(&cmd, "TEST_RUNNER_AGENT_MOBILE_PORT").as_deref(),
@@ -132,13 +132,13 @@ fn serve_command_device_binds_wildcard() -> TestResult {
 }
 
 /// Running inside the workspace, the ancestor walk from crates/core must
-/// land on the repo's fixtures/driver project.
+/// land on the repo's drivers/ios project.
 #[test]
 fn driver_source_finds_the_checkout_layout() -> TestResult {
     match ios::driver_source()? {
         DriverSource::Project(dir) => {
-            assert!(dir.join("ToDo.xcodeproj").exists());
-            assert!(dir.ends_with("fixtures/driver"));
+            assert!(dir.join("AgentMobileDriver.xcodeproj").exists());
+            assert!(dir.ends_with("drivers/ios"));
         }
         DriverSource::Prebuilt { .. } => {
             return Err(Failure::local(
@@ -153,7 +153,8 @@ fn driver_source_finds_the_checkout_layout() -> TestResult {
 #[test]
 fn prebuilt_runner_uses_test_without_building() -> TestResult {
     let dir = tmp("prebuilt")?;
-    let xctestrun = dir.join("ToDo_ToDo_iphonesimulator26.0-arm64.xctestrun");
+    let xctestrun =
+        dir.join("AgentMobileDriver_AgentMobileDriver_iphonesimulator26.0-arm64.xctestrun");
     std::fs::write(&xctestrun, "<plist/>")?;
     let cmd = ios::serve_command(
         &sim(),

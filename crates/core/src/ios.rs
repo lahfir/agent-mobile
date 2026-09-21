@@ -217,7 +217,7 @@ pub fn boot_simulator(udid: &str) -> Result<(), Failure> {
 /// `.xctestrun` product that needs no compiler (KTD14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriverSource {
-    /// A checkout's `fixtures/driver` holding `ToDo.xcodeproj`.
+    /// A checkout's `drivers/ios` holding `AgentMobileDriver.xcodeproj`.
     Project(PathBuf),
     /// A packaged runner dir holding `*.xctestrun` plus its `__TESTROOT__`
     /// products — `test-without-building` installs and runs it directly.
@@ -231,7 +231,7 @@ pub enum DriverSource {
 
 /// Resolve the driver source: `AGENT_MOBILE_DRIVER_DIR` wins, then a
 /// `runner/` dir beside the executable (the npm layout), then the checkout's
-/// `fixtures/driver` walked up from the core crate's manifest dir.
+/// `drivers/ios` walked up from the core crate's manifest dir.
 ///
 /// # Errors
 /// Returns [`Failure::Local`] when neither a project nor a bundled runner
@@ -250,7 +250,7 @@ pub fn driver_source() -> Result<DriverSource, Failure> {
     probes.extend(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
-            .map(|a| a.join("fixtures/driver")),
+            .map(|a| a.join("drivers/ios")),
     );
     for dir in probes {
         if let Some(src) = classify_driver_dir(&dir) {
@@ -263,10 +263,10 @@ pub fn driver_source() -> Result<DriverSource, Failure> {
     ))
 }
 
-/// A dir holding `ToDo.xcodeproj` is a project; one holding `*.xctestrun` is
-/// a prebuilt runner. Anything else is not a driver source.
+/// A dir holding `AgentMobileDriver.xcodeproj` is a project; one holding
+/// `*.xctestrun` is a prebuilt runner. Anything else is not a driver source.
 fn classify_driver_dir(dir: &Path) -> Option<DriverSource> {
-    if dir.join("ToDo.xcodeproj").exists() {
+    if dir.join("AgentMobileDriver.xcodeproj").exists() {
         return Some(DriverSource::Project(dir.to_path_buf()));
     }
     let entries = std::fs::read_dir(dir).ok()?;
@@ -314,13 +314,12 @@ pub fn serve_command(
                 .args([
                     "test",
                     "-project",
-                    "ToDo.xcodeproj",
+                    "AgentMobileDriver.xcodeproj",
                     "-scheme",
-                    "ToDo",
+                    "AgentMobileDriver",
                     "-destination",
                     &destination,
-                    "-only-testing:ToDoUITests/AgentMobileServer/testServe",
-                    "-skip-testing:ToDoTests",
+                    "-only-testing:AgentMobileDriver/AgentMobileServer/testServe",
                     "-parallel-testing-enabled",
                     "NO",
                     "-derivedDataPath",
@@ -342,7 +341,7 @@ pub fn serve_command(
                 .args([
                     "-destination",
                     &format!("platform=iOS Simulator,id={}", device.udid),
-                    "-only-testing:ToDoUITests/AgentMobileServer/testServe",
+                    "-only-testing:AgentMobileDriver/AgentMobileServer/testServe",
                 ]);
         }
     }

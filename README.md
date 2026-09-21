@@ -81,7 +81,7 @@ at a bundle id), `--max-depth <n>` (trim the tree client-side; the header then s
 | `AGENT_MOBILE_URL` | driver URL override for the call (e.g. a tunnel or a phone on the LAN) |
 | `AGENT_MOBILE_TOKEN` | bearer token paired with the URL override |
 | `AGENT_MOBILE_DRIVER_DIR` | driver source override: an Xcode project dir or a `runner/` dir holding `*.xctestrun` |
-| `TEST_RUNNER_AGENT_MOBILE_PORT` / `_TOKEN` / `_BIND` | driver-side env, set through xcodebuild's `TEST_RUNNER_` prefix (see `fixtures/driver/am.sh`) |
+| `TEST_RUNNER_AGENT_MOBILE_PORT` / `_TOKEN` / `_BIND` | driver-side env, set through xcodebuild's `TEST_RUNNER_` prefix (see `drivers/ios/am.sh`) |
 
 ## Sessions and state
 
@@ -113,7 +113,7 @@ foreign process holding port 8770 fails fast and names the port, device, and `ls
 ## Physical iPhone
 
 A physical device needs a signed runner, which npm cannot ship — clone this repo so `serve`
-finds the source project (`fixtures/driver/ToDo.xcodeproj`), then:
+finds the source project (`drivers/ios/AgentMobileDriver.xcodeproj`), then:
 
 ```
 agent-mobile serve "Lahfir's iPhone"
@@ -155,7 +155,7 @@ automatically, or pass it per call via `AGENT_MOBILE_URL`.
 
 - Bearer token per session, generated on `serve`, written to a `0600` file, printed once.
 - The Mac-to-phone hop is plain HTTP on the LAN; the phone binds all interfaces. Tunnel adapters
-  (`fixtures/driver/tunnel-cloudflared.sh`, ngrok, tailscale, ssh -R) add encryption on the way
+  (`drivers/ios/tunnel-cloudflared.sh`, ngrok, tailscale, ssh -R) add encryption on the way
   out, but the driver itself knows nothing about TLS.
 - Whoever holds the URL and token has full UI control. No rate limit, expiry, allowlist, or
   audit log. Use a fresh token per session and only on a trusted Wi-Fi.
@@ -165,9 +165,10 @@ automatically, or pass it per call via `AGENT_MOBILE_URL`.
 - `src/`, `crates/core/` — the CLI and the shared core (contract, wire client, state, process).
 - `npm/` — the darwin-only package: `run.js` shim, `install.js` postinstall verifier, bundled
   `bin/` + `runner/` produced by `scripts/sync-npm-version.sh`.
-- `fixtures/driver/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
-  server (`ToDoUITests/AgentMobileServer.swift`). `am.sh` is a curl helper, `start-device.sh`
-  starts the driver on a physical iPhone, `tunnel-cloudflared.sh` is the reference tunnel adapter.
+- `drivers/ios/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
+  server (`Driver/AgentMobileServer.swift`); `Host/` is the minimal app the runner attaches to.
+  `am.sh` is a curl helper, `start-device.sh` starts the driver on a physical iPhone,
+  `tunnel-cloudflared.sh` is the reference tunnel adapter.
 - `docs/PRD.md` — the product requirements: contract, phases P1–P4 with experiment exit criteria,
   engineering practices, risks, and the reliability gate.
 - `docs/research/` and `docs/experiments/` — the 13 research tracks with their synthesis, and the

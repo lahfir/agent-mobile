@@ -80,7 +80,7 @@ flowchart TB
 
     TUNNEL{{"optional, never core:<br/>any port forwarder for a remote agent"}}
 
-    subgraph IOSDRV["iOS device driver — Swift (exists: fixtures/driver/)"]
+    subgraph IOSDRV["iOS device driver — Swift (exists: drivers/ios/)"]
         IOSD["XCUITest runner + HTTP server<br/>tree: XCUIElement.snapshot()<br/>act: tap · typeText · swipe · home<br/>refs: per snapshot, re-resolve on device<br/>settle: bounded tree-hash<br/>auth: bearer token"]
     end
 
@@ -109,9 +109,9 @@ Component rules
 - The core never parses a tree beyond formatting it. Ref resolution runs on the device.
 - One driver process per device, one port each. The CLI maps device to port through a small state
   file under `~/.agent-mobile/`.
-- Today's iOS driver (`fixtures/driver/ToDoUITests/AgentMobileServer.swift`, 267 lines) is the P1
+- Today's iOS driver (`drivers/ios/Driver/AgentMobileServer.swift`, 267 lines) is the P1
   driver as is, plus a Home press at start on the simulator. The host app in that project is a
-  scaffold the UI-test target needs; the driver never touches it.
+  minimal shell the UI-test target needs; the driver never touches it.
 - Physical iOS needs a host process (the Mac) alive for the session (docs/research/02). The agent
   never needs the phone screen; the tree and the screenshot endpoint carry the state.
 
@@ -275,7 +275,7 @@ P0 is the first phase and it is finished. What it proved:
 
 ### 7.1 Workspace and layout
 
-`docs/research/`, `docs/experiments/`, and `fixtures/driver/` exist. The Rust workspace is new.
+`docs/research/`, `docs/experiments/`, and `drivers/ios/` exist. The Rust workspace is new.
 
 ```
 agent-mobile/
@@ -283,7 +283,7 @@ agent-mobile/
 ├── crates/core/      # host logic; the iOS adapter is a module inside it
 ├── src/              # CLI binary, one command per file
 ├── scripts/          # source-rule check, used by CI and the pre-commit hook
-├── fixtures/driver/  # existing Swift XCUITest driver
+├── drivers/ios/      # existing Swift XCUITest driver
 └── docs/             # research tracks, experiments, this PRD
 ```
 
@@ -354,7 +354,7 @@ driver and CLI together in one release.
 - A token generates fresh per `serve` call, stored under `~/.agent-mobile/` at mode `0600`; no script carries a default.
 - Logs may keep the command name, `elapsed_ms`, and the ok/error outcome, never the token.
 - `SECURITY.md` states the scope: the CLI, the core, and the drivers.
-- P1 cleanup: `fixtures/driver/am.sh` defaults to a committed token today, and `fixtures/driver/start-device.sh` writes its token to `/tmp/agent-mobile-device-token` with no `chmod` call.
+- P1 cleanup: `drivers/ios/am.sh` defaults to a committed token today, and `drivers/ios/start-device.sh` writes its token to `/tmp/agent-mobile-device-token` with no `chmod` call.
 
 ### 7.7 Definition of done for any phase
 
