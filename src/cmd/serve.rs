@@ -3,6 +3,7 @@
 //! token and URL once, and supervises until the runner dies (KTD7, KTD8).
 
 use std::fs::OpenOptions;
+use std::io::IsTerminal as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -14,12 +15,14 @@ use agent_mobile_core::wire::Wire;
 
 use super::{Ctx, Session};
 
-/// Verbatim fragments of the certificate trust refusal (Experiments 7, 8);
-/// `lazy` scans the same log for them.
+/// Verbatim fragments of the certificate trust refusal and the locked-device
+/// refusal (Experiments 7-9); `lazy` scans the same log for them.
 pub(crate) const TRUST_MARKERS: &[&str] = &[
     "not been explicitly trusted",
     "certificate is not trusted",
     "Developer App Certificate",
+    "com.apple.dt.deviceprep",
+    "to Continue",
 ];
 
 /// Run `serve <device>`; blocks for the life of the driver.
@@ -27,6 +30,7 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     let store = &ctx.store;
     crate::cmd::ensure_state_dir(store)?;
     let lock = acquire_lock(store)?;
+    let term = term_flag()?;
     let device = ios::find_device(device_name)?.ok_or_else(|| {
         Failure::usage(format!(
             "unknown device {device_name:?}; run `agent-mobile devices`"
@@ -52,7 +56,7 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     );
     let url = ios::driver_url(&device, ios::DEFAULT_PORT);
     let addr = ios::driver_addr(&device, ios::DEFAULT_PORT);
-    if let Err(failure) = await_driver(&mut child, &addr, &log) {
+    if let Err(failure) = await_driver(&mut child, &addr, &url, &token, &log, &term) {
         let _ = store.remove_token(&token_file);
         return Err(failure);
     }
@@ -60,26 +64,24 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     entry.runner_pid = Some(child.pid());
     store.upsert(&device.name, &entry)?;
     store.remember_device(&device.name)?;
-    super::emit(&format!(
-        "url={url} token={token} device=\"{}\"",
-        device.name
-    ));
+    let ready = ready_line(&url, &token, &device.name, store, &token_file);
+    super::emit(&ready);
     eprintln!("driver ready on {url}");
     if let Some(app) = &ctx.app {
-        let session = Session {
-            wire: Wire::new(&url, &token),
-        };
-        let code = super::round_trip(
+        let session = Session::new(url.clone(), token);
+        let code = super::round_trip_within(
             ctx,
             &session,
             "launch",
             &serde_json::json!({ "bundle_id": app }),
+            agent_mobile_core::wire::LONG_TIMEOUT,
         )?;
         if code != 0 {
+            clear_session(store, &device.name, &token_file);
             return Ok(code);
         }
     }
-    supervise(store, &device, &mut child, lock, &token_file)
+    supervise(store, &device, &mut child, lock, &token_file, &term)
 }
 
 /// The single-instance lock; a held lock reports the live session, the port,
@@ -113,9 +115,13 @@ fn acquire_lock(store: &StateStore) -> Result<std::fs::File, Failure> {
 /// A live entry for this device means a foreign runner owns the port; a dead
 /// one is reclaimed — a serve that died without cleanup (SIGKILL, panic) may
 /// have left its runner holding the port, so the recorded owned pid gets a
-/// TERM first. A foreign listener with no entry is named with the port, the
-/// device, and the remedy (KTD7, KTD8, KTD17).
+/// TERM first. A bound port with no live entry can still be ours: another
+/// device's dead serve may have orphaned a runner holding it, so dead
+/// entries across every device are swept before the port is called foreign.
+/// A foreign listener is named with the port, the device, and the remedy
+/// (KTD7, KTD8, KTD17).
 fn reclaim_or_conflict(store: &StateStore, device: &ios::Device) -> Result<(), Failure> {
+    let addr = ios::driver_addr(device, ios::DEFAULT_PORT);
     if let Some(entry) = store.entry(&device.name) {
         if agent_mobile_core::process::pid_alive(entry.pid) {
             return Err(Failure::local(
@@ -126,16 +132,18 @@ fn reclaim_or_conflict(store: &StateStore, device: &ios::Device) -> Result<(), F
                 "use the live session, or `kill` its pid to stop it",
             ));
         }
-        if let Some(rpid) = entry.runner_pid
-            && agent_mobile_core::process::pid_alive(rpid)
-            && agent_mobile_core::process::terminate_runner(rpid)
-        {
-            let _ = agent_mobile_core::process::await_exit(rpid, Duration::from_secs(5));
-        }
-        store.remove(&device.name)?;
-        store.remove_token(&entry.token_file)?;
+        reap_entry(store, &device.name, &entry);
     }
-    if tcp_ready(&ios::driver_addr(device, ios::DEFAULT_PORT)) {
+    if !tcp_ready(&addr) {
+        return Ok(());
+    }
+    let state = store.load();
+    for (name, entry) in &state.devices {
+        if name != &device.name && !agent_mobile_core::process::pid_alive(entry.pid) {
+            reap_entry(store, name, entry);
+        }
+    }
+    if tcp_ready(&addr) {
         return Err(Failure::local(
             format!(
                 "port {} for {} is already bound by another process",
@@ -151,19 +159,81 @@ fn reclaim_or_conflict(store: &StateStore, device: &ios::Device) -> Result<(), F
     Ok(())
 }
 
+/// The one-time ready line. The bearer token only prints to a real terminal —
+/// under lazy boot stdout is the append-mode driver log, and secrets do not
+/// land there; a piped run points at the token file instead.
+fn ready_line(
+    url: &str,
+    token: &str,
+    device: &str,
+    store: &StateStore,
+    token_file: &str,
+) -> String {
+    if std::io::stdout().is_terminal() {
+        format!("url={url} token={token} device=\"{device}\"")
+    } else {
+        format!(
+            "url={url} device=\"{device}\" token_file={}",
+            store.token_path(token_file).display()
+        )
+    }
+}
+
+/// Reap a dead session's orphaned runner, then drop the entry and token.
+fn reap_entry(store: &StateStore, device: &str, entry: &SessionEntry) {
+    if let Some(rpid) = entry.runner_pid
+        && agent_mobile_core::process::pid_alive(rpid)
+        && agent_mobile_core::process::terminate_runner(rpid)
+    {
+        let _ = agent_mobile_core::process::await_exit(rpid, Duration::from_secs(5));
+    }
+    let _ = store.remove(device);
+    let _ = store.remove_token(&entry.token_file);
+}
+
 /// Poll the port, the log tail, and the child until one settles; `Ok` means
-/// the port accepts TCP and the driver is serving. `addr` resolves once —
-/// mDNS lookups are the expensive part of every poll — and retries only
-/// while resolution itself is failing.
-fn await_driver(child: &mut ServeChild, addr: &str, log: &Path) -> Result<(), Failure> {
+/// the freshly minted token got a `status` reply — a bare TCP accept is not
+/// enough, since a foreign listener could hold the port instead. A listener
+/// that answers the protocol but rejects our token, or answers with HTTP we
+/// cannot parse, is a squatter and fails fast; only transport-level silence
+/// keeps polling. `addr` resolves once — mDNS lookups are the expensive part
+/// of every poll — and retries only while resolution itself is failing.
+fn await_driver(
+    child: &mut ServeChild,
+    addr: &str,
+    url: &str,
+    token: &str,
+    log: &Path,
+    term: &std::sync::atomic::AtomicBool,
+) -> Result<(), Failure> {
     use std::net::{SocketAddr, ToSocketAddrs};
+    use std::sync::atomic::Ordering;
     let deadline = Instant::now() + BOOT_BUDGET;
+    let probe = Wire::with_timeout(url, token, Duration::from_secs(3));
     let mut addrs: Option<Vec<SocketAddr>> = addr.to_socket_addrs().ok().map(Iterator::collect);
     while Instant::now() < deadline {
+        if term.load(Ordering::Relaxed) {
+            return Err(Failure::local(
+                "interrupted during driver boot",
+                "rerun `serve` to start the driver again",
+            ));
+        }
         if let Some(list) = &addrs
             && agent_mobile_core::process::tcp_ready_at(list)
         {
-            return Ok(());
+            match probe.call("status", &serde_json::json!({})) {
+                Ok(env) if env.ok => return Ok(()),
+                Ok(_) | Err(Failure::Local { .. } | Failure::Driver { .. }) => {
+                    return Err(Failure::local(
+                        format!("{addr} is held by a service that is not this driver"),
+                        format!(
+                            "find the owner with `lsof -i :{}` and stop it, then retry `serve`",
+                            ios::DEFAULT_PORT
+                        ),
+                    ));
+                }
+                Err(_) => {}
+            }
         }
         if addrs.is_none() {
             addrs = addr.to_socket_addrs().ok().map(Iterator::collect);
@@ -171,9 +241,9 @@ fn await_driver(child: &mut ServeChild, addr: &str, log: &Path) -> Result<(), Fa
         let out = child.new_output();
         if TRUST_MARKERS.iter().any(|m| out.contains(m)) {
             return Err(Failure::local(
-                "the development certificate is not trusted on the device",
-                "on the device: Settings > General > VPN & Device Management > \
-                 trust your Developer App certificate, then rerun `serve`",
+                "the device refused the runner: certificate untrusted or device locked",
+                "unlock the device and trust the Developer App certificate under \
+                 Settings > General > VPN & Device Management, then rerun `serve`",
             ));
         }
         if matches!(child.try_wait(), Ok(Some(_))) {
@@ -186,7 +256,7 @@ fn await_driver(child: &mut ServeChild, addr: &str, log: &Path) -> Result<(), Fa
     }
     Err(Failure::local(
         format!(
-            "the driver did not bind {addr} within {}s",
+            "the driver did not answer {addr} within {}s",
             BOOT_BUDGET.as_secs()
         ),
         format!("check the log at {} and retry `serve`", log.display()),
@@ -202,8 +272,8 @@ fn supervise(
     child: &mut ServeChild,
     _lock: std::fs::File,
     token_file: &str,
+    term: &std::sync::atomic::AtomicBool,
 ) -> Result<i32, Failure> {
-    let term = term_flag()?;
     let status = loop {
         if term.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = child.kill();

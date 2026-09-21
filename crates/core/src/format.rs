@@ -22,15 +22,15 @@ pub fn render(env: &Envelope) -> Cow<'_, str> {
             };
             Cow::Owned(format!(
                 "app={} device=\"{}\" os={} snapshot={} elapsed_ms={}",
-                s.app,
-                s.device,
-                s.os,
+                clean(&s.app),
+                clean(&s.device),
+                clean(&s.os),
                 snap,
                 elapsed(env)
             ))
         }
         Some(Data::Terminate(t)) => Cow::Owned(format!(
-            "terminated={} app=com.apple.springboard elapsed_ms={}",
+            "terminated={} elapsed_ms={}",
             t.terminated,
             elapsed(env)
         )),
@@ -62,10 +62,23 @@ fn elapsed(env: &Envelope) -> String {
         .map_or_else(|| "-".to_owned(), |v| v.to_string())
 }
 
+/// Replace control characters in app-controlled strings so a hostile or
+/// buggy label cannot inject escape sequences into the terminal.
+fn clean(s: &str) -> Cow<'_, str> {
+    if s.chars().all(|c| !c.is_control()) {
+        return Cow::Borrowed(s);
+    }
+    Cow::Owned(
+        s.chars()
+            .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+            .collect(),
+    )
+}
+
 fn render_snapshot(env: &Envelope, snap: &Snapshot) -> String {
     let mut out = format!(
         "app={} snapshot=@{} refs={} settled={} reads={} elapsed_ms={}",
-        snap.app,
+        clean(&snap.app),
         snap.snapshot_id,
         snap.ref_count,
         snap.settled,
@@ -96,7 +109,7 @@ fn walk(node: &Node, printed_depth: usize, out: &mut String) {
         let value = if node.value.is_empty() {
             String::new()
         } else {
-            format!(" value=\"{}\"", node.value)
+            format!(" value=\"{}\"", clean(&node.value))
         };
         let states = if node.states.is_empty() {
             String::new()
@@ -107,7 +120,7 @@ fn walk(node: &Node, printed_depth: usize, out: &mut String) {
             "{indent}{} {} \"{}\"{} at={},{} size={}x{}{}\n",
             node.ref_id,
             node.role,
-            node.name,
+            clean(&node.name),
             value,
             trunc(node.bounds.x),
             trunc(node.bounds.y),

@@ -97,6 +97,12 @@ def forbidden_comments(source):
             code_on_line = False if "\n" in source[cursor:end] else code_on_line
             cursor = end
             continue
+        if source[cursor] == "'":
+            match = re.match(r"'(?:\\.|[^'\\])'", source[cursor:])
+            if match:
+                cursor += match.end()
+                code_on_line = True
+                continue
         character = source[cursor]
         if character == "\n":
             line += 1
@@ -121,6 +127,8 @@ def long_doc_comments(source, limit=DOC_LINE_LIMIT):
                 run_start = number
             run_length += 1
             continue
+        if not stripped or stripped.startswith("#"):
+            continue
         if run_start is not None and run_length > limit:
             findings.append((run_start, f"doc comment of {run_length} lines (limit {limit})"))
         run_start = None
@@ -137,6 +145,15 @@ def _body_after(source, start):
     depth = 0
     cursor = open_brace
     while cursor < len(source):
+        string_end = raw_string_end(source, cursor) or quoted_string_end(source, cursor)
+        if string_end is not None:
+            cursor = string_end
+            continue
+        if source[cursor] == "'":
+            match = re.match(r"'(?:\\.|[^'\\])'", source[cursor:])
+            if match:
+                cursor += match.end()
+                continue
         if source[cursor] == "{":
             depth += 1
         elif source[cursor] == "}":
@@ -147,18 +164,40 @@ def _body_after(source, start):
     return source[open_brace:]
 
 
+def _code_only(source):
+    out = list(source)
+    cursor = 0
+    while cursor < len(source):
+        end = raw_string_end(source, cursor) or quoted_string_end(source, cursor)
+        if end is None and source[cursor] == "'":
+            match = re.match(r"'(?:\\.|[^'\\])'", source[cursor:])
+            end = cursor + match.end() if match else None
+        if end is not None:
+            for i in range(cursor, end):
+                if source[i] != "\n":
+                    out[i] = " "
+            cursor = end
+            continue
+        cursor += 1
+    return "".join(out)
+
+
 def test_rules(source):
     findings = []
     for match in re.finditer(r"#\[test\]", source):
         line = source.count("\n", 0, match.start()) + 1
         head = source[match.start() : match.start() + 400]
-        body = _body_after(source, match.end())
-        asserts = "assert" in body or "return Err(" in body or "should_panic" in head
+        body = _code_only(_body_after(source, match.end()))
+        asserts = (
+            re.search(r"\bassert(?:_eq|_ne|_matches)?\s*!", body)
+            or "return Err(" in body
+            or "should_panic" in head
+        )
         if not asserts:
             findings.append((line, "test has no assertion"))
-        if "thread::sleep" in body or "time::sleep" in body:
+        if re.search(r"(?:thread|time)::sleep\s*\(", body):
             findings.append((line, "test sleeps; poll with a timeout instead"))
-    for match in re.finditer(r"#\[ignore\]", source):
+    for match in re.finditer(r"#\[ignore\](?!\s*=)", source):
         line = source.count("\n", 0, match.start()) + 1
         findings.append((line, "#[ignore] needs a reason: #[ignore = \"why\"]"))
     return findings

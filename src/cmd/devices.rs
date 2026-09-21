@@ -7,7 +7,11 @@ use agent_mobile_core::state::StateStore;
 
 /// Run `devices`; pure discovery, never touches the wire.
 pub fn run(json: bool) -> Result<i32, Failure> {
-    let devices = ios::list_devices()?;
+    let scan = ios::list_devices()?;
+    for note in &scan.notes {
+        eprintln!("note: {note}");
+    }
+    let devices = scan.devices;
     let state = StateStore::new().map(|s| s.load()).unwrap_or_default();
     if json {
         let out: Vec<serde_json::Value> = devices

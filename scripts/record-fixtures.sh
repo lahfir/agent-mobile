@@ -12,14 +12,28 @@ URL="${AGENT_MOBILE_URL:-http://127.0.0.1:8770}"
 : "${AGENT_MOBILE_TOKEN:?set AGENT_MOBILE_TOKEN for the running driver}"
 mkdir -p "$OUT"
 
+# The bearer travels in a header read from a private temp file; an
+# -H "Authorization: ..." argv entry would expose it to `ps` for every
+# local user while the curl runs.
+AUTH_HDR=$(mktemp -t am-auth)
+trap 'rm -f "$AUTH_HDR" /tmp/am-fixture-body /tmp/am-fixture-status' EXIT
+printf 'Authorization: Bearer %s\n' "$AGENT_MOBILE_TOKEN" > "$AUTH_HDR"
+
 post() { # post <verb> <json> [token] [version] -> body on stdout, status via $STATUS
-    local verb="$1" body="${2:-"{}"}" token="${3:-$AGENT_MOBILE_TOKEN}" ver="${4:-1}"
+    local verb="$1" body="${2:-"{}"}" token="${3:-}" ver="${4:-1}"
+    local hdr="$AUTH_HDR" own_hdr=""
+    if [ -n "$token" ]; then
+        own_hdr=$(mktemp -t am-auth-override)
+        printf 'Authorization: Bearer %s\n' "$token" > "$own_hdr"
+        hdr="$own_hdr"
+    fi
     curl -s -m 60 -o /tmp/am-fixture-body -w '%{http_code}' \
         -X POST "$URL/$verb" \
-        -H "Authorization: Bearer $token" \
+        -H @"$hdr" \
         -H "X-Agent-Mobile-Version: $ver" \
         -H "Content-Type: application/json" \
         -d "$body" > /tmp/am-fixture-status
+    [ -n "$own_hdr" ] && rm -f "$own_hdr"
     STATUS=$(cat /tmp/am-fixture-status)
     cat /tmp/am-fixture-body
 }

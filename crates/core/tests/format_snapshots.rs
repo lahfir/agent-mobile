@@ -2,7 +2,6 @@
 //! must equal the driver's own text mode byte-for-byte, and redactions keep
 //! dynamic values (snapshot ids, timings, ports, paths) out of snapshots.
 
-use agent_mobile_core::b64;
 use agent_mobile_core::contract::{Envelope, Ref, trim_snapshot};
 use agent_mobile_core::error::{EXIT_USAGE, Failure};
 use agent_mobile_core::format::{render, screenshot_written};
@@ -179,7 +178,9 @@ fn screenshot_decodes_and_file_line_counts_bytes() -> Result<(), Failure> {
     else {
         return Err(fail("expected Screenshot data"));
     };
-    let bytes = b64::decode(&shot.png_base64)?;
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &shot.png_base64)
+            .map_err(|e| fail(&format!("fixture screenshot: {e}")))?;
     assert_eq!(&bytes[..4], &[0x89, 0x50, 0x4E, 0x47], "PNG magic expected");
     assert_eq!(render(&env), shot.png_base64);
     let line = screenshot_written("/tmp/shot.png", bytes.len());

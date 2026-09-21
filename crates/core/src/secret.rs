@@ -52,3 +52,47 @@ pub fn write_secret(path: &Path, contents: &str) -> Result<(), Failure> {
         )
     })
 }
+
+/// Deterministic token-file name for a device: lowercased ASCII
+/// alphanumerics with `-` elsewhere, plus a short FNV-1a tag so two
+/// names that sanitize identically cannot share a token file.
+#[must_use]
+pub fn token_file_name(device: &str) -> String {
+    let stem: String = device
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in device.bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{stem}-{:08x}", hash & 0xffff_ffff)
+}
+
+/// Is `name` a safe token-file basename? Anything else — path separators,
+/// dots-up traversal, empties — must not steer reads outside `tokens/`.
+///
+/// # Errors
+/// Returns [`Failure::Local`] when the name is invalid.
+pub fn validate_token_file_name(name: &str) -> Result<(), Failure> {
+    let ok = !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(Failure::local(
+            format!("invalid token file name {name:?}"),
+            "use the session store API to mint token file names",
+        ))
+    }
+}

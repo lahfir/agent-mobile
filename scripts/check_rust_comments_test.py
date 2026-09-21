@@ -17,11 +17,29 @@ class CommentRules(unittest.TestCase):
     def test_slashes_inside_strings_pass(self):
         self.assertEqual(forbidden_comments('let u = "http://x/y"; let r = r#"//"#;\n'), [])
 
+    def test_char_literal_does_not_swallow_a_trailing_comment(self):
+        self.assertEqual(
+            forbidden_comments("let q = '\"'; // tail\n"),
+            [(1, "end-of-line comments are forbidden")],
+        )
+
+    def test_char_literals_and_lifetimes_pass(self):
+        src = "let a = 'x'; let b = '\\n'; fn f<'a>(s: &'a str) -> &'a str { s }\n"
+        self.assertEqual(forbidden_comments(src), [])
+
     def test_doc_of_fifteen_lines_passes(self):
         self.assertEqual(long_doc_comments("/// x\n" * 15 + "fn a() {}\n"), [])
 
     def test_doc_of_sixteen_lines_fails(self):
         self.assertEqual(long_doc_comments("/// x\n" * 16 + "fn a() {}\n"), [(1, "doc comment of 16 lines (limit 15)")])
+
+    def test_doc_run_split_by_attribute_still_counts(self):
+        src = "/// x\n" * 10 + "#[cfg(unix)]\n" + "/// x\n" * 10 + "fn a() {}\n"
+        self.assertEqual(long_doc_comments(src), [(1, "doc comment of 20 lines (limit 15)")])
+
+    def test_doc_run_across_blank_lines_counts(self):
+        src = "/// x\n" * 10 + "\n" + "/// x\n" * 10 + "fn a() {}\n"
+        self.assertEqual(long_doc_comments(src), [(1, "doc comment of 20 lines (limit 15)")])
 
 
 class TestRules(unittest.TestCase):
@@ -44,6 +62,18 @@ class TestRules(unittest.TestCase):
 
     def test_sleep_inside_a_string_is_not_a_sleeping_test(self):
         body = '#[test]\nfn a() { cmd.args(["-c", "sleep 30"]); assert!(x); }\n'
+        self.assertEqual(test_rules(body), [])
+
+    def test_assertion_inside_a_string_does_not_count(self):
+        body = '#[test]\nfn a() { let s = "assert!(x)"; }\n'
+        self.assertEqual(test_rules(body), [(1, "test has no assertion")])
+
+    def test_sleep_call_inside_a_string_does_not_count(self):
+        body = '#[test]\nfn a() { let s = "thread::sleep(d)"; assert!(x); }\n'
+        self.assertEqual(test_rules(body), [])
+
+    def test_brace_inside_char_literal_does_not_hide_the_body(self):
+        body = '#[test]\nfn a() { let c = \'{\'; assert!(x); }\n'
         self.assertEqual(test_rules(body), [])
 
     def test_bare_ignore_fails(self):

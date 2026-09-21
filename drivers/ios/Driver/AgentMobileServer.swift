@@ -14,16 +14,22 @@ final class Driver {
     var snapId = ""
     var refs: [String: Ident] = [:]
     var seq = 0
-    var lastHash: Int?
+    var lastRead: (h: Int, at: Date)?
     var appCache: [String: XCUIApplication] = [:]
 
-    func app() -> XCUIApplication {
-        if let a = appCache[bundle] { return a }
-        let a = XCUIApplication(bundleIdentifier: bundle)
+    func app() -> XCUIApplication { app(bundle) }
+
+    func app(_ bundleId: String) -> XCUIApplication {
+        if let a = appCache[bundleId] { return a }
+        let a = XCUIApplication(bundleIdentifier: bundleId)
         let setter = NSSelectorFromString("setIdleAnimationWaitEnabled:")
         if a.responds(to: setter) { a.setValue(false, forKey: "idleAnimationWaitEnabled") }
-        appCache[bundle] = a
+        appCache[bundleId] = a
         return a
+    }
+
+    func newSnapId() -> String {
+        String(UInt64.random(in: 0...UInt64.max), radix: 36).prefix(8).description
     }
 
     // XCTest waits for app idle inside every interaction — unbounded, ~1 s in
@@ -45,7 +51,7 @@ final class Driver {
                     method_setImplementation(m, imp)
                     patched += 1
                 } else if name.hasPrefix("_notifyWhen"), name.hasSuffix("Idle:"),
-                          Driver.argc(m) == 1, Driver.encoding(of: m, at: 2).hasPrefix("@") {
+                          Driver.argc(m) == 1, Driver.encoding(of: m, at: 2) == "@?" {
                     let fireNow: @convention(block) (AnyObject, AnyObject) -> Void = { _, cb in
                         (unsafeBitCast(cb, to: (@convention(block) () -> Void).self))()
                     }
@@ -69,20 +75,22 @@ final class Driver {
             let confSel = NSSelectorFromString("setImplicitEventConfirmationIntervalForCurrentContext:")
             if let sm = class_getClassMethod(cls, sessSel),
                let cm = class_getInstanceMethod(cls, confSel) {
-                typealias ObjFn = @convention(c) (AnyObject, Selector) -> AnyObject
+                typealias ObjOptFn = @convention(c) (AnyObject, Selector) -> AnyObject?
                 typealias VoidDblFn = @convention(c) (AnyObject, Selector, Double) -> Void
-                let sess = unsafeBitCast(method_getImplementation(sm), to: ObjFn.self)(cls, sessSel)
-                unsafeBitCast(method_getImplementation(cm), to: VoidDblFn.self)(sess, confSel, 0)
-                NSLog("agent-mobile: implicit event confirmation interval zeroed")
+                if let sess = unsafeBitCast(method_getImplementation(sm), to: ObjOptFn.self)(cls, sessSel) {
+                    unsafeBitCast(method_getImplementation(cm), to: VoidDblFn.self)(sess, confSel, 0)
+                    NSLog("agent-mobile: implicit event confirmation interval zeroed")
+                }
             }
         }
     }
 
     /// A no-op IMP for a `void` method whose args are all BOOLs. The block
-    /// trampoline marshals arguments by signature, so arity must match or the
-    /// call forwards into a crash.
+    /// trampoline marshals arguments by signature, so arity AND the return
+    /// type must match or the call forwards into a crash.
     static func noopImp(_ m: Method) -> IMP? {
-        guard (0..<argc(m)).allSatisfy({ encoding(of: m, at: $0 + 2) == "B" }) else { return nil }
+        guard returnEncoding(m) == "v",
+              (0..<argc(m)).allSatisfy({ encoding(of: m, at: $0 + 2) == "B" }) else { return nil }
         switch argc(m) {
         case 0:
             let b: @convention(block) (AnyObject) -> Void = { _ in }
@@ -115,19 +123,47 @@ final class Driver {
         return String(cString: p)
     }
 
+    /// Does `m` carry exactly `args` (in order, after self/_cmd) and return
+    /// `ret`? Private-API calls bitcast IMPs to fixed signatures; verifying
+    /// the encoding first turns drift into a graceful fallback.
+    static func sig(_ m: Method, _ args: [String], _ ret: String) -> Bool {
+        argc(m) == args.count
+            && returnEncoding(m) == ret
+            && args.enumerated().allSatisfy { encoding(of: m, at: $0.offset + 2) == $0.element }
+    }
+
     func handle(_ cmd: String, _ p: [String: Any]) throws -> [String: Any] {
         switch cmd {
         case "status":
             return ["app": bundle, "snapshot_id": snapId, "device": UIDevice.current.name, "os": UIDevice.current.systemVersion]
         case "launch":
-            bundle = try str(p, "bundle_id"); app().launch(); return try settledSnapshot()
-        case "activate":
-            bundle = try str(p, "bundle_id"); app().activate(); return try settledSnapshot()
-        case "terminate":
-            let old = bundle; app().terminate(); bundle = "com.apple.springboard"; return ["terminated": old]
-        case "snapshot":
-            if let b = p["app"] as? String { bundle = b }
+            let b = try str(p, "bundle_id")
+            let a = app(b)
+            a.launch()
+            guard a.state == .runningForeground else {
+                throw DrvError(code: "DRIVER_ERROR", msg: "launch of \(b) did not reach the foreground")
+            }
+            bundle = b
             return try settledSnapshot()
+        case "activate":
+            let b = try str(p, "bundle_id")
+            app(b).activate()
+            bundle = b
+            return try settledSnapshot()
+        case "terminate":
+            guard bundle != "com.apple.springboard" else {
+                throw DrvError(code: "BAD_REQUEST", msg: "no active app to terminate")
+            }
+            let old = bundle
+            app().terminate()
+            bundle = "com.apple.springboard"
+            snapId = newSnapId(); refs = [:]; seq = 0; lastRead = nil
+            return ["terminated": old]
+        case "snapshot":
+            let target = p["app"] == nil ? bundle : try str(p, "app")
+            let out = try settledSnapshot(target: target)
+            bundle = target
+            return out
         case "tap":
             if let x = p["x"] as? Double, let y = p["y"] as? Double {
                 let pt = CGPoint(x: x, y: y)
@@ -135,21 +171,22 @@ final class Driver {
                 return try settledSnapshot()
             }
             let t0 = Date()
-            let (f, h) = try resolve(p["ref"])
+            let (f, base) = try resolve(p["ref"])
             let t1 = Date()
             let pt = CGPoint(x: f.midX, y: f.midY)
             if !fastTap(pt) { point(pt).tap() }
             NSLog("agent-mobile: tap resolve=%dms synth=%dms", Int(t1.timeIntervalSince(t0) * 1000), Int(Date().timeIntervalSince(t1) * 1000))
-            return try settledSnapshot(baseline: h)
+            return try settledSnapshot(baseline: base)
         case "type":
-            var h: Int? = nil
+            let text = try str(p, "text")
+            var base: (h: Int, at: Date)? = nil
             if p["ref"] != nil {
                 let (f, rh) = try resolve(p["ref"])
                 let pt = CGPoint(x: f.midX, y: f.midY)
                 if !fastTap(pt) { point(pt).tap() }
-                h = rh
+                base = rh
             }
-            app().typeText(try str(p, "text")); return try settledSnapshot(baseline: h)
+            app().typeText(text); return try settledSnapshot(baseline: base)
         case "swipe":
             let dir = try str(p, "direction")
             guard ["up", "down", "left", "right"].contains(dir) else {
@@ -191,13 +228,13 @@ final class Driver {
         let recSel = NSSelectorFromString("initWithName:interfaceOrientation:")
         let addSel = NSSelectorFromString("addPointerEventPath:")
         let synthSel = NSSelectorFromString("synthesizeWithError:")
-        guard let allocM = class_getClassMethod(pathCls, allocSel),
-              let recAllocM = class_getClassMethod(recCls, allocSel),
-              let initM = class_getInstanceMethod(pathCls, initSel),
-              let liftM = class_getInstanceMethod(pathCls, liftSel),
-              let recM = class_getInstanceMethod(recCls, recSel),
-              let addM = class_getInstanceMethod(recCls, addSel),
-              let synthM = class_getInstanceMethod(recCls, synthSel) else { return false }
+        guard let allocM = class_getClassMethod(pathCls, allocSel), Driver.sig(allocM, [], "@"),
+              let recAllocM = class_getClassMethod(recCls, allocSel), Driver.sig(recAllocM, [], "@"),
+              let initM = class_getInstanceMethod(pathCls, initSel), Driver.sig(initM, ["{CGPoint=dd}", "d"], "@"),
+              let liftM = class_getInstanceMethod(pathCls, liftSel), Driver.sig(liftM, ["d"], "v"),
+              let recM = class_getInstanceMethod(recCls, recSel), Driver.sig(recM, ["@", "q"], "@"),
+              let addM = class_getInstanceMethod(recCls, addSel), Driver.sig(addM, ["@"], "v"),
+              let synthM = class_getInstanceMethod(recCls, synthSel), Driver.sig(synthM, ["^@"], "B") else { return false }
         typealias ObjFn = @convention(c) (AnyObject, Selector) -> AnyObject
         typealias TouchFn = @convention(c) (AnyObject, Selector, CGPoint, Double) -> AnyObject
         typealias VoidDblFn = @convention(c) (AnyObject, Selector, Double) -> Void
@@ -243,9 +280,10 @@ final class Driver {
     // Per-snapshot qualified refs; re-resolve on every action and fail loudly.
     // One fresh tree read is walked in-process for (type, identifier, label,
     // frame ±1 pt) instead of a predicate query that XCTest evaluates twice;
-    // the caller acts on the matched frame's coordinates. The read's hash is
-    // returned so the settle check can count it as the first consecutive read.
-    func resolve(_ any: Any?) throws -> (frame: CGRect, hash: Int) {
+    // the caller acts on the matched frame's coordinates. The read's hash and
+    // timestamp are returned so the settle check can count it as the first
+    // consecutive read only when it is old enough to prove an interval.
+    func resolve(_ any: Any?) throws -> (frame: CGRect, read: (h: Int, at: Date)) {
         guard let ref = any as? String else { throw DrvError(code: "BAD_REQUEST", msg: "ref required") }
         let parts = ref.split(separator: ":")
         guard parts.count == 2, String(parts[0].dropFirst()) == snapId else {
@@ -253,6 +291,7 @@ final class Driver {
         }
         guard let id = refs[ref] else { throw DrvError(code: "STALE_REF", msg: "unknown ref \(ref)") }
         let snap = try app().snapshot()
+        let at = Date()
         var n = 0; var frame = CGRect.zero
         func walk(_ node: XCUIElementSnapshot) {
             if node.elementType == id.type, node.identifier == id.id, node.label == id.label,
@@ -262,7 +301,7 @@ final class Driver {
         walk(snap)
         if n == 0 { throw DrvError(code: "STALE_REF", msg: "\(ref) no longer matches a live element; re-snapshot") }
         if n > 1 { throw DrvError(code: "AMBIGUOUS_TARGET", msg: "\(ref) matches \(n) live elements; re-snapshot") }
-        return (frame, hash(snap))
+        return (frame, (hash(snap), at))
     }
 
     static func close(_ a: CGRect, _ b: CGRect) -> Bool {
@@ -270,27 +309,31 @@ final class Driver {
     }
 
     // Two-read tree-hash idle check with a finite cap (Apple's own quiescence
-    // wait is unbounded). `baseline` donates an already-taken read — the
-    // action's own resolve read, or the last served snapshot's hash — as the
-    // first of the two consecutive reads, so an action that leaves the tree
-    // unchanged settles in one read.
-    func settledSnapshot(timeout: TimeInterval = 3, baseline: Int? = nil) throws -> [String: Any] {
-        let a = app()
+    // wait is unbounded). Reads are spaced by at least `gap` — two matching
+    // hashes taken microseconds apart prove nothing. `baseline` donates an
+    // already-taken read (the action's own resolve read, or the last served
+    // snapshot) as the first of the pair, but only counts when it is at
+    // least `gap` old; a fresher donation just becomes the first poll read.
+    func settledSnapshot(timeout: TimeInterval = 3, baseline: (h: Int, at: Date)? = nil, target: String? = nil) throws -> [String: Any] {
+        let gap: TimeInterval = 0.15
+        let a = app(target ?? bundle)
         let deadline = Date().addingTimeInterval(timeout)
-        var snap = try a.snapshot(); var reads = 1; var h = hash(snap)
-        var settled = h == (baseline ?? lastHash)
+        var snap = try a.snapshot(); var reads = 1; var h = hash(snap); var at = Date()
+        var settled = (baseline ?? lastRead).map { $0.h == h && at.timeIntervalSince($0.at) >= gap } ?? false
         while !settled, Date() < deadline {
+            let wait = gap - Date().timeIntervalSince(at)
+            if wait > 0 { usleep(UInt32(wait * 1_000_000)) }
             let s2 = try a.snapshot(); reads += 1
-            let h2 = hash(s2); snap = s2
+            let h2 = hash(s2); let at2 = Date(); snap = s2
             if h2 == h { settled = true }
-            h = h2
+            h = h2; at = at2
         }
-        lastHash = h
-        snapId = String(UInt64.random(in: 0...UInt64.max), radix: 36).prefix(8).description
+        lastRead = (h, at)
+        snapId = newSnapId()
         refs = [:]; seq = 0
         var lines: [String] = []
         let tree = build(snap, pdepth: 0, lines: &lines)
-        return ["app": bundle, "snapshot_id": snapId, "ref_count": seq, "complete": true, "settled": settled,
+        return ["app": target ?? bundle, "snapshot_id": snapId, "ref_count": seq, "complete": true, "settled": settled,
                 "reads": reads, "text": lines.joined(separator: "\n"), "tree": tree]
     }
 
@@ -356,8 +399,8 @@ final class Driver {
 
     static func actions(_ t: XCUIElement.ElementType) -> [String] {
         switch t {
-        case .textField, .secureTextField, .textView, .searchField: return ["Tap", "Type", "Clear"]
-        case .`switch`, .toggle, .checkBox: return ["Tap", "Toggle"]
+        case .textField, .secureTextField, .textView, .searchField: return ["Tap", "Type"]
+        case .`switch`, .toggle, .checkBox: return ["Tap"]
         case .button, .cell, .link, .key, .menuItem, .tab, .radioButton, .stepper, .segmentedControl, .datePicker, .pickerWheel, .slider: return ["Tap"]
         case .scrollView, .table, .collectionView: return ["Swipe"]
         default: return []
@@ -385,7 +428,10 @@ final class HTTPServer {
         addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = inet_addr(bindAddr)  // 127.0.0.1 on the simulator; 0.0.0.0 on a physical device so the host reaches it over Wi-Fi
         let rc = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
-        guard rc == 0, listen(fd, 8) == 0 else { NSLog("agent-mobile: bind/listen failed errno=%d", errno); return }
+        guard rc == 0, listen(fd, 8) == 0 else {
+            NSLog("agent-mobile: bind/listen failed errno=%d — exiting so the launcher reports a dead driver", errno)
+            exit(1)
+        }
         NSLog("agent-mobile: listening on %@:%d", bindAddr, Int(port))
         while true {
             let c = accept(fd, nil, nil)
@@ -395,10 +441,16 @@ final class HTTPServer {
     }
 
     func serve(_ c: Int32) {
+        // One stalled client must not wedge the serial accept loop: bound the
+        // socket's own reads and writes, and cap header and body sizes.
+        var tv = timeval(tv_sec: 10, tv_usec: 0)
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         let terminator = Data("\r\n\r\n".utf8)
         var buf = Data(); var chunk = [UInt8](repeating: 0, count: 65536)
         var headerEnd: Range<Data.Index>? = nil
         while headerEnd == nil {
+            if buf.count > 1_048_576 { return }
             let n = read(c, &chunk, chunk.count); if n <= 0 { return }
             buf.append(chunk, count: n); headerEnd = buf.range(of: terminator)
         }
@@ -409,8 +461,12 @@ final class HTTPServer {
         var headers: [String: String] = [:]
         for l in lines { if let i = l.firstIndex(of: ":") { headers[l[..<i].lowercased()] = l[l.index(after: i)...].trimmingCharacters(in: .whitespaces) } }
         let len = Int(headers["content-length"] ?? "0") ?? 0
+        guard len >= 0, len <= 16_777_216 else { return }
         var body = Data(buf[headerEnd!.upperBound...])
-        while body.count < len { let n = read(c, &chunk, chunk.count); if n <= 0 { break }; body.append(chunk, count: n) }
+        while body.count < len {
+            let n = read(c, &chunk, chunk.count); if n <= 0 { return }
+            body.append(chunk, count: n)
+        }
         let (status, obj) = handler(Request(method: String(reqLine[0]), path: String(reqLine[1]), headers: headers, body: body))
         var payload: Data; var ctype = "application/json"
         if headers["accept"] == "text/plain", let d = obj["data"] as? [String: Any], let t = d["text"] as? String {
@@ -434,6 +490,7 @@ final class AgentMobileServer: XCTestCase {
 
     func testServe() {
         continueAfterFailure = true
+        signal(SIGPIPE, SIG_IGN)
         Driver.killQuiescenceWait()
         let env = ProcessInfo.processInfo.environment
         let port = UInt16(env["AGENT_MOBILE_PORT"] ?? "") ?? 8770
@@ -445,6 +502,9 @@ final class AgentMobileServer: XCTestCase {
             let elapsed = { Int(Date().timeIntervalSince(t0) * 1000) }
             if token.isEmpty || req.headers["authorization"] != "Bearer \(token)" {
                 return (401, ["version": AgentMobileServer.protocolVersion, "ok": false, "error": ["code": "UNAUTHORIZED", "message": "Authorization: Bearer <AGENT_MOBILE_TOKEN> required"]])
+            }
+            if req.method != "POST" {
+                return (405, ["version": AgentMobileServer.protocolVersion, "ok": false, "command": cmd, "elapsed_ms": elapsed(), "error": ["code": "BAD_REQUEST", "message": "verbs are POST only"]])
             }
             if req.headers["x-agent-mobile-version"] != AgentMobileServer.protocolVersion {
                 return (409, ["version": AgentMobileServer.protocolVersion, "ok": false, "command": cmd, "elapsed_ms": elapsed(), "error": ["code": "BAD_REQUEST", "message": "X-Agent-Mobile-Version must be 1"]])

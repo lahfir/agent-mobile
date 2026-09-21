@@ -69,6 +69,43 @@ fn type_consumes_leading_ref_then_joins_text() -> Result<(), Failure> {
 }
 
 #[test]
+fn type_dash_text_passes_through_after_double_dash() -> Result<(), Failure> {
+    let home = tmp_home("type-dash")?;
+    let s = stub(&[SNAPSHOT])?;
+    let out = run_wired(&["type", "--", "-flag"], &home, &s)?;
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let captured = s.captured()?;
+    let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
+    assert_eq!(v["text"], "-flag");
+    assert!(v.get("ref").is_none());
+    Ok(())
+}
+
+#[test]
+fn type_hyphen_arg_without_escape_is_rejected() -> Result<(), Failure> {
+    let home = tmp_home("type-hyphen")?;
+    let out = run(&["type", "-flag"], &home, &[])?;
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    Ok(())
+}
+
+#[test]
+fn type_does_not_eat_trailing_global_flags() -> Result<(), Failure> {
+    let home = tmp_home("type-flags")?;
+    let s = stub(&[SNAPSHOT])?;
+    let out = run_wired(&["type", "hello", "--json"], &home, &s)?;
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let line = stdout(&out);
+    let v: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| fail(&format!("{e}: {line}")))?;
+    assert_eq!(v["ok"], true, "{v}");
+    let captured = s.captured()?;
+    let body = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
+    assert_eq!(body["text"], "hello");
+    Ok(())
+}
+
+#[test]
 fn type_at_mention_is_text_not_ref() -> Result<(), Failure> {
     let home = tmp_home("type-at")?;
     let s = stub(&[SNAPSHOT])?;
@@ -196,6 +233,45 @@ fn device_flag_is_remembered_and_routes_next_call() -> Result<(), Failure> {
     assert_eq!(captured.len(), 2, "{captured:?}");
     let state = store.load();
     assert_eq!(state.default_device.as_deref(), Some("sim"));
+    Ok(())
+}
+
+#[test]
+fn screenshot_path_and_json_conflict_is_usage_error() -> Result<(), Failure> {
+    let home = tmp_home("shot-conflict")?;
+    let out = run(&["screenshot", "/tmp/x.png", "--json"], &home, &[])?;
+    assert_eq!(code(&out), 2);
+    let line = stdout(&out);
+    let v: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| fail(&format!("{e}: {line}")))?;
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["error"]["code"], "USAGE");
+    Ok(())
+}
+
+#[test]
+fn json_mode_failures_emit_envelopes_on_stdout() -> Result<(), Failure> {
+    let home = tmp_home("json-err")?;
+    let out = run(
+        &["status", "--json"],
+        &home,
+        &[
+            ("AGENT_MOBILE_URL", "http://127.0.0.1:1"),
+            ("AGENT_MOBILE_TOKEN", "tok"),
+        ],
+    )?;
+    assert_eq!(code(&out), 1);
+    let line = stdout(&out);
+    let v: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| fail(&format!("{e}: {line}")))?;
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["version"], "1");
+    assert_eq!(v["command"], "status");
+    assert_eq!(v["error"]["code"], "DRIVER_ERROR", "{v}");
+    assert!(
+        stderr(&out).contains("next:"),
+        "stderr keeps the human render"
+    );
     Ok(())
 }
 

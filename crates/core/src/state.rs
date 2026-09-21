@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Failure;
-use crate::secret::{create_private_dirs, write_secret};
+use crate::secret::{create_private_dirs, token_file_name, validate_token_file_name, write_secret};
 
 /// State schema version; anything else loads as stale.
 const STATE_VERSION: u32 = 1;
@@ -168,6 +168,13 @@ impl StateStore {
         self.root.join("serve.lock")
     }
 
+    /// Path of the state mutation lockfile, held with `File::lock` around
+    /// every load-mutate-save cycle.
+    #[must_use]
+    pub fn state_lock_file(&self) -> PathBuf {
+        self.root.join("state.lock")
+    }
+
     /// Path of the driver log for `device` (`serve` redirects the runner's
     /// output here; failures stay visible per KTD8).
     #[must_use]
@@ -208,7 +215,9 @@ impl StateStore {
         create_private_dirs(&self.root)?;
         let body = serde_json::to_string_pretty(state)
             .map_err(|e| Failure::local(format!("cannot serialize state: {e}"), "report a bug"))?;
-        let tmp = self.root.join(".state.json.tmp");
+        let tmp = self
+            .root
+            .join(format!(".state.json.tmp.{}", std::process::id()));
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true).mode(0o600);
         {
@@ -225,14 +234,37 @@ impl StateStore {
         self.load().devices.get(device).cloned()
     }
 
+    /// Run one load-mutate-save cycle under the `state.lock` flock so
+    /// concurrent verbs cannot last-writer-wins drop each other's entries.
+    /// `f` returns whether the save is needed plus the caller's value; the
+    /// lock releases when the guard file drops.
+    ///
+    /// # Errors
+    /// Returns [`Failure::Local`] when the lock cannot be taken or the save
+    /// fails.
+    fn update<R>(&self, f: impl FnOnce(&mut State) -> (bool, R)) -> Result<R, Failure> {
+        create_private_dirs(&self.root)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(false).mode(0o600);
+        let lock = opts.open(self.state_lock_file())?;
+        lock.lock()?;
+        let mut state = self.load();
+        let (dirty, out) = f(&mut state);
+        if dirty {
+            self.save(&state)?;
+        }
+        Ok(out)
+    }
+
     /// Insert or replace the session for `device`.
     ///
     /// # Errors
     /// Returns [`Failure::Local`] when the state cannot be saved.
     pub fn upsert(&self, device: &str, entry: &SessionEntry) -> Result<(), Failure> {
-        let mut state = self.load();
-        state.devices.insert(device.to_owned(), entry.clone());
-        self.save(&state)
+        self.update(|state| {
+            state.devices.insert(device.to_owned(), entry.clone());
+            (true, ())
+        })
     }
 
     /// Drop the session for `device`; absent is not an error and skips the
@@ -241,11 +273,7 @@ impl StateStore {
     /// # Errors
     /// Returns [`Failure::Local`] when the state cannot be saved.
     pub fn remove(&self, device: &str) -> Result<(), Failure> {
-        let mut state = self.load();
-        if state.devices.remove(device).is_none() {
-            return Ok(());
-        }
-        self.save(&state)
+        self.update(|state| (state.devices.remove(device).is_some(), ()))
     }
 
     /// Remember `device` as the default for future invocations (`--device`);
@@ -254,28 +282,20 @@ impl StateStore {
     /// # Errors
     /// Returns [`Failure::Local`] when the state cannot be saved.
     pub fn remember_device(&self, device: &str) -> Result<(), Failure> {
-        let mut state = self.load();
-        if state.default_device.as_deref() == Some(device) {
-            return Ok(());
-        }
-        state.default_device = Some(device.to_owned());
-        self.save(&state)
+        self.update(|state| {
+            if state.default_device.as_deref() == Some(device) {
+                return (false, ());
+            }
+            state.default_device = Some(device.to_owned());
+            (true, ())
+        })
     }
 
-    /// Deterministic token-file name for a device: lowercased ASCII
-    /// alphanumerics, everything else as `-`.
+    /// Deterministic token-file name for a device (see
+    /// [`crate::secret::token_file_name`]).
     #[must_use]
     pub fn token_file_for(device: &str) -> String {
-        device
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '-'
-                }
-            })
-            .collect()
+        token_file_name(device)
     }
 
     /// Write a session token through the secret helper at `0o600`.
@@ -283,15 +303,19 @@ impl StateStore {
     /// # Errors
     /// Returns [`Failure::Local`] when the name is invalid or the write fails.
     pub fn write_token(&self, token_file: &str, token: &str) -> Result<(), Failure> {
-        validate_token_file(token_file)?;
+        validate_token_file_name(token_file)?;
         write_secret(&self.token_path(token_file), token)
     }
 
-    /// Read the token a session entry points at.
+    /// Read the token a session entry points at. The stored file name is
+    /// validated first — a hand-edited or corrupt state file must not be
+    /// able to steer this read outside `tokens/`.
     ///
     /// # Errors
-    /// Returns [`Failure::Local`] when the file cannot be read.
+    /// Returns [`Failure::Local`] when the name is invalid or the file
+    /// cannot be read.
     pub fn read_token(&self, entry: &SessionEntry) -> Result<String, Failure> {
+        validate_token_file_name(&entry.token_file)?;
         let raw = fs::read_to_string(self.token_path(&entry.token_file))?;
         Ok(raw.trim_end().to_owned())
     }
@@ -303,7 +327,7 @@ impl StateStore {
     /// # Errors
     /// Returns [`Failure::Local`] when the name is invalid or removal fails.
     pub fn remove_token(&self, token_file: &str) -> Result<(), Failure> {
-        validate_token_file(token_file)?;
+        validate_token_file_name(token_file)?;
         match fs::remove_file(self.token_path(token_file)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -313,6 +337,8 @@ impl StateStore {
 
     /// Resolve the endpoint for one invocation, honoring the env overrides.
     /// `None` means no usable session — the caller may lazy-start a driver.
+    /// A state entry whose recorded pid is dead resolves as absent (the file
+    /// keeps the row so `serve` can still reap its orphaned runner).
     ///
     /// # Errors
     /// Returns [`Failure::Usage`] when exactly one override var is set and no
@@ -337,7 +363,10 @@ impl StateStore {
         let name = device
             .map(String::from)
             .or_else(|| state.default_device.clone());
-        let entry = name.as_ref().and_then(|n| state.devices.get(n).cloned());
+        let entry = name
+            .as_ref()
+            .and_then(|n| state.devices.get(n).cloned())
+            .filter(|e| crate::process::pid_alive(e.pid));
         let url = env_url.or_else(|| entry.as_ref().map(|e| e.url.clone()));
         let token = env_token.or_else(|| entry.as_ref().and_then(|e| self.read_token(e).ok()));
         match (url, token) {
@@ -362,20 +391,4 @@ impl StateStore {
 
 fn env_val(key: &str) -> Option<String> {
     std::env::var(key).ok()
-}
-
-fn validate_token_file(name: &str) -> Result<(), Failure> {
-    let ok = !name.is_empty()
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_');
-    if ok {
-        Ok(())
-    } else {
-        Err(Failure::local(
-            format!("invalid token file name {name:?}"),
-            "use the session store API to mint token file names",
-        ))
-    }
 }

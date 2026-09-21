@@ -4,7 +4,7 @@
 
 use std::io::{Read, Seek, SeekFrom};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::ios;
@@ -39,7 +39,9 @@ pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
 }
 
 /// We hold the boot lock: re-check state, pick a device, spawn `serve`
-/// detached with output to the driver log, then wait for its entry.
+/// detached with output to the driver log, then wait for its entry. A
+/// timeout sends TERM first so serve's supervisor can clear state and reap
+/// the runner; SIGKILL is only for a serve that refuses.
 fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Session, Failure> {
     if let Some(s) = ctx.ready_session()? {
         return Ok(s);
@@ -60,7 +62,10 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
         .map_err(|e| Failure::local(format!("cannot spawn `serve`: {e}"), "fix and retry"))?;
     loop {
         if Instant::now() > deadline {
-            let _ = child.kill();
+            let _ = agent_mobile_core::process::terminate(child.id());
+            if !agent_mobile_core::process::await_exit(child.id(), Duration::from_secs(5)) {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             return Err(Failure::local(
                 "the driver did not come up inside the boot budget",
@@ -108,11 +113,20 @@ fn last_error_line(log_text: &str) -> String {
 /// Which device a lazy boot serves: `--device` wins, then the remembered
 /// default, then the first iPhone-shaped simulator, then any simulator,
 /// then a physical device — `devicectl` only runs when no simulator exists.
+/// A remembered UDID or stale name is healed to the canonical name here —
+/// `serve` keys the session under it and the waiter polls `resolve` through
+/// the same `default_device`, so the two must agree.
 fn pick_device(ctx: &Ctx) -> Result<String, Failure> {
     if let Some(d) = &ctx.device {
         return Ok(d.clone());
     }
     if let Some(d) = ctx.store.load().default_device {
+        if let Ok(Some(found)) = ios::find_device(&d) {
+            if found.name != d {
+                let _ = ctx.store.remember_device(&found.name);
+            }
+            return Ok(found.name);
+        }
         return Ok(d);
     }
     let sims = ios::simulators()?;

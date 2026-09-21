@@ -166,10 +166,52 @@ impl Failure {
     }
 
     /// Print the render to stderr and hand back the exit code — the pair
-    /// every error exit performs.
+    /// every error exit performs. `eprintln!` panics on a closed stderr, so
+    /// the write goes through a checked `writeln!` like stdout's `emit`.
     #[must_use]
     pub fn report(&self) -> i32 {
-        eprintln!("{}", self.render());
+        use std::io::Write as _;
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "{}", self.render());
+        let _ = err.flush();
+        self.exit_code()
+    }
+
+    /// The failure message alone, without the rendered next-action stanza.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Driver { message, .. }
+            | Self::Transport { message }
+            | Self::Usage { message }
+            | Self::Local { message, .. } => message,
+        }
+    }
+
+    /// The `--json` failure path: stdout gets an envelope-shaped failure
+    /// (`USAGE`/`LOCAL`/`DRIVER_ERROR` mark client-side failures that never
+    /// reached the driver) and stderr keeps the human render.
+    #[must_use]
+    pub fn report_json(&self, command: &str) -> i32 {
+        use std::io::Write as _;
+        let code = match self {
+            Self::Driver { code, .. } => code.as_str().to_owned(),
+            Self::Transport { .. } => ErrorCode::DriverError.as_str().to_owned(),
+            Self::Usage { .. } => "USAGE".to_owned(),
+            Self::Local { .. } => "LOCAL".to_owned(),
+        };
+        let line = serde_json::json!({
+            "version": crate::contract::PROTOCOL_VERSION,
+            "ok": false,
+            "command": command,
+            "error": { "code": code, "message": self.message() },
+        });
+        let mut out = std::io::stdout().lock();
+        if writeln!(out, "{line}").is_err() || out.flush().is_err() {
+            return 0;
+        }
+        drop(out);
+        let _ = self.report();
         self.exit_code()
     }
 

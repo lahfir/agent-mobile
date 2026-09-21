@@ -14,6 +14,16 @@ use crate::error::{ErrorCode, Failure};
 /// Default ceiling for one call; the driver has no timeout of its own.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Longer ceiling for verbs whose driver-side work can legitimately take a
+/// while — cold `launch` and `type` of long text. The driver still has no
+/// bound of its own, so this only decides when the client gives up.
+pub const LONG_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Largest reply body a driver may send before the read is cut off; a
+/// snapshot is a few hundred KB and a screenshot a few MB, so anything past
+/// this is a malfunction, not a payload.
+const MAX_REPLY: u64 = 64 << 20;
+
 /// Configured client bound to one driver base URL and bearer token.
 pub struct Wire {
     agent: ureq::Agent,
@@ -65,6 +75,7 @@ impl Wire {
         let mut buf = Vec::new();
         resp.body_mut()
             .as_reader()
+            .take(MAX_REPLY)
             .read_to_end(&mut buf)
             .map_err(|e| Failure::transport(e.to_string()))?;
         let raw = String::from_utf8(buf)

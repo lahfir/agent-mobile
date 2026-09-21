@@ -51,7 +51,9 @@ pub struct ServeChild {
 
 impl ServeChild {
     /// Spawn `cmd` with stdio redirected to `log`; the file is created
-    /// append-mode so a second serve keeps the first run's output.
+    /// append-mode so a second serve keeps the first run's output. The
+    /// output cursor starts at the file's current length — history written
+    /// by earlier runs must never replay into this one's marker scans.
     ///
     /// # Errors
     /// Returns [`Failure::Local`] when the log cannot be opened or the child
@@ -59,6 +61,7 @@ impl ServeChild {
     pub fn spawn_logged(cmd: &mut Command, log: &Path) -> Result<Self, Failure> {
         let file = open_private_log(log)?;
         let err_file = file.try_clone()?;
+        let offset = file.metadata().map(|m| m.len()).unwrap_or(0);
         let child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::from(file))
@@ -73,7 +76,7 @@ impl ServeChild {
         Ok(Self {
             child,
             log: log.to_path_buf(),
-            offset: 0,
+            offset,
         })
     }
 
@@ -150,6 +153,37 @@ impl Drop for ServeChild {
     }
 }
 
+/// Run `cmd` with piped output and a deadline; a child that outlives
+/// `timeout` is killed and reported, so a wedged probe (`xcrun simctl`,
+/// `devicectl`) cannot hang a verb forever.
+///
+/// # Errors
+/// Returns [`Failure::Local`] on spawn, wait, or timeout failures.
+pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, Failure> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(Failure::from)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait().map_err(Failure::from)?.is_some() {
+            return child.wait_with_output().map_err(Failure::from);
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Failure::local(
+                format!("`{program}` did not answer within {}s", timeout.as_secs()),
+                "run the probe yourself to see what it is waiting on",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// `/bin/kill -<flag> <pid>` with all stdio detached; `true` when the signal
 /// was delivered.
 fn signal(pid: u32, flag: &str) -> bool {
@@ -167,6 +201,14 @@ fn signal(pid: u32, flag: &str) -> bool {
 #[must_use]
 pub fn pid_alive(pid: u32) -> bool {
     signal(pid, "-0")
+}
+
+/// SIGTERM `pid` — the graceful stop for a child that owns its own cleanup
+/// (`serve` forwards it to the runner and clears session state first).
+/// Returns whether the signal was delivered.
+#[must_use]
+pub fn terminate(pid: u32) -> bool {
+    signal(pid, "-TERM")
 }
 
 /// Send SIGTERM to `pid` only when `ps` still shows it as an xcodebuild —

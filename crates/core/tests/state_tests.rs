@@ -31,7 +31,7 @@ impl Drop for TempDir {
 fn entry(url: &str) -> SessionEntry {
     SessionEntry {
         url: url.to_owned(),
-        pid: 4242,
+        pid: std::process::id(),
         token_file: "dev".to_owned(),
         runner_pid: None,
     }
@@ -163,6 +163,47 @@ fn env_url_without_token_or_state_is_usage_error() -> Result<(), Failure> {
         Err(f) => assert_eq!(f.exit_code(), EXIT_USAGE),
         Ok(_) => return Err(fail("url without token must be a usage error")),
     }
+    Ok(())
+}
+
+#[test]
+fn state_lock_serializes_mutations() -> Result<(), Failure> {
+    let tmp = TempDir::new("lock");
+    let store = StateStore::at(&tmp.0);
+    agent_mobile_core::secret::create_private_dirs(&tmp.0)?;
+    let held = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(store.state_lock_file())?;
+    held.lock()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let other = StateStore::at(&tmp.0);
+    let worker = std::thread::spawn(move || {
+        let r = other.upsert("sim", &entry("http://a:1"));
+        let _ = tx.send(());
+        r
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "a mutation must block while another process holds the state lock"
+    );
+    drop(held);
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .map_err(|_| fail("mutation never ran after the lock released"))?;
+    worker.join().map_err(|_| fail("worker panicked"))??;
+    assert!(store.entry("sim").is_some());
+    Ok(())
+}
+
+#[test]
+fn token_file_name_rejects_traversal() -> Result<(), Failure> {
+    let tmp = TempDir::new("tokname");
+    let store = StateStore::at(&tmp.0);
+    assert!(store.write_token("../escape", "t").is_err());
+    assert!(store.write_token("a/b", "t").is_err());
+    assert!(store.write_token("", "t").is_err());
     Ok(())
 }
 

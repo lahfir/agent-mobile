@@ -292,13 +292,33 @@ fn serve_child_log_appends_across_runs() -> TestResult {
 }
 
 #[test]
-fn token_file_names_sanitize() {
-    assert_eq!(
-        agent_mobile_core::state::StateStore::token_file_for("Lahfir's iPhone"),
-        "lahfir-s-iphone"
+fn spawn_logged_scans_only_bytes_written_after_the_spawn() -> TestResult {
+    let dir = tmp("log-offset")?;
+    let log = dir.join("driver.log");
+    std::fs::write(&log, "not been explicitly trusted\n")?;
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "echo fresh-line"]);
+    let mut child = ServeChild::spawn_logged(&mut cmd, &log)?;
+    let _ = child.wait();
+    let out = child.new_output();
+    assert!(out.contains("fresh-line"), "{out}");
+    assert!(
+        !out.contains("not been explicitly trusted"),
+        "stale log bytes must not replay into this run's marker scan: {out}"
     );
-    assert_eq!(
-        agent_mobile_core::state::StateStore::token_file_for("iPhone 17 Pro Max"),
-        "iphone-17-pro-max"
+    Ok(())
+}
+
+#[test]
+fn token_file_names_sanitize() {
+    let name = agent_mobile_core::state::StateStore::token_file_for("Lahfir's iPhone");
+    assert!(name.starts_with("lahfir-s-iphone-"), "{name}");
+    assert_eq!(name.len(), "lahfir-s-iphone-".len() + 8, "{name}");
+    let pro = agent_mobile_core::state::StateStore::token_file_for("iPhone 17 Pro Max");
+    assert!(pro.starts_with("iphone-17-pro-max-"), "{pro}");
+    assert_ne!(
+        agent_mobile_core::state::StateStore::token_file_for("a.b"),
+        agent_mobile_core::state::StateStore::token_file_for("a-b"),
+        "names that sanitize identically must not share a token file"
     );
 }

@@ -46,9 +46,9 @@ pub enum Command {
     },
     /// Type text; a leading ref-shaped arg taps that element first.
     Type {
-        /// Optional `@<snapshot>:e<N>` ref, then the text to type. Use `--`
-        /// before text that starts with a hyphen.
-        #[arg(num_args = 1.., allow_hyphen_values = true, value_name = "[REF] TEXT")]
+        /// Optional `@<snapshot>:e<N>` ref, then the text to type. Text that
+        /// begins with a hyphen needs `--` first: `type -- -flag`.
+        #[arg(num_args = 1.., value_name = "[REF] TEXT")]
         args: Vec<String>,
     },
     /// Swipe up, down, left, or right — on a ref, or the whole app.
@@ -75,4 +75,25 @@ pub enum Command {
     Stop,
     /// Print the one-page agent guide.
     Skills,
+}
+
+impl Command {
+    /// The verb name — for failure envelopes and ignore-notes.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Devices => "devices",
+            Self::Serve { .. } => "serve",
+            Self::Status => "status",
+            Self::Snapshot => "snapshot",
+            Self::Tap { .. } => "tap",
+            Self::Type { .. } => "type",
+            Self::Swipe { .. } => "swipe",
+            Self::Home => "home",
+            Self::Launch { .. } => "launch",
+            Self::Screenshot { .. } => "screenshot",
+            Self::Stop => "stop",
+            Self::Skills => "skills",
+        }
+    }
 }
