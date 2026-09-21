@@ -118,6 +118,14 @@ pub enum Failure {
         /// What was wrong with the invocation.
         message: String,
     },
+    /// A local failure outside the wire contract, e.g. an unwritable state
+    /// dir or a failed spawn; exits 1.
+    Local {
+        /// What failed.
+        message: String,
+        /// What to do about it.
+        next: String,
+    },
     /// The envelope `version` differs from [`PROTOCOL_VERSION`]; fatal.
     VersionMismatch {
         /// Version string the driver actually sent.
@@ -163,6 +171,15 @@ impl Failure {
         }
     }
 
+    /// Build a local (non-wire) failure with its own next action; exits 1.
+    #[must_use]
+    pub fn local(message: impl Into<String>, next: impl Into<String>) -> Self {
+        Self::Local {
+            message: message.into(),
+            next: next.into(),
+        }
+    }
+
     /// Build the fatal version-mismatch failure.
     #[must_use]
     pub fn version_mismatch(found: &str) -> Self {
@@ -176,9 +193,10 @@ impl Failure {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Usage { .. } => EXIT_USAGE,
-            Self::Driver { .. } | Self::Transport { .. } | Self::VersionMismatch { .. } => {
-                EXIT_ERROR
-            }
+            Self::Driver { .. }
+            | Self::Transport { .. }
+            | Self::Local { .. }
+            | Self::VersionMismatch { .. } => EXIT_ERROR,
         }
     }
 
@@ -198,6 +216,9 @@ impl Failure {
             Self::Usage { message } => {
                 format!("usage: {message}\nnext: fix the command line and retry")
             }
+            Self::Local { message, next } => {
+                format!("error: {message}\nnext: {next}")
+            }
             Self::VersionMismatch { found } => format!(
                 "version mismatch: driver speaks protocol \"{found}\"; \
                  this CLI requires \"{PROTOCOL_VERSION}\"\n\
@@ -205,5 +226,11 @@ impl Failure {
                  both must speak protocol version \"{PROTOCOL_VERSION}\""
             ),
         }
+    }
+}
+
+impl From<std::io::Error> for Failure {
+    fn from(e: std::io::Error) -> Self {
+        Self::local(e.to_string(), "fix the local problem and retry")
     }
 }
