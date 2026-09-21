@@ -208,24 +208,23 @@ impl Ref {
     /// # Errors
     /// Returns [`Failure::Usage`] when `s` is not a well-formed ref.
     pub fn parse(s: &str) -> Result<Self, Failure> {
-        let rest = s.strip_prefix('@').ok_or_else(|| {
-            Failure::usage(format!("ref must look like @<snapshot>:e<N>; got {s:?}"))
-        })?;
-        let (id, seq) = rest.split_once(':').ok_or_else(|| {
-            Failure::usage(format!("ref must look like @<snapshot>:e<N>; got {s:?}"))
-        })?;
+        let rest = s.strip_prefix('@').ok_or_else(|| bad_ref(s))?;
+        let (id, seq) = rest.split_once(':').ok_or_else(|| bad_ref(s))?;
         let index = seq
             .strip_prefix('e')
             .and_then(|n| n.parse::<u64>().ok())
             .filter(|_| !id.is_empty())
-            .ok_or_else(|| {
-                Failure::usage(format!("ref must look like @<snapshot>:e<N>; got {s:?}"))
-            })?;
+            .ok_or_else(|| bad_ref(s))?;
         Ok(Self {
             snapshot_id: id.to_owned(),
             index,
         })
     }
+}
+
+/// The malformed-ref usage error; one message, three rejection sites.
+fn bad_ref(s: &str) -> Failure {
+    Failure::usage(format!("ref must look like @<snapshot>:e<N>; got {s:?}"))
 }
 
 impl std::fmt::Display for Ref {
@@ -234,20 +233,25 @@ impl std::fmt::Display for Ref {
     }
 }
 
-/// Drop nodes deeper than `max_depth` (root is depth 0) and mark the snapshot
-/// incomplete; the driver always sends the full tree, so trimming is
-/// client-side (R9).
-pub fn trim_snapshot(snap: &mut Snapshot, max_depth: u32) {
-    trim_node(&mut snap.tree, max_depth, 0);
-    snap.complete = false;
+/// Drop nodes deeper than `max_depth` (root is depth 0) and mark the
+/// snapshot incomplete; the driver always sends the full tree, so trimming
+/// is client-side (R9). Returns `true` when nodes were actually pruned —
+/// the caller regenerates `snap.text` so it stays consistent with `tree`.
+pub fn trim_snapshot(snap: &mut Snapshot, max_depth: u32) -> bool {
+    let pruned = trim_node(&mut snap.tree, max_depth, 0);
+    if pruned {
+        snap.complete = false;
+    }
+    pruned
 }
 
-fn trim_node(node: &mut Node, max_depth: u32, depth: u32) {
+fn trim_node(node: &mut Node, max_depth: u32, depth: u32) -> bool {
     if depth >= max_depth {
+        let had = !node.children.is_empty();
         node.children.clear();
-        return;
+        return had;
     }
-    for child in &mut node.children {
-        trim_node(child, max_depth, depth + 1);
-    }
+    node.children.iter_mut().fold(false, |pruned, c| {
+        trim_node(c, max_depth, depth + 1) | pruned
+    })
 }

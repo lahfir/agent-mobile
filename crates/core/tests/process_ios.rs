@@ -174,7 +174,10 @@ fn prebuilt_runner_uses_test_without_building() -> TestResult {
         Some("test-without-building")
     );
     assert!(args.iter().any(|a| a == "-xctestrun"));
-    assert!(args.contains(&xctestrun.to_string_lossy().into_owned()));
+    let manifest = xctestrun
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned());
+    assert!(manifest.is_some_and(|m| args.contains(&m)));
     assert_eq!(
         env_of(&cmd, "TEST_RUNNER_AGENT_MOBILE_TOKEN").as_deref(),
         Some("tok")

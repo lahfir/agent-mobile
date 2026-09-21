@@ -1,7 +1,7 @@
 import XCTest
 import UIKit
 
-// ponytail: probe-grade driver. One never-ending test method hosts a tiny HTTP server
+// agent-mobile driver. One never-ending test method hosts a tiny HTTP server
 // (WebDriverAgent shape). XCUITest is the hidden mechanism; the agent only sees HTTP.
 // Upgrade path: JSON tree -> agent-desktop CLI wrapper; bearer token already required.
 
@@ -395,11 +395,12 @@ final class HTTPServer {
     }
 
     func serve(_ c: Int32) {
+        let terminator = Data("\r\n\r\n".utf8)
         var buf = Data(); var chunk = [UInt8](repeating: 0, count: 65536)
         var headerEnd: Range<Data.Index>? = nil
         while headerEnd == nil {
             let n = read(c, &chunk, chunk.count); if n <= 0 { return }
-            buf.append(chunk, count: n); headerEnd = buf.range(of: Data("\r\n\r\n".utf8))
+            buf.append(chunk, count: n); headerEnd = buf.range(of: terminator)
         }
         let head = String(decoding: buf[..<headerEnd!.lowerBound], as: UTF8.self)
         var lines = head.components(separatedBy: "\r\n")
@@ -429,6 +430,7 @@ final class HTTPServer {
 
 final class AgentMobileServer: XCTestCase {
     static let drv = Driver()
+    static let protocolVersion = "1"
 
     func testServe() {
         continueAfterFailure = true
@@ -440,21 +442,22 @@ final class AgentMobileServer: XCTestCase {
         let srv = HTTPServer(port: port, bindAddr: bindAddr) { req in
             let cmd = String(req.path.split(separator: "?").first ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let t0 = Date()
+            let elapsed = { Int(Date().timeIntervalSince(t0) * 1000) }
             if token.isEmpty || req.headers["authorization"] != "Bearer \(token)" {
-                return (401, ["version": "1", "ok": false, "error": ["code": "UNAUTHORIZED", "message": "Authorization: Bearer <AGENT_MOBILE_TOKEN> required"]])
+                return (401, ["version": AgentMobileServer.protocolVersion, "ok": false, "error": ["code": "UNAUTHORIZED", "message": "Authorization: Bearer <AGENT_MOBILE_TOKEN> required"]])
             }
-            if req.headers["x-agent-mobile-version"] != "1" {
-                return (409, ["version": "1", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": "BAD_REQUEST", "message": "X-Agent-Mobile-Version must be 1"]])
+            if req.headers["x-agent-mobile-version"] != AgentMobileServer.protocolVersion {
+                return (409, ["version": AgentMobileServer.protocolVersion, "ok": false, "command": cmd, "elapsed_ms": elapsed(), "error": ["code": "BAD_REQUEST", "message": "X-Agent-Mobile-Version must be 1"]])
             }
             let params = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
             return DispatchQueue.main.sync {
                 do {
                     let data = try AgentMobileServer.drv.handle(cmd, params)
-                    return (200, ["version": "1", "ok": true, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "data": data])
+                    return (200, ["version": AgentMobileServer.protocolVersion, "ok": true, "command": cmd, "elapsed_ms": elapsed(), "data": data])
                 } catch let e as DrvError {
-                    return (409, ["version": "1", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": e.code, "message": e.msg]])
+                    return (409, ["version": AgentMobileServer.protocolVersion, "ok": false, "command": cmd, "elapsed_ms": elapsed(), "error": ["code": e.code, "message": e.msg]])
                 } catch {
-                    return (500, ["version": "1", "ok": false, "command": cmd, "elapsed_ms": Int(Date().timeIntervalSince(t0) * 1000), "error": ["code": "DRIVER_ERROR", "message": "\(error)"]])
+                    return (500, ["version": AgentMobileServer.protocolVersion, "ok": false, "command": cmd, "elapsed_ms": elapsed(), "error": ["code": "DRIVER_ERROR", "message": "\(error)"]])
                 }
             }
         }

@@ -21,7 +21,7 @@ use serde_json::Value;
 use agent_mobile_core::contract::{Data, Envelope, trim_snapshot};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::format;
-use agent_mobile_core::state::{StateStore, URL_ENV};
+use agent_mobile_core::state::StateStore;
 use agent_mobile_core::wire::Wire;
 
 use crate::cli::{Cli, Command};
@@ -72,30 +72,26 @@ impl Ctx {
     /// for `serve` to reclaim: its `runner_pid` reaps any orphaned runner
     /// still holding the port (KTD7).
     fn ready_session(&self) -> Result<Option<Session>, Failure> {
-        let Some(ep) = self.store.resolve(self.device.as_deref())? else {
+        let Some(r) = self.store.resolve(self.device.as_deref())? else {
             return Ok(None);
         };
-        let env_pinned = std::env::var(URL_ENV).is_ok();
-        let entry = if env_pinned {
-            None
-        } else {
-            ep.device.as_deref().and_then(|d| self.store.entry(d))
-        };
-        if let Some(e) = &entry
+        if let Some(e) = &r.entry
             && !agent_mobile_core::process::pid_alive(e.pid)
         {
             return Ok(None);
         }
         Ok(Some(Session {
-            wire: Wire::new(&ep.url, ep.token()),
+            wire: Wire::new(&r.endpoint.url, r.endpoint.token()),
         }))
     }
 
     /// Emit one reply: honor `--max-depth`, then write text or JSON to
     /// stdout — driver failures go to stderr with the registry hint.
     fn finish(&self, mut env: Envelope) -> i32 {
-        if let (Some(depth), Some(Data::Snapshot(snap))) = (self.max_depth, env.data.as_mut()) {
-            trim_snapshot(snap, depth);
+        if let (Some(depth), Some(Data::Snapshot(snap))) = (self.max_depth, env.data.as_mut())
+            && trim_snapshot(snap, depth)
+        {
+            snap.text = format::tree_lines(&snap.tree);
         }
         if self.json {
             match serde_json::to_string(&env) {
@@ -111,12 +107,13 @@ impl Ctx {
             emit(&format::render(&env));
             0
         } else {
-            let f = env.error.as_ref().map_or_else(
-                || Failure::local("empty error envelope", "report a bug"),
-                Failure::from_error_body,
-            );
-            eprintln!("{}", f.render());
-            f.exit_code()
+            env.error
+                .as_ref()
+                .map_or_else(
+                    || Failure::local("empty error envelope", "report a bug"),
+                    Failure::from_error_body,
+                )
+                .report()
         }
     }
 }

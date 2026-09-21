@@ -165,6 +165,14 @@ impl Failure {
         }
     }
 
+    /// Print the render to stderr and hand back the exit code — the pair
+    /// every error exit performs.
+    #[must_use]
+    pub fn report(&self) -> i32 {
+        eprintln!("{}", self.render());
+        self.exit_code()
+    }
+
     /// The single exit-code table: usage exits 2, everything else exits 1.
     #[must_use]
     pub fn exit_code(&self) -> i32 {

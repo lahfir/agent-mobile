@@ -10,8 +10,8 @@ use super::{Ctx, round_trip};
 pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
     let body = match args {
         [r] => {
-            Ref::parse(r)?;
-            serde_json::json!({ "ref": r })
+            let r = Ref::parse(r)?;
+            serde_json::json!({ "ref": r.to_string() })
         }
         [x, y] => {
             let x = x.parse::<f64>().map_err(|_| {

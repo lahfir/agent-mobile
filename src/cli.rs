@@ -10,7 +10,7 @@ pub struct Cli {
     /// Emit the raw JSON envelope instead of text.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Target bundle id; sets `app` on snapshot.
+    /// Target bundle id; `serve` launches it once the driver binds.
     #[arg(long, global = true, value_name = "BUNDLE")]
     pub app: Option<String>,
     /// Drop tree nodes deeper than N levels; marks the snapshot incomplete.

@@ -19,7 +19,11 @@ pub fn run(json: bool) -> Result<i32, Failure> {
                     "kind": d.kind,
                     "os": d.os,
                     "state": d.state,
-                    "serving": state.devices.get(&d.name).map(|e| &e.url),
+                    "serving": state
+                        .devices
+                        .get(&d.name)
+                        .filter(|e| agent_mobile_core::process::pid_alive(e.pid))
+                        .map(|e| &e.url),
                 })
             })
             .collect();
@@ -35,6 +39,7 @@ pub fn run(json: bool) -> Result<i32, Failure> {
         let serving = opt(state
             .devices
             .get(&d.name)
+            .filter(|e| agent_mobile_core::process::pid_alive(e.pid))
             .map(|e| format!("serving={}", e.url)));
         super::emit(&format!(
             "name=\"{}\" udid={} kind={}{}{}{}",

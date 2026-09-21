@@ -37,9 +37,8 @@ fn entry(url: &str) -> SessionEntry {
     }
 }
 
-fn fail(msg: &str) -> Failure {
-    Failure::local(msg.to_owned(), "fix the test")
-}
+mod common;
+use common::fail;
 
 #[test]
 fn secret_file_created_0600() -> Result<(), Failure> {
@@ -84,11 +83,12 @@ fn env_override_wins_without_mutating_state() -> Result<(), Failure> {
         Some("http://env:9".to_owned()),
         Some("env-token".to_owned()),
     )?;
-    let Some(ep) = out else {
+    let Some(r) = out else {
         return Err(fail("expected an endpoint"));
     };
-    assert_eq!(ep.url, "http://env:9");
-    assert_eq!(ep.token(), "env-token");
+    assert_eq!(r.endpoint.url, "http://env:9");
+    assert_eq!(r.endpoint.token(), "env-token");
+    assert!(r.entry.is_none(), "env-pinned resolution holds no entry");
     let raw = fs::read_to_string(store.state_file())?;
     assert!(raw.contains("http://127.0.0.1:8770"));
     assert!(!raw.contains("env:9"));
@@ -106,11 +106,11 @@ fn partial_env_override_completes_from_state() -> Result<(), Failure> {
     store.write_token("dev", "state-token")?;
     store.upsert("sim", &entry("http://127.0.0.1:8770"))?;
     let out = store.resolve_with(Some("sim"), Some("http://env:9".to_owned()), None)?;
-    let Some(ep) = out else {
+    let Some(r) = out else {
         return Err(fail("expected an endpoint"));
     };
-    assert_eq!(ep.url, "http://env:9");
-    assert_eq!(ep.token(), "state-token");
+    assert_eq!(r.endpoint.url, "http://env:9");
+    assert_eq!(r.endpoint.token(), "state-token");
     Ok(())
 }
 
@@ -135,10 +135,10 @@ fn canary_token_never_appears_in_debug() -> Result<(), Failure> {
     store.write_token("dev", "canary-7f3c9a-token")?;
     store.upsert("sim", &entry("http://127.0.0.1:8770"))?;
     let out = store.resolve_with(Some("sim"), None, None)?;
-    let Some(ep) = out else {
+    let Some(r) = out else {
         return Err(fail("expected an endpoint"));
     };
-    let dbg = format!("{ep:?}");
+    let dbg = format!("{:?}", r.endpoint);
     assert!(!dbg.contains("canary-7f3c9a-token"), "Debug leaked a token");
     assert!(dbg.contains("127.0.0.1:8770"));
     Ok(())
@@ -175,7 +175,7 @@ fn upsert_remove_and_default_device_round_trip() -> Result<(), Failure> {
     assert!(store.entry("sim").is_some());
     store.remember_device("sim")?;
     match store.resolve_with(None, None, None)? {
-        Some(ep) => assert_eq!(ep.url, "http://a:1"),
+        Some(r) => assert_eq!(r.endpoint.url, "http://a:1"),
         None => return Err(fail("default device must resolve")),
     }
     store.remove("sim")?;

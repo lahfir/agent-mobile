@@ -87,11 +87,11 @@ at a bundle id), `--max-depth <n>` (trim the tree client-side; the header then s
 
 Everything lives under `~/.agent-mobile/`:
 
-- `state.json` — device entries: driver URL, serve pid, runner pid, token filename, last snapshot
-  id. Never holds a token value.
+- `state.json` — device entries: driver URL, serve pid, runner pid, token filename, and the
+  remembered default device. Never holds a token value.
 - `tokens/` — one `0600` file per session; the token itself.
 - `driver-<device>.log` — the runner's log, written `0600` because the runner echoes its env.
-- `serve.lock`, `boot.lock` — one serve per device; one lazy boot at a time.
+- `serve.lock`, `boot.lock` — one serve at a time; one lazy boot at a time.
 
 A second `serve` on a live device reports the URL, the pid, and the remedy. A dead `serve` leaves
 an orphaned runner; the next `serve` or lazy boot reaps it by recorded pid and continues. A

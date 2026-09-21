@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -57,14 +57,7 @@ impl ServeChild {
     /// Returns [`Failure::Local`] when the log cannot be opened or the child
     /// cannot be spawned.
     pub fn spawn_logged(cmd: &mut Command, log: &Path) -> Result<Self, Failure> {
-        if let Some(parent) = log.parent() {
-            crate::secret::create_private_dirs(parent)?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(log)?;
+        let file = open_private_log(log)?;
         let err_file = file.try_clone()?;
         let child = cmd
             .stdin(Stdio::null())
@@ -131,6 +124,23 @@ impl ServeChild {
     }
 }
 
+/// Open `path` append-mode at `0o600`, creating private parents first —
+/// the recipe every child log uses, shared by `serve` and lazy start.
+///
+/// # Errors
+/// Returns [`Failure::Local`] when the dirs cannot be created or the file
+/// cannot be opened.
+pub fn open_private_log(path: &Path) -> Result<File, Failure> {
+    if let Some(parent) = path.parent() {
+        crate::secret::create_private_dirs(parent)?;
+    }
+    Ok(OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?)
+}
+
 impl Drop for ServeChild {
     /// KTD8 drop guard: a serve that exits for any reason kills and reaps
     /// its runner, so nothing holds the port after we're gone.
@@ -140,12 +150,11 @@ impl Drop for ServeChild {
     }
 }
 
-/// Is `pid` a live process? Uses `kill -0`, which needs no permission for
-/// our own children and answers "no" for zombies and reused-pid misses.
-#[must_use]
-pub fn pid_alive(pid: u32) -> bool {
+/// `/bin/kill -<flag> <pid>` with all stdio detached; `true` when the signal
+/// was delivered.
+fn signal(pid: u32, flag: &str) -> bool {
     Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
+        .args([flag, &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -153,12 +162,19 @@ pub fn pid_alive(pid: u32) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Is `pid` a live process? Uses `kill -0`, which needs no permission for
+/// our own children and answers "no" for zombies and reused-pid misses.
+#[must_use]
+pub fn pid_alive(pid: u32) -> bool {
+    signal(pid, "-0")
+}
+
 /// Send SIGTERM to `pid` only when `ps` still shows it as an xcodebuild —
 /// the comm check keeps a recycled pid safe, and the target is always a pid
 /// we recorded ourselves (KTD17). Returns whether the signal was sent.
 #[must_use]
 pub fn terminate_runner(pid: u32) -> bool {
-    let is_runner = Command::new("ps")
+    let is_runner = Command::new("/bin/ps")
         .args(["-o", "comm=", "-p", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -166,14 +182,7 @@ pub fn terminate_runner(pid: u32) -> bool {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("xcodebuild"))
         .unwrap_or(false);
-    is_runner
-        && Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+    is_runner && signal(pid, "-TERM")
 }
 
 /// Poll until `pid` dies or `budget` expires; returns true when it exited.
@@ -191,15 +200,22 @@ pub fn await_exit(pid: u32, budget: Duration) -> bool {
 
 /// Does `host:port` accept a TCP connection? Hostnames resolve first, so
 /// `Lahfirs-iPhone.local:8770` works the same as a literal. One probe per
-/// call; callers loop with their own deadline.
+/// call; callers that poll should resolve once and use [`tcp_ready_at`].
 #[must_use]
 pub fn tcp_ready(addr: &str) -> bool {
     let Ok(addrs) = addr.to_socket_addrs() else {
         return false;
     };
+    tcp_ready_at(&addrs.collect::<Vec<_>>())
+}
+
+/// Probe a pre-resolved address set; [`tcp_ready`] minus the per-poll DNS
+/// lookup — mDNS resolution of a `.local` name is the expensive part.
+#[must_use]
+pub fn tcp_ready_at(addrs: &[SocketAddr]) -> bool {
     addrs
-        .into_iter()
-        .any(|a| TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
+        .iter()
+        .any(|a| TcpStream::connect_timeout(a, Duration::from_millis(500)).is_ok())
 }
 
 /// Atomic boot lockfile (KTD7): `create_new` either wins or reports the

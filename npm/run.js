@@ -4,7 +4,6 @@
 // exit code pass through untouched.
 
 const { spawnSync } = require("node:child_process");
-const fs = require("node:fs");
 const path = require("node:path");
 
 const BIN = path.join(__dirname, "bin", "agent-mobile");
@@ -17,8 +16,6 @@ function manualRemedy() {
   );
   process.exit(1);
 }
-
-if (!fs.existsSync(BIN)) manualRemedy();
 
 const r = spawnSync(BIN, process.argv.slice(2), { stdio: "inherit" });
 if (r.error) {

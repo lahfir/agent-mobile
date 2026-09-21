@@ -26,7 +26,7 @@ post() { # post <verb> <json> [token] [version] -> body on stdout, status via $S
 
 record() { # record <name> <verb> <json> [token] [version]
     local name="$1"; shift
-    post "$@" > /tmp/am-fixture-out
+    post "$@" > /dev/null
     cp /tmp/am-fixture-body "$OUT/$name.json"
     printf '%-28s http=%s bytes=%s\n' "$name" "$STATUS" "$(wc -c < "$OUT/$name.json" | tr -d ' ')"
 }

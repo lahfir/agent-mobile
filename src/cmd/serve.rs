@@ -51,12 +51,12 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
         log.display()
     );
     let url = ios::driver_url(&device, ios::DEFAULT_PORT);
-    let addr = url.trim_start_matches("http://").to_owned();
+    let addr = ios::driver_addr(&device, ios::DEFAULT_PORT);
     if let Err(failure) = await_driver(&mut child, &addr, &log) {
         let _ = store.remove_token(&token_file);
         return Err(failure);
     }
-    let mut entry = SessionEntry::new(url.clone(), std::process::id(), token_file);
+    let mut entry = SessionEntry::new(url.clone(), std::process::id(), token_file.clone());
     entry.runner_pid = Some(child.pid());
     store.upsert(&device.name, &entry)?;
     store.remember_device(&device.name)?;
@@ -69,15 +69,17 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
         let session = Session {
             wire: Wire::new(&url, &token),
         };
-        let env = session
-            .wire
-            .call("launch", &serde_json::json!({ "bundle_id": app }))?;
-        let code = ctx.finish(env);
+        let code = super::round_trip(
+            ctx,
+            &session,
+            "launch",
+            &serde_json::json!({ "bundle_id": app }),
+        )?;
         if code != 0 {
             return Ok(code);
         }
     }
-    supervise(store, &device, &mut child, lock)
+    supervise(store, &device, &mut child, lock, &token_file)
 }
 
 /// The single-instance lock; a held lock reports the live session, the port,
@@ -133,8 +135,7 @@ fn reclaim_or_conflict(store: &StateStore, device: &ios::Device) -> Result<(), F
         store.remove(&device.name)?;
         store.remove_token(&entry.token_file)?;
     }
-    let url = ios::driver_url(device, ios::DEFAULT_PORT);
-    if tcp_ready(url.trim_start_matches("http://")) {
+    if tcp_ready(&ios::driver_addr(device, ios::DEFAULT_PORT)) {
         return Err(Failure::local(
             format!(
                 "port {} for {} is already bound by another process",
@@ -151,12 +152,21 @@ fn reclaim_or_conflict(store: &StateStore, device: &ios::Device) -> Result<(), F
 }
 
 /// Poll the port, the log tail, and the child until one settles; `Ok` means
-/// the port accepts TCP and the driver is serving.
+/// the port accepts TCP and the driver is serving. `addr` resolves once —
+/// mDNS lookups are the expensive part of every poll — and retries only
+/// while resolution itself is failing.
 fn await_driver(child: &mut ServeChild, addr: &str, log: &Path) -> Result<(), Failure> {
+    use std::net::{SocketAddr, ToSocketAddrs};
     let deadline = Instant::now() + BOOT_BUDGET;
+    let mut addrs: Option<Vec<SocketAddr>> = addr.to_socket_addrs().ok().map(Iterator::collect);
     while Instant::now() < deadline {
-        if tcp_ready(addr) {
+        if let Some(list) = &addrs
+            && agent_mobile_core::process::tcp_ready_at(list)
+        {
             return Ok(());
+        }
+        if addrs.is_none() {
+            addrs = addr.to_socket_addrs().ok().map(Iterator::collect);
         }
         let out = child.new_output();
         if TRUST_MARKERS.iter().any(|m| out.contains(m)) {
@@ -190,17 +200,15 @@ fn supervise(
     store: &StateStore,
     device: &ios::Device,
     child: &mut ServeChild,
-    lock: std::fs::File,
+    _lock: std::fs::File,
+    token_file: &str,
 ) -> Result<i32, Failure> {
-    let _keep = lock;
-    let token_file = StateStore::token_file_for(&device.name);
     let term = term_flag()?;
     let status = loop {
         if term.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = store.remove(&device.name);
-            let _ = store.remove_token(&token_file);
+            clear_session(store, &device.name, token_file);
             eprintln!("interrupted; driver stopped");
             return Ok(130);
         }
@@ -209,10 +217,16 @@ fn supervise(
         }
         std::thread::sleep(Duration::from_millis(200));
     };
-    let _ = store.remove(&device.name);
-    let _ = store.remove_token(&token_file);
+    clear_session(store, &device.name, token_file);
     eprintln!("driver exited ({status})");
     Ok(i32::from(!status.success()))
+}
+
+/// Drop the session entry and its token file; both best-effort — the serve
+/// is going down either way.
+fn clear_session(store: &StateStore, device: &str, token_file: &str) {
+    let _ = store.remove(device);
+    let _ = store.remove_token(token_file);
 }
 
 /// Shared flag set by SIGINT/SIGTERM so `supervise` can forward the signal.

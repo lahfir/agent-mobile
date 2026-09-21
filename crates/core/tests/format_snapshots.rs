@@ -7,9 +7,8 @@ use agent_mobile_core::contract::{Envelope, Ref, trim_snapshot};
 use agent_mobile_core::error::{EXIT_USAGE, Failure};
 use agent_mobile_core::format::{render, screenshot_written};
 
-fn fail(msg: &str) -> Failure {
-    Failure::local(msg.to_owned(), "fix the test")
-}
+mod common;
+use common::fail;
 
 fn fixture(name: &str) -> Result<Envelope, Failure> {
     let path = format!("{}/tests/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR"));
@@ -23,7 +22,7 @@ fn render_fixture(name: &str) -> Result<String, Failure> {
     if let Some(err) = &env.error {
         return Ok(Failure::from_error_body(err).render());
     }
-    Ok(render(&env))
+    Ok(render(&env).into_owned())
 }
 
 macro_rules! snap {
@@ -198,7 +197,7 @@ fn max_depth_trims_and_marks_incomplete() -> Result<(), Failure> {
     };
     trim_snapshot(snap, 1);
     assert!(!snap.complete);
-    let after = render(&env);
+    let after = render(&env).into_owned();
     assert!(
         after.lines().count() < before,
         "trimming must drop deep lines"

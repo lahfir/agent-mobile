@@ -10,22 +10,8 @@ use agent_mobile_core::contract::Data;
 use agent_mobile_core::error::{ErrorCode, Failure};
 use agent_mobile_core::wire::Wire;
 
-fn fail(msg: &str) -> Failure {
-    Failure::local(msg.to_owned(), "fix the test")
-}
-
-fn request_complete(buf: &[u8]) -> bool {
-    let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
-    let len = head
-        .lines()
-        .find_map(|l| l.strip_prefix("content-length:"))
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    buf.len() >= pos + 4 + len
-}
+mod common;
+use common::{fail, request_complete};
 
 fn stub_once(status: u16, body: &str) -> Result<(String, JoinHandle<String>), Failure> {
     let listener = TcpListener::bind("127.0.0.1:0")?;

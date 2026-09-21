@@ -67,7 +67,8 @@ impl Wire {
             .as_reader()
             .read_to_end(&mut buf)
             .map_err(|e| Failure::transport(e.to_string()))?;
-        let raw = String::from_utf8_lossy(&buf).into_owned();
+        let raw = String::from_utf8(buf)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
         let envelope = Envelope::from_json(&raw).map_err(|e| {
             Failure::driver(
                 ErrorCode::DriverError,

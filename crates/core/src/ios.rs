@@ -14,6 +14,10 @@ use crate::error::Failure;
 /// Default driver port; one port serves one device.
 pub const DEFAULT_PORT: u16 = 8770;
 
+/// The single test the xcodebuild invocation runs, whichever source shape
+/// the driver came from.
+const TEST_ONLY: &str = "-only-testing:AgentMobileDriver/AgentMobileServer/testServe";
+
 /// One reachable device or simulator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
@@ -29,27 +33,34 @@ pub struct Device {
     pub state: Option<String>,
 }
 
-/// List reachable simulators plus paired physical devices.
+/// List reachable simulators plus paired physical devices; `simctl` and
+/// `devicectl` probe in parallel since either can take seconds.
 ///
 /// # Errors
 /// Returns [`Failure::Local`] when `xcrun simctl` cannot run or its output
 /// cannot be parsed — the Xcode install is broken or absent.
 pub fn list_devices() -> Result<Vec<Device>, Failure> {
-    let mut out = simulators()?;
-    out.extend(physical());
-    Ok(out)
+    std::thread::scope(|s| {
+        let sims = s.spawn(simulators);
+        let phys = s.spawn(physical);
+        let mut out = sims
+            .join()
+            .map_err(|_| Failure::local("simctl scan panicked", "report a bug"))??;
+        out.extend(phys.join().unwrap_or_default());
+        Ok(out)
+    })
 }
 
-fn simulators() -> Result<Vec<Device>, Failure> {
+/// Available simulators only; skips the slower `devicectl` probe.
+///
+/// # Errors
+/// Returns [`Failure::Local`] when `xcrun simctl` cannot run or its output
+/// cannot be parsed — the Xcode install is broken or absent.
+pub fn simulators() -> Result<Vec<Device>, Failure> {
     let out = Command::new("xcrun")
         .args(["simctl", "list", "devices", "available", "--json"])
         .output()
-        .map_err(|e| {
-            Failure::local(
-                format!("cannot run `xcrun simctl`: {e}"),
-                "install Xcode, then run `sudo xcodebuild -license accept`",
-            )
-        })?;
+        .map_err(|e| simctl_spawn_err(&e))?;
     if !out.status.success() {
         return Err(Failure::local(
             format!(
@@ -87,7 +98,10 @@ fn simulators() -> Result<Vec<Device>, Failure> {
     Ok(devices)
 }
 
-fn physical() -> Vec<Device> {
+/// Paired physical devices only; best-effort — `devicectl` failures (no
+/// paired devices, no license) return an empty list, never an error.
+#[must_use]
+pub fn physical() -> Vec<Device> {
     let Ok(out) = Command::new("xcrun")
         .args([
             "devicectl",
@@ -111,21 +125,16 @@ fn physical() -> Vec<Device> {
         .and_then(Value::as_array)
         .map_or(&[][..], Vec::as_slice)
     {
-        let props = d.get("deviceProperties").cloned().unwrap_or(Value::Null);
-        let conn = d
-            .get("connectionProperties")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let name = props
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
+        let props = d.get("deviceProperties").unwrap_or(&Value::Null);
+        let conn = d.get("connectionProperties").unwrap_or(&Value::Null);
+        let name = field(props, "name").trim().to_owned();
         let udid = d
             .pointer("/hardwareProperties/udid")
             .and_then(Value::as_str)
             .map_or_else(|| field(d, "identifier"), str::to_owned);
+        if name.is_empty() || udid.is_empty() {
+            continue;
+        }
         devices.push(Device {
             name,
             udid,
@@ -156,15 +165,17 @@ fn runtime_label(runtime: &str) -> Option<String> {
     Some(format!("{family} {}", ver.replace('-', ".")))
 }
 
-/// Find one device by name or udid.
+/// Find one device by name or udid. Simulators match first — same result
+/// as scanning the combined list, and `devicectl` only runs on a miss.
 ///
 /// # Errors
 /// Returns [`Failure::Local`] when discovery itself fails.
 pub fn find_device(name_or_udid: &str) -> Result<Option<Device>, Failure> {
-    let devices = list_devices()?;
-    Ok(devices
-        .into_iter()
-        .find(|d| d.name == name_or_udid || d.udid.eq_ignore_ascii_case(name_or_udid)))
+    let hit = |d: &Device| d.name == name_or_udid || d.udid.eq_ignore_ascii_case(name_or_udid);
+    if let Some(d) = simulators()?.into_iter().find(hit) {
+        return Ok(Some(d));
+    }
+    Ok(physical().into_iter().find(hit))
 }
 
 /// An iPhone's Bonjour host name: apostrophes drop, spaces become hyphens —
@@ -182,6 +193,11 @@ pub fn bonjour_host(device_name: &str) -> String {
     format!("{out}.local")
 }
 
+/// The `-destination` string for a simulator target.
+fn sim_destination(device: &Device) -> String {
+    format!("platform=iOS Simulator,id={}", device.udid)
+}
+
 /// Boot a shutdown simulator; "already booted" is success.
 ///
 /// # Errors
@@ -191,12 +207,7 @@ pub fn boot_simulator(udid: &str) -> Result<(), Failure> {
     let out = Command::new("xcrun")
         .args(["simctl", "boot", udid])
         .output()
-        .map_err(|e| {
-            Failure::local(
-                format!("cannot run `xcrun simctl`: {e}"),
-                "install Xcode, then run `sudo xcodebuild -license accept`",
-            )
-        })?;
+        .map_err(|e| simctl_spawn_err(&e))?;
     let err = String::from_utf8_lossy(&out.stderr);
     if out.status.success() || err.contains("current state: Booted") {
         return Ok(());
@@ -213,6 +224,15 @@ pub fn boot_simulator(udid: &str) -> Result<(), Failure> {
     ))
 }
 
+/// The spawn failure every `simctl` call maps the same way: Xcode missing
+/// or unlicensed, with the fix named.
+fn simctl_spawn_err(e: &std::io::Error) -> Failure {
+    Failure::local(
+        format!("cannot run `xcrun simctl`: {e}"),
+        "install Xcode, then run `sudo xcodebuild -license accept`",
+    )
+}
+
 /// Where the runner comes from: a source project to build, or a bundled
 /// `.xctestrun` product that needs no compiler (KTD14).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +241,9 @@ pub enum DriverSource {
     Project(PathBuf),
     /// A packaged runner dir holding `*.xctestrun` plus its `__TESTROOT__`
     /// products — `test-without-building` installs and runs it directly.
+    /// `serve_command` passes the manifest by basename because the child's
+    /// cwd is already `dir`; a relative `AGENT_MOBILE_DRIVER_DIR` would
+    /// otherwise double the path.
     Prebuilt {
         /// Directory containing the xctestrun manifest and products.
         dir: PathBuf,
@@ -299,7 +322,7 @@ pub fn serve_command(
         DriverSource::Project(dir) => {
             let (destination, dd, extra): (String, &str, &[&str]) = if device.kind == "simulator" {
                 (
-                    format!("platform=iOS Simulator,id={}", device.udid),
+                    sim_destination(device),
                     "dd",
                     &["CODE_SIGNING_ALLOWED=NO"][..],
                 )
@@ -319,7 +342,7 @@ pub fn serve_command(
                     "AgentMobileDriver",
                     "-destination",
                     &destination,
-                    "-only-testing:AgentMobileDriver/AgentMobileServer/testServe",
+                    TEST_ONLY,
                     "-parallel-testing-enabled",
                     "NO",
                     "-derivedDataPath",
@@ -337,12 +360,8 @@ pub fn serve_command(
             cmd.current_dir(dir)
                 .arg("test-without-building")
                 .arg("-xctestrun")
-                .arg(xctestrun)
-                .args([
-                    "-destination",
-                    &format!("platform=iOS Simulator,id={}", device.udid),
-                    "-only-testing:AgentMobileDriver/AgentMobileServer/testServe",
-                ]);
+                .arg(xctestrun.file_name().unwrap_or(xctestrun.as_os_str()))
+                .args(["-destination", &sim_destination(device), TEST_ONLY]);
         }
     }
     cmd.env("TEST_RUNNER_AGENT_MOBILE_PORT", port.to_string())
@@ -353,13 +372,20 @@ pub fn serve_command(
     Ok(cmd)
 }
 
+/// The `host:port` a running driver listens on, without a URL scheme —
+/// the shape TCP probes want.
+#[must_use]
+pub fn driver_addr(device: &Device, port: u16) -> String {
+    if device.kind == "simulator" {
+        format!("127.0.0.1:{port}")
+    } else {
+        format!("{}:{port}", bonjour_host(&device.name))
+    }
+}
+
 /// The URL a running driver answers on: loopback for a simulator, the
 /// device's Bonjour host for a physical iPhone.
 #[must_use]
 pub fn driver_url(device: &Device, port: u16) -> String {
-    if device.kind == "simulator" {
-        format!("http://127.0.0.1:{port}")
-    } else {
-        format!("http://{}:{port}", bonjour_host(&device.name))
-    }
+    format!("http://{}", driver_addr(device, port))
 }

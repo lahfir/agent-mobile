@@ -2,8 +2,7 @@
 //! spawns `serve` detached, and waits for the state entry it writes. A
 //! second caller waits on the same lock instead of racing the boot.
 
-use std::fs::OpenOptions;
-use std::os::unix::fs::OpenOptionsExt;
+use std::io::{Read, Seek, SeekFrom};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
@@ -48,12 +47,9 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
     let device = pick_device(ctx)?;
     eprintln!("no driver running; starting one for {device}…");
     let log = ctx.store.driver_log(&device);
+    let log_base = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
     let exe = std::env::current_exe()?;
-    let out = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log)?;
+    let out = agent_mobile_core::process::open_private_log(&log)?;
     let err = out.try_clone()?;
     let mut child = Command::new(exe)
         .args(["serve", &device])
@@ -75,7 +71,13 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
             return Ok(s);
         }
         if let Some(_status) = child.try_wait()? {
-            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let text = std::fs::File::open(&log)
+                .and_then(|mut f| {
+                    f.seek(SeekFrom::Start(log_base))?;
+                    let mut s = String::new();
+                    f.read_to_string(&mut s).map(|_| s)
+                })
+                .unwrap_or_default();
             let failure = if super::serve::TRUST_MARKERS.iter().any(|m| text.contains(m)) {
                 "the development certificate is not trusted on the device".to_owned()
             } else {
@@ -104,7 +106,8 @@ fn last_error_line(log_text: &str) -> String {
 }
 
 /// Which device a lazy boot serves: `--device` wins, then the remembered
-/// default, then the first iPhone-shaped simulator, then anything.
+/// default, then the first iPhone-shaped simulator, then any simulator,
+/// then a physical device — `devicectl` only runs when no simulator exists.
 fn pick_device(ctx: &Ctx) -> Result<String, Failure> {
     if let Some(d) = &ctx.device {
         return Ok(d.clone());
@@ -112,13 +115,14 @@ fn pick_device(ctx: &Ctx) -> Result<String, Failure> {
     if let Some(d) = ctx.store.load().default_device {
         return Ok(d);
     }
-    let devices = ios::list_devices()?;
-    let pick = devices
+    let sims = ios::simulators()?;
+    let pick = sims
         .iter()
-        .find(|d| d.kind == "simulator" && d.name.contains("iPhone"))
-        .or_else(|| devices.iter().find(|d| d.kind == "simulator"))
-        .or(devices.first());
-    pick.map(|d| d.name.clone()).ok_or_else(|| {
+        .find(|d| d.name.contains("iPhone"))
+        .or_else(|| sims.first())
+        .cloned()
+        .or_else(|| ios::physical().into_iter().next());
+    pick.map(|d| d.name).ok_or_else(|| {
         Failure::local(
             "no devices found",
             "create a simulator with `xcrun simctl create <name> <type>` or pair a device",

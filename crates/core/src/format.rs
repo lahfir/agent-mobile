@@ -3,39 +3,51 @@
 //! non-tree replies. Callers gate on `env.ok` — error envelopes render
 //! through [`crate::error::Failure::render`], not here.
 
+use std::borrow::Cow;
+
 use crate::contract::{Data, Envelope, Node, Snapshot};
 
 /// Render one successful reply for text mode; `screenshot` yields raw base64
-/// for stdout.
+/// for stdout. Borrows where the payload is already a `String` — a PNG is
+/// megabytes, not worth cloning.
 #[must_use]
-pub fn render(env: &Envelope) -> String {
+pub fn render(env: &Envelope) -> Cow<'_, str> {
     match &env.data {
-        Some(Data::Snapshot(snap)) => render_snapshot(env, snap),
+        Some(Data::Snapshot(snap)) => Cow::Owned(render_snapshot(env, snap)),
         Some(Data::Status(s)) => {
             let snap = if s.snapshot_id.is_empty() {
                 "-".to_owned()
             } else {
                 format!("@{}", s.snapshot_id)
             };
-            format!(
+            Cow::Owned(format!(
                 "app={} device=\"{}\" os={} snapshot={} elapsed_ms={}",
                 s.app,
                 s.device,
                 s.os,
                 snap,
                 elapsed(env)
-            )
+            ))
         }
-        Some(Data::Terminate(t)) => {
-            format!(
-                "terminated={} app=com.apple.springboard elapsed_ms={}",
-                t.terminated,
-                elapsed(env)
-            )
-        }
-        Some(Data::Screenshot(s)) => s.png_base64.clone(),
-        None => "ok".to_owned(),
+        Some(Data::Terminate(t)) => Cow::Owned(format!(
+            "terminated={} app=com.apple.springboard elapsed_ms={}",
+            t.terminated,
+            elapsed(env)
+        )),
+        Some(Data::Screenshot(s)) => Cow::Borrowed(s.png_base64.as_str()),
+        None => Cow::Borrowed("ok"),
     }
+}
+
+/// The driver's text listing re-rendered from a (possibly trimmed) tree —
+/// `walk`'s line format joined without a trailing newline, matching the
+/// driver's `text` field so `--max-depth` can refresh `snap.text`.
+#[must_use]
+pub fn tree_lines(tree: &Node) -> String {
+    let mut out = String::new();
+    walk(tree, 0, &mut out);
+    out.truncate(out.len().saturating_sub(1));
+    out
 }
 
 /// The confirmation line for `screenshot <path>` (KTD12): byte count plus the
