@@ -122,9 +122,13 @@ fn physical() -> Vec<Device> {
             .unwrap_or_default()
             .trim()
             .to_owned();
+        let udid = d
+            .pointer("/hardwareProperties/udid")
+            .and_then(Value::as_str)
+            .map_or_else(|| field(d, "identifier"), str::to_owned);
         devices.push(Device {
             name,
-            udid: field(d, "identifier"),
+            udid,
             kind: "device",
             os: props
                 .get("osVersionNumber")
