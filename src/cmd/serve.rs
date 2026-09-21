@@ -56,9 +56,9 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     let token_file = StateStore::token_file_for(&device.name);
     store.remove_token(&token_file)?;
     store.write_token(&token_file, &token)?;
-    let driver_dir = ios::driver_dir()?;
+    let source = ios::driver_source()?;
     let log = store.driver_log(&device.name);
-    let mut cmd = ios::serve_command(&device, ios::DEFAULT_PORT, &token, &driver_dir);
+    let mut cmd = ios::serve_command(&device, ios::DEFAULT_PORT, &token, &source)?;
     let mut child = ServeChild::spawn_logged(&mut cmd, &log)?;
     eprintln!(
         "starting driver for {} — log: {}",

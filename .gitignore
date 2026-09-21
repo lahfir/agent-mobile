@@ -11,3 +11,10 @@ xcuserdata/
 
 target/
 __pycache__/
+
+# npm staging (built by scripts/sync-npm-version.sh, shipped not committed)
+npm/bin/
+npm/runner/
+
+# npm pack output
+npm/*.tgz

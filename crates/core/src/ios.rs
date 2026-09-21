@@ -4,7 +4,7 @@
 //! while a broken `simctl` means Xcode itself is missing, which is fatal with
 //! the install step named.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -209,75 +209,145 @@ pub fn boot_simulator(udid: &str) -> Result<(), Failure> {
     ))
 }
 
-/// The directory holding the driver's Xcode project. `AGENT_MOBILE_DRIVER_DIR`
-/// wins for the packaged layout; otherwise walk up from the core crate's
-/// manifest dir — `crates/core` — to the checkout root's `fixtures/driver`.
+/// Where the runner comes from: a source project to build, or a bundled
+/// `.xctestrun` product that needs no compiler (KTD14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DriverSource {
+    /// A checkout's `fixtures/driver` holding `ToDo.xcodeproj`.
+    Project(PathBuf),
+    /// A packaged runner dir holding `*.xctestrun` plus its `__TESTROOT__`
+    /// products — `test-without-building` installs and runs it directly.
+    Prebuilt {
+        /// Directory containing the xctestrun manifest and products.
+        dir: PathBuf,
+        /// The `*.xctestrun` manifest itself.
+        xctestrun: PathBuf,
+    },
+}
+
+/// Resolve the driver source: `AGENT_MOBILE_DRIVER_DIR` wins, then a
+/// `runner/` dir beside the executable (the npm layout), then the checkout's
+/// `fixtures/driver` walked up from the core crate's manifest dir.
 ///
 /// # Errors
-/// Returns [`Failure::Local`] when no project exists at any probed path.
-pub fn driver_dir() -> Result<PathBuf, Failure> {
+/// Returns [`Failure::Local`] when neither a project nor a bundled runner
+/// exists at any probed path.
+pub fn driver_source() -> Result<DriverSource, Failure> {
     let mut probes: Vec<PathBuf> = std::env::var_os("AGENT_MOBILE_DRIVER_DIR")
         .into_iter()
         .map(PathBuf::from)
         .collect();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        probes.push(dir.join("../runner"));
+        probes.push(dir.join("runner"));
+    }
     probes.extend(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .map(|a| a.join("fixtures/driver")),
     );
-    probes
-        .into_iter()
-        .find(|dir| dir.join("ToDo.xcodeproj").exists())
-        .ok_or_else(|| {
-            Failure::local(
-                "no driver project found near this binary",
-                "set AGENT_MOBILE_DRIVER_DIR to the bundled runner directory",
-            )
-        })
+    for dir in probes {
+        if let Some(src) = classify_driver_dir(&dir) {
+            return Ok(src);
+        }
+    }
+    Err(Failure::local(
+        "no driver project or bundled runner found",
+        "set AGENT_MOBILE_DRIVER_DIR to a driver checkout or a bundled runner directory",
+    ))
 }
 
-/// Build the `xcodebuild test` invocation that runs the driver on `device`.
-/// Environment goes through `TEST_RUNNER_`-prefixed variables — the only
-/// channel xcodebuild forwards into the test runner.
-#[must_use]
-pub fn serve_command(device: &Device, port: u16, token: &str, driver_dir: &PathBuf) -> Command {
+/// A dir holding `ToDo.xcodeproj` is a project; one holding `*.xctestrun` is
+/// a prebuilt runner. Anything else is not a driver source.
+fn classify_driver_dir(dir: &Path) -> Option<DriverSource> {
+    if dir.join("ToDo.xcodeproj").exists() {
+        return Some(DriverSource::Project(dir.to_path_buf()));
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let xctestrun = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "xctestrun"))?;
+    Some(DriverSource::Prebuilt {
+        dir: dir.to_path_buf(),
+        xctestrun,
+    })
+}
+
+/// Build the `xcodebuild` invocation that runs the driver on `device`:
+/// `test` against the project, or `test-without-building` against the
+/// bundled runner. Environment goes through `TEST_RUNNER_`-prefixed
+/// variables — the only channel xcodebuild forwards into the test runner.
+///
+/// # Errors
+/// Returns [`Failure::Local`] for a physical device with only a bundled
+/// runner: device signing is per-Mac and cannot ship prebuilt.
+pub fn serve_command(
+    device: &Device,
+    port: u16,
+    token: &str,
+    source: &DriverSource,
+) -> Result<Command, Failure> {
     let mut cmd = Command::new("xcodebuild");
-    let (destination, dd, extra): (String, &str, &[&str]) = if device.kind == "simulator" {
-        (
-            format!("platform=iOS Simulator,id={}", device.udid),
-            "dd",
-            &["CODE_SIGNING_ALLOWED=NO"][..],
-        )
-    } else {
-        (
-            format!("platform=iOS,id={}", device.udid),
-            "dd-device",
-            &["-allowProvisioningUpdates"][..],
-        )
-    };
-    cmd.current_dir(driver_dir)
-        .args([
-            "test",
-            "-project",
-            "ToDo.xcodeproj",
-            "-scheme",
-            "ToDo",
-            "-destination",
-            &destination,
-            "-only-testing:ToDoUITests/AgentMobileServer/testServe",
-            "-skip-testing:ToDoTests",
-            "-parallel-testing-enabled",
-            "NO",
-            "-derivedDataPath",
-            dd,
-        ])
-        .args(extra.iter().copied())
-        .env("TEST_RUNNER_AGENT_MOBILE_PORT", port.to_string())
+    match source {
+        DriverSource::Project(dir) => {
+            let (destination, dd, extra): (String, &str, &[&str]) = if device.kind == "simulator" {
+                (
+                    format!("platform=iOS Simulator,id={}", device.udid),
+                    "dd",
+                    &["CODE_SIGNING_ALLOWED=NO"][..],
+                )
+            } else {
+                (
+                    format!("platform=iOS,id={}", device.udid),
+                    "dd-device",
+                    &["-allowProvisioningUpdates"][..],
+                )
+            };
+            cmd.current_dir(dir)
+                .args([
+                    "test",
+                    "-project",
+                    "ToDo.xcodeproj",
+                    "-scheme",
+                    "ToDo",
+                    "-destination",
+                    &destination,
+                    "-only-testing:ToDoUITests/AgentMobileServer/testServe",
+                    "-skip-testing:ToDoTests",
+                    "-parallel-testing-enabled",
+                    "NO",
+                    "-derivedDataPath",
+                    dd,
+                ])
+                .args(extra.iter().copied());
+        }
+        DriverSource::Prebuilt { dir, xctestrun } => {
+            if device.kind != "simulator" {
+                return Err(Failure::local(
+                    "the bundled runner is simulator-only; a physical iPhone must build and sign once",
+                    "run `serve` from a source checkout, or set AGENT_MOBILE_DRIVER_DIR to the driver project",
+                ));
+            }
+            cmd.current_dir(dir)
+                .arg("test-without-building")
+                .arg("-xctestrun")
+                .arg(xctestrun)
+                .args([
+                    "-destination",
+                    &format!("platform=iOS Simulator,id={}", device.udid),
+                    "-only-testing:ToDoUITests/AgentMobileServer/testServe",
+                ]);
+        }
+    }
+    cmd.env("TEST_RUNNER_AGENT_MOBILE_PORT", port.to_string())
         .env("TEST_RUNNER_AGENT_MOBILE_TOKEN", token);
     if device.kind != "simulator" {
         cmd.env("TEST_RUNNER_AGENT_MOBILE_BIND", "0.0.0.0");
     }
-    cmd
+    Ok(cmd)
 }
 
 /// The URL a running driver answers on: loopback for a simulator, the

@@ -9,7 +9,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
-use agent_mobile_core::ios::{self, Device};
+use agent_mobile_core::ios::{self, Device, DriverSource};
 use agent_mobile_core::process::{self, BootLock, ServeChild};
 
 type TestResult = Result<(), Failure>;
@@ -90,7 +90,7 @@ fn driver_url_loopback_for_sim_bonjour_for_device() {
 #[test]
 fn serve_command_sim_args_and_runner_env() -> TestResult {
     let dir = tmp("cmd-sim")?;
-    let cmd = ios::serve_command(&sim(), 8770, "tok123", &dir);
+    let cmd = ios::serve_command(&sim(), 8770, "tok123", &DriverSource::Project(dir))?;
     assert_eq!(cmd.get_program(), OsStr::new("xcodebuild"));
     let args: Vec<String> = cmd
         .get_args()
@@ -116,7 +116,7 @@ fn serve_command_sim_args_and_runner_env() -> TestResult {
 #[test]
 fn serve_command_device_binds_wildcard() -> TestResult {
     let dir = tmp("cmd-dev")?;
-    let cmd = ios::serve_command(&phone(), 8770, "t", &dir);
+    let cmd = ios::serve_command(&phone(), 8770, "t", &DriverSource::Project(dir))?;
     let args: Vec<String> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
@@ -132,12 +132,78 @@ fn serve_command_device_binds_wildcard() -> TestResult {
 }
 
 /// Running inside the workspace, the ancestor walk from crates/core must
-/// land on the repo's fixtures/driver.
+/// land on the repo's fixtures/driver project.
 #[test]
-fn driver_dir_finds_the_checkout_layout() -> TestResult {
-    let dir = ios::driver_dir()?;
-    assert!(dir.join("ToDo.xcodeproj").exists());
-    assert!(dir.ends_with("fixtures/driver"));
+fn driver_source_finds_the_checkout_layout() -> TestResult {
+    match ios::driver_source()? {
+        DriverSource::Project(dir) => {
+            assert!(dir.join("ToDo.xcodeproj").exists());
+            assert!(dir.ends_with("fixtures/driver"));
+        }
+        DriverSource::Prebuilt { .. } => {
+            return Err(Failure::local(
+                "expected the project source",
+                "check probes",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn prebuilt_runner_uses_test_without_building() -> TestResult {
+    let dir = tmp("prebuilt")?;
+    let xctestrun = dir.join("ToDo_ToDo_iphonesimulator26.0-arm64.xctestrun");
+    std::fs::write(&xctestrun, "<plist/>")?;
+    let cmd = ios::serve_command(
+        &sim(),
+        8770,
+        "tok",
+        &DriverSource::Prebuilt {
+            dir: dir.clone(),
+            xctestrun: xctestrun.clone(),
+        },
+    )?;
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args.first().map(String::as_str),
+        Some("test-without-building")
+    );
+    assert!(args.iter().any(|a| a == "-xctestrun"));
+    assert!(args.contains(&xctestrun.to_string_lossy().into_owned()));
+    assert_eq!(
+        env_of(&cmd, "TEST_RUNNER_AGENT_MOBILE_TOKEN").as_deref(),
+        Some("tok")
+    );
+    Ok(())
+}
+
+#[test]
+fn prebuilt_runner_refuses_physical_device() -> TestResult {
+    let dir = tmp("prebuilt-dev")?;
+    let xctestrun = dir.join("r.xctestrun");
+    std::fs::write(&xctestrun, "<plist/>")?;
+    let err = ios::serve_command(
+        &phone(),
+        8770,
+        "t",
+        &DriverSource::Prebuilt { dir, xctestrun },
+    );
+    match err {
+        Err(f) => {
+            let text = f.render();
+            assert!(text.contains("simulator-only"), "{text}");
+        }
+        Ok(_) => {
+            return Err(Failure::local(
+                "physical+prebuilt must fail",
+                "check source",
+            ));
+        }
+    }
     Ok(())
 }
 
