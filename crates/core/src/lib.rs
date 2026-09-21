@@ -4,3 +4,4 @@ pub mod contract;
 pub mod error;
 pub mod secret;
 pub mod state;
+pub mod wire;
