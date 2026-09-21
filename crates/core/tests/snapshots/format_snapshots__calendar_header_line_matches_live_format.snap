@@ -1,0 +1,5 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: first
+---
+app=com.apple.mobilecal snapshot=@SNAP refs=127 settled=true reads=3 elapsed_ms=N

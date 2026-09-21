@@ -1,0 +1,5 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: line
+---
+screenshot=/tmp/shot.png bytes=1536

@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Failure;
+use crate::error::{ErrorCode, Failure};
 
 /// Protocol version both sides must speak; fixed at `"1"` for P1 and bumped
 /// only on a breaking change.
@@ -178,4 +178,82 @@ pub struct NativeId {
     pub kind: String,
     /// Identifier value.
     pub value: String,
+}
+
+/// A parsed `@<snapshot_id>:e<N>` element ref (R3). Refs are minted per
+/// snapshot and die with it; [`Ref::check_current`] rejects a superseded ref
+/// locally before any round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ref {
+    /// Snapshot id the ref was minted under.
+    pub snapshot_id: String,
+    /// Sequence number inside that snapshot.
+    pub index: u64,
+}
+
+impl Ref {
+    /// Parse `@<id>:e<N>`; anything else is a usage error caught before any
+    /// round trip.
+    ///
+    /// # Errors
+    /// Returns [`Failure::Usage`] when `s` is not a well-formed ref.
+    pub fn parse(s: &str) -> Result<Self, Failure> {
+        let rest = s.strip_prefix('@').ok_or_else(|| {
+            Failure::usage(format!("ref must look like @<snapshot>:e<N>; got {s:?}"))
+        })?;
+        let (id, seq) = rest.split_once(':').ok_or_else(|| {
+            Failure::usage(format!("ref must look like @<snapshot>:e<N>; got {s:?}"))
+        })?;
+        let index = seq
+            .strip_prefix('e')
+            .and_then(|n| n.parse::<u64>().ok())
+            .filter(|_| !id.is_empty())
+            .ok_or_else(|| {
+                Failure::usage(format!("ref must look like @<snapshot>:e<N>; got {s:?}"))
+            })?;
+        Ok(Self {
+            snapshot_id: id.to_owned(),
+            index,
+        })
+    }
+
+    /// Reject a ref minted under a different snapshot id — locally, with the
+    /// re-snapshot hint, before any round trip.
+    ///
+    /// # Errors
+    /// Returns a [`ErrorCode::StaleRef`] failure when `snapshot_id` differs.
+    pub fn check_current(&self, snapshot_id: &str) -> Result<(), Failure> {
+        if self.snapshot_id == snapshot_id {
+            Ok(())
+        } else {
+            Err(Failure::driver(
+                ErrorCode::StaleRef,
+                format!("{self} is from a superseded snapshot; re-snapshot"),
+            ))
+        }
+    }
+}
+
+impl std::fmt::Display for Ref {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@{}:e{}", self.snapshot_id, self.index)
+    }
+}
+
+/// Drop nodes deeper than `max_depth` (root is depth 0) and mark the snapshot
+/// incomplete; the driver always sends the full tree, so trimming is
+/// client-side (R9).
+pub fn trim_snapshot(snap: &mut Snapshot, max_depth: u32) {
+    trim_node(&mut snap.tree, max_depth, 0);
+    snap.complete = false;
+}
+
+fn trim_node(node: &mut Node, max_depth: u32, depth: u32) {
+    if depth >= max_depth {
+        node.children.clear();
+        return;
+    }
+    for child in &mut node.children {
+        trim_node(child, max_depth, depth + 1);
+    }
 }

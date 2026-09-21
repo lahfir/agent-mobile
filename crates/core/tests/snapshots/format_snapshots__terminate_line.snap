@@ -1,0 +1,5 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: text
+---
+terminated=com.apple.mobilecal app=com.apple.springboard elapsed_ms=N

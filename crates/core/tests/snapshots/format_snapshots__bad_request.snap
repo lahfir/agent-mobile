@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: text
+---
+BAD_REQUEST: ref required
+next: fix the request; do not retry unchanged

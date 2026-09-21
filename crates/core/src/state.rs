@@ -37,6 +37,10 @@ pub struct SessionEntry {
     pub started_at: u64,
     /// Token file name inside `tokens/`; the token never appears here.
     pub token_file: String,
+    /// Latest snapshot id the driver minted for this device, enabling local
+    /// stale-ref rejection without a round trip.
+    #[serde(default)]
+    pub last_snapshot_id: Option<String>,
 }
 
 impl SessionEntry {
@@ -51,6 +55,7 @@ impl SessionEntry {
             pid,
             started_at,
             token_file,
+            last_snapshot_id: None,
         }
     }
 }
@@ -218,6 +223,19 @@ impl StateStore {
     pub fn remove(&self, device: &str) -> Result<(), Failure> {
         let mut state = self.load();
         state.devices.remove(device);
+        self.save(&state)
+    }
+
+    /// Record the driver's newest snapshot id for `device`; absent entry is
+    /// not an error.
+    ///
+    /// # Errors
+    /// Returns [`Failure::Local`] when the state cannot be saved.
+    pub fn record_snapshot(&self, device: &str, snapshot_id: &str) -> Result<(), Failure> {
+        let mut state = self.load();
+        if let Some(entry) = state.devices.get_mut(device) {
+            entry.last_snapshot_id = Some(snapshot_id.to_owned());
+        }
         self.save(&state)
     }
 
