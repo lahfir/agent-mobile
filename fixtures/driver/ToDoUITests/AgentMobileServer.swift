@@ -14,8 +14,106 @@ final class Driver {
     var snapId = ""
     var refs: [String: Ident] = [:]
     var seq = 0
+    var lastHash: Int?
+    var appCache: [String: XCUIApplication] = [:]
 
-    func app() -> XCUIApplication { XCUIApplication(bundleIdentifier: bundle) }
+    func app() -> XCUIApplication {
+        if let a = appCache[bundle] { return a }
+        let a = XCUIApplication(bundleIdentifier: bundle)
+        let setter = NSSelectorFromString("setIdleAnimationWaitEnabled:")
+        if a.responds(to: setter) { a.setValue(false, forKey: "idleAnimationWaitEnabled") }
+        appCache[bundle] = a
+        return a
+    }
+
+    // XCTest waits for app idle inside every interaction — unbounded, ~1 s in
+    // practice. WebDriverAgent disables it by swizzling the private wait on
+    // XCUIApplicationProcess (docs/research/11 §1.2); our own bounded settle
+    // check replaces it. Guarded: a renamed method degrades to the stock
+    // wait instead of a crash.
+    static func killQuiescenceWait() {
+        var patched = 0
+        for cname in ["XCUIApplicationProcess", "XCUIApplication"] {
+            guard let cls = NSClassFromString(cname) else { continue }
+            var count: UInt32 = 0
+            guard let list = class_copyMethodList(cls, &count) else { continue }
+            for i in 0..<Int(count) {
+                let m = list[i]
+                let name = NSStringFromSelector(method_getName(m))
+                if name.contains("waitForQuiescence") || name.hasPrefix("_initiateQuiescenceChecks") {
+                    guard let imp = Driver.noopImp(m) else { continue }
+                    method_setImplementation(m, imp)
+                    patched += 1
+                } else if name.hasPrefix("_notifyWhen"), name.hasSuffix("Idle:"),
+                          Driver.argc(m) == 1, Driver.encoding(of: m, at: 2).hasPrefix("@") {
+                    let fireNow: @convention(block) (AnyObject, AnyObject) -> Void = { _, cb in
+                        (unsafeBitCast(cb, to: (@convention(block) () -> Void).self))()
+                    }
+                    method_setImplementation(m, imp_implementationWithBlock(fireNow))
+                    patched += 1
+                } else if (name.hasPrefix("shouldSkip") && name.hasSuffix("Quiescence"))
+                            || name == "isQuiescent" || name == "eventLoopHasIdled",
+                          Driver.argc(m) == 0, Driver.returnEncoding(m) == "B" {
+                    let yes: @convention(block) (AnyObject) -> Bool = { _ in true }
+                    method_setImplementation(m, imp_implementationWithBlock(yes))
+                    patched += 1
+                }
+            }
+            free(list)
+        }
+        NSLog("agent-mobile: quiescence wait disabled on %d selector(s)", patched)
+        // testmanagerd confirms each synthesized event after a fixed interval;
+        // zero it so injections return as soon as the event lands.
+        if let cls = NSClassFromString("XCTRunnerDaemonSession") {
+            let sessSel = NSSelectorFromString("sharedSession")
+            let confSel = NSSelectorFromString("setImplicitEventConfirmationIntervalForCurrentContext:")
+            if let sm = class_getClassMethod(cls, sessSel),
+               let cm = class_getInstanceMethod(cls, confSel) {
+                typealias ObjFn = @convention(c) (AnyObject, Selector) -> AnyObject
+                typealias VoidDblFn = @convention(c) (AnyObject, Selector, Double) -> Void
+                let sess = unsafeBitCast(method_getImplementation(sm), to: ObjFn.self)(cls, sessSel)
+                unsafeBitCast(method_getImplementation(cm), to: VoidDblFn.self)(sess, confSel, 0)
+                NSLog("agent-mobile: implicit event confirmation interval zeroed")
+            }
+        }
+    }
+
+    /// A no-op IMP for a `void` method whose args are all BOOLs. The block
+    /// trampoline marshals arguments by signature, so arity must match or the
+    /// call forwards into a crash.
+    static func noopImp(_ m: Method) -> IMP? {
+        guard (0..<argc(m)).allSatisfy({ encoding(of: m, at: $0 + 2) == "B" }) else { return nil }
+        switch argc(m) {
+        case 0:
+            let b: @convention(block) (AnyObject) -> Void = { _ in }
+            return imp_implementationWithBlock(b)
+        case 1:
+            let b: @convention(block) (AnyObject, Bool) -> Void = { _, _ in }
+            return imp_implementationWithBlock(b)
+        case 2:
+            let b: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+            return imp_implementationWithBlock(b)
+        case 3:
+            let b: @convention(block) (AnyObject, Bool, Bool, Bool) -> Void = { _, _, _, _ in }
+            return imp_implementationWithBlock(b)
+        default:
+            return nil
+        }
+    }
+
+    static func argc(_ m: Method) -> Int { Int(method_getNumberOfArguments(m)) - 2 }
+
+    static func encoding(of m: Method, at i: Int) -> String {
+        guard let p = method_copyArgumentType(m, UInt32(i)) else { return "?" }
+        defer { free(p) }
+        return String(cString: p)
+    }
+
+    static func returnEncoding(_ m: Method) -> String {
+        let p = method_copyReturnType(m)
+        defer { free(p) }
+        return String(cString: p)
+    }
 
     func handle(_ cmd: String, _ p: [String: Any]) throws -> [String: Any] {
         switch cmd {
@@ -32,17 +130,37 @@ final class Driver {
             return try settledSnapshot()
         case "tap":
             if let x = p["x"] as? Double, let y = p["y"] as? Double {
-                app().coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: x, dy: y)).tap()
-            } else { try resolve(p["ref"]).tap() }
-            return try settledSnapshot()
+                let pt = CGPoint(x: x, y: y)
+                if !fastTap(pt) { point(pt).tap() }
+                return try settledSnapshot()
+            }
+            let t0 = Date()
+            let (f, h) = try resolve(p["ref"])
+            let t1 = Date()
+            let pt = CGPoint(x: f.midX, y: f.midY)
+            if !fastTap(pt) { point(pt).tap() }
+            NSLog("agent-mobile: tap resolve=%dms synth=%dms", Int(t1.timeIntervalSince(t0) * 1000), Int(Date().timeIntervalSince(t1) * 1000))
+            return try settledSnapshot(baseline: h)
         case "type":
-            if let r = p["ref"] { try resolve(r).tap() }
-            app().typeText(try str(p, "text")); return try settledSnapshot()
+            var h: Int? = nil
+            if p["ref"] != nil {
+                let (f, rh) = try resolve(p["ref"])
+                let pt = CGPoint(x: f.midX, y: f.midY)
+                if !fastTap(pt) { point(pt).tap() }
+                h = rh
+            }
+            app().typeText(try str(p, "text")); return try settledSnapshot(baseline: h)
         case "swipe":
-            let el = p["ref"] != nil ? try resolve(p["ref"]) : app()
-            switch try str(p, "direction") {
-            case "up": el.swipeUp(); case "down": el.swipeDown(); case "left": el.swipeLeft(); case "right": el.swipeRight()
-            default: throw DrvError(code: "BAD_REQUEST", msg: "direction up|down|left|right")
+            let dir = try str(p, "direction")
+            guard ["up", "down", "left", "right"].contains(dir) else {
+                throw DrvError(code: "BAD_REQUEST", msg: "direction up|down|left|right")
+            }
+            if p["ref"] != nil {
+                let (f, h) = try resolve(p["ref"]); flick(dir, from: f); return try settledSnapshot(baseline: h)
+            }
+            let el = app()
+            switch dir {
+            case "up": el.swipeUp(); case "down": el.swipeDown(); case "left": el.swipeLeft(); default: el.swipeRight()
             }
             return try settledSnapshot()
         case "home":
@@ -54,45 +172,120 @@ final class Driver {
         }
     }
 
+    // Absolute point in the app frame -> a tap-able coordinate; no query.
+    func point(_ p: CGPoint) -> XCUICoordinate {
+        app().coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: p.x, dy: p.y))
+    }
+
+    // A tap via XCPointerEventPath + XCSynthesizedEventRecord — the WebDriverAgent
+    // event path (docs/research/11). `XCUICoordinate.tap()` pays an element
+    // resolution plus XCTest's event plumbing (~480 ms here); the record
+    // synthesizes straight through testmanagerd. Every selector is verified at
+    // runtime; any miss falls back to the stock coordinate tap.
+    func fastTap(_ p: CGPoint) -> Bool {
+        guard let pathCls = NSClassFromString("XCPointerEventPath"),
+              let recCls = NSClassFromString("XCSynthesizedEventRecord") else { return false }
+        let allocSel = NSSelectorFromString("alloc")
+        let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
+        let liftSel = NSSelectorFromString("liftUpAtOffset:")
+        let recSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let addSel = NSSelectorFromString("addPointerEventPath:")
+        let synthSel = NSSelectorFromString("synthesizeWithError:")
+        guard let allocM = class_getClassMethod(pathCls, allocSel),
+              let recAllocM = class_getClassMethod(recCls, allocSel),
+              let initM = class_getInstanceMethod(pathCls, initSel),
+              let liftM = class_getInstanceMethod(pathCls, liftSel),
+              let recM = class_getInstanceMethod(recCls, recSel),
+              let addM = class_getInstanceMethod(recCls, addSel),
+              let synthM = class_getInstanceMethod(recCls, synthSel) else { return false }
+        typealias ObjFn = @convention(c) (AnyObject, Selector) -> AnyObject
+        typealias TouchFn = @convention(c) (AnyObject, Selector, CGPoint, Double) -> AnyObject
+        typealias VoidDblFn = @convention(c) (AnyObject, Selector, Double) -> Void
+        typealias NameOriFn = @convention(c) (AnyObject, Selector, AnyObject, Int) -> AnyObject
+        typealias VoidObjFn = @convention(c) (AnyObject, Selector, AnyObject) -> Void
+        typealias SynthFn = @convention(c) (AnyObject, Selector, UnsafeMutablePointer<NSError?>) -> Bool
+        let path = unsafeBitCast(method_getImplementation(initM), to: TouchFn.self)(
+            unsafeBitCast(method_getImplementation(allocM), to: ObjFn.self)(pathCls, allocSel),
+            initSel, p, 0)
+        unsafeBitCast(method_getImplementation(liftM), to: VoidDblFn.self)(path, liftSel, 0.05)
+        let ori: Int = switch XCUIDevice.shared.orientation {
+        case .landscapeLeft: 3
+        case .landscapeRight: 4
+        case .portraitUpsideDown: 2
+        default: 1
+        }
+        let rec = unsafeBitCast(method_getImplementation(recM), to: NameOriFn.self)(
+            unsafeBitCast(method_getImplementation(recAllocM), to: ObjFn.self)(recCls, allocSel),
+            recSel, "agent-mobile" as NSString, ori)
+        unsafeBitCast(method_getImplementation(addM), to: VoidObjFn.self)(rec, addSel, path)
+        var err: NSError?
+        return unsafeBitCast(method_getImplementation(synthM), to: SynthFn.self)(rec, synthSel, &err)
+    }
+
+    // A ref-scoped swipe as a press+drag across the element's frame.
+    func flick(_ dir: String, from f: CGRect) {
+        var dx = 0.0, dy = 0.0
+        switch dir {
+        case "up": dy = -f.height * 0.6
+        case "down": dy = f.height * 0.6
+        case "left": dx = -f.width * 0.6
+        default: dx = f.width * 0.6
+        }
+        point(CGPoint(x: f.midX, y: f.midY))
+            .press(forDuration: 0.05, thenDragTo: point(CGPoint(x: f.midX + dx, y: f.midY + dy)))
+    }
+
     func str(_ p: [String: Any], _ k: String) throws -> String {
         guard let v = p[k] as? String, !v.isEmpty else { throw DrvError(code: "BAD_REQUEST", msg: "\(k) required") }
         return v
     }
 
     // Per-snapshot qualified refs; re-resolve on every action and fail loudly.
-    func resolve(_ any: Any?) throws -> XCUIElement {
+    // One fresh tree read is walked in-process for (type, identifier, label,
+    // frame ±1 pt) instead of a predicate query that XCTest evaluates twice;
+    // the caller acts on the matched frame's coordinates. The read's hash is
+    // returned so the settle check can count it as the first consecutive read.
+    func resolve(_ any: Any?) throws -> (frame: CGRect, hash: Int) {
         guard let ref = any as? String else { throw DrvError(code: "BAD_REQUEST", msg: "ref required") }
         let parts = ref.split(separator: ":")
         guard parts.count == 2, String(parts[0].dropFirst()) == snapId else {
             throw DrvError(code: "STALE_REF", msg: "current snapshot is @\(snapId); ref \(ref) is from another snapshot; re-snapshot")
         }
         guard let id = refs[ref] else { throw DrvError(code: "STALE_REF", msg: "unknown ref \(ref)") }
-        let q = app().descendants(matching: id.type).matching(NSPredicate { o, _ in
-            guard let a = o as? XCUIElementAttributes else { return false }
-            return a.identifier == id.id && a.label == id.label && Driver.close(a.frame, id.frame)
-        })
-        let n = q.count
+        let snap = try app().snapshot()
+        var n = 0; var frame = CGRect.zero
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.elementType == id.type, node.identifier == id.id, node.label == id.label,
+               Driver.close(node.frame, id.frame) { n += 1; frame = node.frame }
+            node.children.forEach(walk)
+        }
+        walk(snap)
         if n == 0 { throw DrvError(code: "STALE_REF", msg: "\(ref) no longer matches a live element; re-snapshot") }
         if n > 1 { throw DrvError(code: "AMBIGUOUS_TARGET", msg: "\(ref) matches \(n) live elements; re-snapshot") }
-        return q.element(boundBy: 0)
+        return (frame, hash(snap))
     }
 
     static func close(_ a: CGRect, _ b: CGRect) -> Bool {
         abs(a.minX - b.minX) <= 1 && abs(a.minY - b.minY) <= 1 && abs(a.width - b.width) <= 1 && abs(a.height - b.height) <= 1
     }
 
-    // Two-read tree-hash idle check with a finite cap (Apple's own quiescence wait is unbounded).
-    func settledSnapshot(timeout: TimeInterval = 3) throws -> [String: Any] {
+    // Two-read tree-hash idle check with a finite cap (Apple's own quiescence
+    // wait is unbounded). `baseline` donates an already-taken read — the
+    // action's own resolve read, or the last served snapshot's hash — as the
+    // first of the two consecutive reads, so an action that leaves the tree
+    // unchanged settles in one read.
+    func settledSnapshot(timeout: TimeInterval = 3, baseline: Int? = nil) throws -> [String: Any] {
         let a = app()
         let deadline = Date().addingTimeInterval(timeout)
-        var snap = try a.snapshot(); var reads = 1; var h = hash(snap); var settled = false
-        while Date() < deadline {
-            usleep(150_000)
+        var snap = try a.snapshot(); var reads = 1; var h = hash(snap)
+        var settled = h == (baseline ?? lastHash)
+        while !settled, Date() < deadline {
             let s2 = try a.snapshot(); reads += 1
             let h2 = hash(s2); snap = s2
-            if h2 == h { settled = true; break }
+            if h2 == h { settled = true }
             h = h2
         }
+        lastHash = h
         snapId = String(UInt64.random(in: 0...UInt64.max), radix: 36).prefix(8).description
         refs = [:]; seq = 0
         var lines: [String] = []
@@ -239,6 +432,7 @@ final class AgentMobileServer: XCTestCase {
 
     func testServe() {
         continueAfterFailure = true
+        Driver.killQuiescenceWait()
         let env = ProcessInfo.processInfo.environment
         let port = UInt16(env["AGENT_MOBILE_PORT"] ?? "") ?? 8770
         let token = env["AGENT_MOBILE_TOKEN"] ?? ""
