@@ -2,6 +2,7 @@
 //! real snapshot, shape asserted, state torn down. Runs only when named —
 //! CI invokes it explicitly on macOS with `-- --ignored`.
 
+#[allow(dead_code, reason = "shared harness; this binary uses only part of it")]
 mod common;
 
 use agent_mobile_core::error::Failure;
