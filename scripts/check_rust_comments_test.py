@@ -36,7 +36,15 @@ class TestRules(unittest.TestCase):
 
     def test_sleeping_test_fails(self):
         findings = test_rules("#[test]\nfn a() { thread::sleep(d); assert!(x); }\n")
-        self.assertEqual(findings, [(1, "test sleeps; make it deterministic")])
+        self.assertEqual(findings, [(1, "test sleeps; poll with a timeout instead")])
+
+    def test_result_style_test_counts_as_asserting(self):
+        body = '#[test]\nfn a() -> Result<(), E> { match f() { Ok(_) => return Err(fail("no")), _ => {} } Ok(()) }\n'
+        self.assertEqual(test_rules(body), [])
+
+    def test_sleep_inside_a_string_is_not_a_sleeping_test(self):
+        body = '#[test]\nfn a() { cmd.args(["-c", "sleep 30"]); assert!(x); }\n'
+        self.assertEqual(test_rules(body), [])
 
     def test_bare_ignore_fails(self):
         self.assertEqual(len(test_rules("#[ignore]\n#[test]\nfn a() { assert!(x); }\n")), 1)

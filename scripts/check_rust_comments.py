@@ -153,10 +153,11 @@ def test_rules(source):
         line = source.count("\n", 0, match.start()) + 1
         head = source[match.start() : match.start() + 400]
         body = _body_after(source, match.end())
-        if "assert" not in body and "should_panic" not in head:
+        asserts = "assert" in body or "return Err(" in body or "should_panic" in head
+        if not asserts:
             findings.append((line, "test has no assertion"))
-        if "sleep" in body:
-            findings.append((line, "test sleeps; make it deterministic"))
+        if "thread::sleep" in body or "time::sleep" in body:
+            findings.append((line, "test sleeps; poll with a timeout instead"))
     for match in re.finditer(r"#\[ignore\]", source):
         line = source.count("\n", 0, match.start()) + 1
         findings.append((line, "#[ignore] needs a reason: #[ignore = \"why\"]"))
