@@ -67,6 +67,15 @@ jobs:
             -derivedDataPath drivers/ios/dd \
             CODE_SIGNING_ALLOWED=NO
 
+      - name: Pre-boot the simulator the CLI picks, outside the boot budget
+        run: |
+          SIM=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; n=[x["name"] for rt in d for x in d[rt] if x.get("isAvailable")]; print(next((i for i in n if "iPhone" in i), ""))')
+          echo "pre-booting ${SIM:-none}"
+          if [ -n "$SIM" ]; then
+            xcrun simctl boot "$SIM" || true
+            xcrun simctl bootstatus "$SIM" -b || true
+          fi
+
       - name: Live simulator gate (one real boot, one real snapshot)
         env:
           AGENT_MOBILE_DRIVER_DIR: ${{ github.workspace }}/drivers/ios/dd/Build/Products
