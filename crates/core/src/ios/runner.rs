@@ -172,7 +172,13 @@ pub fn serve_command(
                 .arg("test-without-building")
                 .arg("-xctestrun")
                 .arg(xctestrun.file_name().unwrap_or(xctestrun.as_os_str()))
-                .args(["-destination", &sim_destination(device), TEST_ONLY]);
+                .args([
+                    "-destination",
+                    &sim_destination(device),
+                    TEST_ONLY,
+                    "-parallel-testing-enabled",
+                    "NO",
+                ]);
         }
     }
     cmd.env("TEST_RUNNER_AGENT_MOBILE_PORT", port.to_string())
