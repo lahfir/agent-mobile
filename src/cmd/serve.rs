@@ -67,30 +67,28 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     );
     let url = ios::driver_url(&device, ios::DEFAULT_PORT);
     let addr = url.trim_start_matches("http://").to_owned();
-    match await_driver(&mut child, &addr) {
-        Boot::Ready => {}
-        Boot::TrustRefused => {
-            return Err(Failure::local(
-                "the development certificate is not trusted on the device",
-                "on the device: Settings > General > VPN & Device Management > \
-                 trust your Developer App certificate, then rerun `serve`",
-            ));
-        }
-        Boot::Died => {
-            return Err(Failure::local(
-                format!("the driver exited before binding; see {}", log.display()),
-                "check the log for the failing step and retry `serve`",
-            ));
-        }
-        Boot::Timeout => {
-            return Err(Failure::local(
-                format!(
-                    "the driver did not bind {addr} within {}s",
-                    BOOT_BUDGET.as_secs()
-                ),
-                format!("check the log at {} and retry `serve`", log.display()),
-            ));
-        }
+    let booted = match await_driver(&mut child, &addr) {
+        Boot::Ready => None,
+        Boot::TrustRefused => Some(Failure::local(
+            "the development certificate is not trusted on the device",
+            "on the device: Settings > General > VPN & Device Management > \
+             trust your Developer App certificate, then rerun `serve`",
+        )),
+        Boot::Died => Some(Failure::local(
+            format!("the driver exited before binding; see {}", log.display()),
+            "check the log for the failing step and retry `serve`",
+        )),
+        Boot::Timeout => Some(Failure::local(
+            format!(
+                "the driver did not bind {addr} within {}s",
+                BOOT_BUDGET.as_secs()
+            ),
+            format!("check the log at {} and retry `serve`", log.display()),
+        )),
+    };
+    if let Some(failure) = booted {
+        let _ = store.remove_token(&token_file);
+        return Err(failure);
     }
     let mut entry = SessionEntry::new(url.clone(), std::process::id(), token_file);
     entry.runner_pid = Some(child.pid());
