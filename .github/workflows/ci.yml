@@ -38,3 +38,15 @@ jobs:
           command: check
           arguments: --locked
           command-arguments: advisories licenses bans sources
+
+  simulator-integration:
+    name: Simulator integration
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Live simulator gate (one real boot, one real snapshot)
+        run: cargo test --test integration_snapshot --locked -- --ignored

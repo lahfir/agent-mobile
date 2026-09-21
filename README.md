@@ -4,96 +4,134 @@ Let an AI agent drive iOS (and later Android) apps through a snapshot -> act loo
 simulator and on a physical device, with the driver exposed on a plain local HTTP port so any
 tunnel can forward it. Sibling of agent-browser (web) and agent-desktop (native desktop).
 
-## Status (2026-09-19)
+## Status (2026-09-20)
 
-- Research complete: `docs/` holds 13 track files plus `docs/research/README.md` (the synthesis). Every
-  claim there is tagged `[VERIFIED]` or `[INFERRED]`.
-- Probe driver built: `fixtures/driver/ToDoUITests/AgentMobileServer.swift`, 267 lines. A never-ending
-  XCUITest method hosts a tiny HTTP server (WebDriverAgent shape). XCUITest is the hidden
-  mechanism; the agent only sees HTTP.
-- Proven on the iOS 26 simulator (`docs/experiments/RESULTS.md`, Experiment 5): agent-driven
-  launch -> snapshot -> tap by ref -> type by ref -> tap Done -> re-snapshot showed a new
-  Calendar event. No scripted test; each step was a separate HTTP call chosen after reading the
-  previous reply.
-- Proven through a cloudflared quick tunnel (Experiment 6): same driver, public HTTPS URL,
-  status 200 in 0.45 s, settled snapshot in 0.51 s, 401 without the token.
-- Proven on a physical iPhone 14 Pro, iOS 27.0, over Wi-Fi and through a public cloudflared
-  tunnel (Experiment 7): the same driver binary signed with a personal Apple Development
-  identity answered status in 0.14 s on the LAN and 0.87 s through the tunnel; launched Calendar
-  (2.0 s, 136 refs); tapped Add by ref (2.2 s, 252 refs). A type call hit STALE_REF once (the
-  sheet had still been moving), the driver refused it as designed, a re-snapshot took 0.56 s.
-  The run was stopped there by the user.
-- Full loop proven on that same phone (Experiment 8): launch Calendar (2.04 s, 136 refs) ->
-  tap Add (2.06 s, 252 refs) -> type the title (2.29 s, 253 refs) -> tap Done (1.84 s, 138 refs),
-  and the returned day view carries `button "Agent Mobile Probe, from 7:00 PM to 8:00 PM"`.
-  Four agent-chosen HTTP calls, 8.2 s of driver time, no STALE_REF. Screenshot:
-  `docs/experiments/logs/21_device_calendar_event_created.png`.
-- Open: the two-read tree hash declared settle while a late layout pass was still pending on
-  the physical device (Experiment 7); a third read or a minimum settle window is the obvious
-  next step. Experiment 8 did not reproduce it and did not find its trigger; it did document a
-  different staleness path (a Title ref taken on the empty field dies once text goes in).
-- Open: the Developer App certificate trust on the phone was not in effect an hour after
-  Experiment 7 granted it, and had to be granted by hand again before Experiment 8
-  (Settings > General > VPN & Device Management). Cause unknown.
-- Not built (deliberately, this was a probe): the agent-facing CLI, an MCP wrapper, Android,
-  the iOS in-app SDK, end-to-end encryption, swipe/scroll/long-press exercise, AMBIGUOUS_TARGET
-  exercise, list dedup in the snapshot text.
+- P1 shipped: the Rust CLI (`agent-mobile`) wraps the proven XCUITest driver. Any verb lazy-starts
+  a driver when none runs; `serve` runs one in the foreground. The npm package bundles a prebuilt
+  simulator runner, so the simulator path builds nothing on the user's Mac.
+- Probe evidence stands (`docs/experiments/RESULTS.md`, Experiments 1–9): agent-driven Calendar
+  events on the iOS 26 simulator and on a physical iPhone 14 Pro over Wi-Fi, settled snapshots,
+  STALE_REF refusing a mistap, one boot from a clean state.
+- Not built (later phases): Android (P2), the reliability benchmark (P3), the MCP wrapper (P4),
+  the iOS in-app SDK, end-to-end encryption on the LAN hop.
 
-## Layout
+## Install
 
-- `docs/PRD.md` — the product requirements: contract, phases P1–P4 with experiment exit criteria,
-  engineering practices, risks, and the reliability gate.
-- `fixtures/driver/` — the probe iOS driver: an Xcode project whose UI-test target hosts the HTTP
-  server (`ToDoUITests/AgentMobileServer.swift`). The ToDo host app is only the scaffold a UI-test
-  target needs; the driver never touches it. `am.sh` is a curl helper, `start-device.sh` starts the
-  driver on a physical iPhone, `tunnel-cloudflared.sh` is the reference tunnel adapter.
-- `docs/research/` and `docs/experiments/` — local reference material, gitignored and not published:
-  the 13 research tracks with their synthesis, and the experiment record with verbatim output
-  (Experiments 1–8) plus logs and screenshots. The PRD cites them by path.
-
-## Run it
-
-Simulator (boots the device if needed; the runner listens on `127.0.0.1:8770` of the Mac):
+macOS only, Node >= 18. The package ships a prebuilt CLI binary and a prebuilt simulator runner —
+installation compiles nothing and downloads nothing.
 
 ```
-cd driver
-TEST_RUNNER_AGENT_MOBILE_PORT=8770 TEST_RUNNER_AGENT_MOBILE_TOKEN=<token> \
-xcodebuild test -project ToDo.xcodeproj -scheme ToDo \
-  -destination 'platform=iOS Simulator,id=<sim-udid>' \
-  -only-testing:ToDoUITests/AgentMobileServer/testServe -skip-testing:ToDoTests \
-  -parallel-testing-enabled NO -derivedDataPath ./dd CODE_SIGNING_ALLOWED=NO
+npm i -g agent-mobile
+agent-mobile --version
 ```
 
-Note: `-parallel-testing-enabled NO` is required, otherwise Xcode drives a throwaway clone of
-the simulator. `TEST_RUNNER_` is the prefix xcodebuild strips when passing environment into the
-runner.
-
-Physical iPhone (signs with the project's team, installs the host app and the runner, binds
-`0.0.0.0` on the phone so the Mac reaches it over Wi-Fi):
+From a checkout instead (pins in `rust-toolchain.toml` and `Cargo.toml` apply):
 
 ```
-fixtures/driver/start-device.sh <device-udid>        # token written to /tmp/agent-mobile-device-token
-curl -X POST http://<phone-ip>:8770/status -H "Authorization: Bearer $(cat /tmp/agent-mobile-device-token)"
+cargo build --release --locked
 ```
 
-Note: on first install iOS refuses to launch the runner until the Developer App certificate is
-trusted on the phone: Settings > General > VPN & Device Management > trust the certificate,
-then run the script again. The phone shows "Automation Running" while the driver is up.
+## Quickstart
 
-Tunnel (any forwarder works; the driver knows nothing about it):
+Any verb lazy-starts the driver when no session exists — boots the default simulator, builds the
+runner on first use, saves the session under `~/.agent-mobile/`, then runs the verb. The first
+call can take a minute; progress prints to stderr.
 
 ```
-fixtures/driver/tunnel-cloudflared.sh                       # simulator: forwards http://localhost:8770
-fixtures/driver/tunnel-cloudflared.sh http://<phone-ip>:8770  # physical device
-# alternatives: ngrok http 8770 | tailscale funnel 8770 | bore local 8770 --to bore.pub | ssh -R
-export AGENT_MOBILE_URL=https://<public-host> AGENT_MOBILE_TOKEN=<token>
-fixtures/driver/am.sh snapshot '{}'
+agent-mobile snapshot                  # lazy-boots, prints the accessibility tree
+agent-mobile launch com.apple.mobilecal
+agent-mobile tap @1abc:e7              # act on a ref from the last snapshot
+agent-mobile type "Dentist tomorrow"   # type into the focused field
+agent-mobile screenshot shot.png       # PNG file; omit the path for base64 on stdout
+agent-mobile skills                    # the one-page agent guide
 ```
+
+To run the driver explicitly (one per device, foreground, Ctrl-C cleans up):
+
+```
+agent-mobile devices                   # reachable simulators and paired devices
+agent-mobile serve "iPhone 17 Pro Max" # prints the session token once when ready
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `devices` | list reachable simulators and paired devices |
+| `serve <device>` | start a driver in the foreground; prints the session token once |
+| `status` | active app, device, os, current snapshot id |
+| `snapshot` | mint refs and print the accessibility tree |
+| `tap <ref>` or `tap <x> <y>` | tap an element ref, or a point in the app frame |
+| `type [<ref>] <text...>` | type text; a leading ref taps that field first; use `--` before hyphen-leading text |
+| `swipe <up\|down\|left\|right> [<ref>]` | swipe the app, or one element |
+| `home` | press Home; returns the springboard tree |
+| `launch <bundle_id>` | cold-start an app; kills saved state |
+| `activate <bundle_id>` | foreground a running app; keeps its state |
+| `screenshot [path]` | PNG to a file, or base64 to stdout |
+| `stop` | terminate the active app; the driver stays up |
+| `skills` | print the one-page agent guide |
+
+Global flags: `--json` (raw JSON envelope instead of text), `--app <bundle>` (retarget `snapshot`
+at a bundle id), `--max-depth <n>` (trim the tree client-side; the header then shows
+`complete=false`), `--device <name>` (pick a device; remembered for later calls).
+
+## Environment
+
+| Variable | Effect |
+|---|---|
+| `AGENT_MOBILE_URL` | driver URL override for the call (e.g. a tunnel or a phone on the LAN) |
+| `AGENT_MOBILE_TOKEN` | bearer token paired with the URL override |
+| `AGENT_MOBILE_DRIVER_DIR` | driver source override: an Xcode project dir or a `runner/` dir holding `*.xctestrun` |
+| `TEST_RUNNER_AGENT_MOBILE_PORT` / `_TOKEN` / `_BIND` | driver-side env, set through xcodebuild's `TEST_RUNNER_` prefix (see `fixtures/driver/am.sh`) |
+
+## Sessions and state
+
+Everything lives under `~/.agent-mobile/`:
+
+- `state.json` — device entries: driver URL, serve pid, runner pid, token filename, last snapshot
+  id. Never holds a token value.
+- `tokens/` — one `0600` file per session; the token itself.
+- `driver-<device>.log` — the runner's log, written `0600` because the runner echoes its env.
+- `serve.lock`, `boot.lock` — one serve per device; one lazy boot at a time.
+
+A second `serve` on a live device reports the URL, the pid, and the remedy. A dead `serve` leaves
+an orphaned runner; the next `serve` or lazy boot reaps it by recorded pid and continues. A
+foreign process holding port 8770 fails fast and names the port, device, and `lsof` remedy.
+
+## Output contract
+
+- stdout carries parseable data; stderr carries hints and errors. A broken stdout pipe exits 0.
+- Exit codes: `0` ok, `1` driver or transport failure, `2` usage error.
+- Snapshot header: `app=... device="..." os=... snapshot=@... refs=N settled=true complete=true
+  reads=N elapsed_ms=N`. `settled=false` means the settle loop hit its cap — the tree is still
+  usable. `complete=false` means `--max-depth` trimmed nodes below the printed depth.
+- Refs look like `@<snapshot>:e<N>` and die with their snapshot; every action replies with the
+  next snapshot, so a fresh ref set is always one call old at most.
+- Errors name the next action: `STALE_REF` -> re-snapshot and retry; `AMBIGUOUS_TARGET` -> pick a
+  ref with a firmer `native_id`, walk bounds via `--json`, or coordinate-tap; transport failures
+  print the escalation checklist (serve running? cert trusted? same Wi-Fi? Mac awake?).
+
+## Physical iPhone
+
+A physical device needs a signed runner, which npm cannot ship — clone this repo so `serve`
+finds the source project (`fixtures/driver/ToDo.xcodeproj`), then:
+
+```
+agent-mobile serve "Lahfir's iPhone"
+```
+
+`xcodebuild` builds and signs with the project's team, installs the host app plus the runner, and
+binds `0.0.0.0:8770` on the phone — the Mac reaches it over the same Wi-Fi. On first install iOS
+refuses to launch the runner until the Developer App certificate is trusted on the phone:
+Settings > General > VPN & Device Management > trust the certificate, then `serve` again — the
+command detects the refusal and prints these steps. The phone shows "Automation Running" while
+the driver is up. The driver URL is `http://<bonjour-host>.local:8770`; it lands in `state.json`
+automatically, or pass it per call via `AGENT_MOBILE_URL`.
 
 ## Protocol
 
-- Every call is `POST /<command>` with a JSON body and `Authorization: Bearer <token>`. Missing
-  or wrong token -> 401.
+- Every call is `POST /<command>` with a JSON body, `Authorization: Bearer <token>`, and
+  `X-Agent-Mobile-Version: 1`. Missing or wrong token -> 401.
 - Commands: `status`; `launch {bundle_id}`; `activate {bundle_id}`; `terminate`;
   `snapshot {app?}`; `tap {ref} | {x,y}`; `type {text, ref?}`;
   `swipe {direction: up|down|left|right, ref?}`; `home`; `screenshot` (PNG base64).
@@ -104,7 +142,7 @@ fixtures/driver/am.sh snapshot '{}'
   reads, text, tree`. Every action returns the fresh post-action tree, so an action costs no
   extra round trip.
 - Node: `role, name, value, ref_id, states, available_actions, native_id {kind:"ax_identifier",
-  value}, bounds {x,y,w,h}, children` — the agent-desktop shape (`docs/research/00-agent-desktop-contract.md`).
+  value}, bounds {x,y,width,height}, children`.
 - Refs are per-snapshot and qualified: `@<snapshot_id>:eN`. Each action re-resolves its ref
   against the live tree by element type + identifier + label + frame (1 pt tolerance).
   Snapshot-id mismatch or no live match -> STALE_REF; more than one match -> AMBIGUOUS_TARGET.
@@ -114,15 +152,24 @@ fixtures/driver/am.sh snapshot '{}'
 - `Accept: text/plain` returns the compact listing instead of JSON, one line per named or
   interactive node: `@id:eN role "name" value="..." at=x,y size=WxH [states]`.
 
-## Security (probe-grade)
+## Security
 
-- Bearer token on every route.
-- HTTPS to Cloudflare and an encrypted cloudflared hop to the Mac.
-- The Mac-to-phone hop is plain HTTP on the LAN.
-- The phone binds all interfaces.
-- Cloudflare sees plaintext (no end-to-end encryption).
-- Whoever holds the URL and token has full UI control.
-- No rate limit, expiry, allowlist, or audit log.
+- Bearer token per session, generated on `serve`, written to a `0600` file, printed once.
+- The Mac-to-phone hop is plain HTTP on the LAN; the phone binds all interfaces. Tunnel adapters
+  (`fixtures/driver/tunnel-cloudflared.sh`, ngrok, tailscale, ssh -R) add encryption on the way
+  out, but the driver itself knows nothing about TLS.
+- Whoever holds the URL and token has full UI control. No rate limit, expiry, allowlist, or
+  audit log. Use a fresh token per session and only on a trusted Wi-Fi.
 
-Use a fresh token per session and only on a trusted Wi-Fi. The trust model for a product is in
-`docs/research/10`.
+## Layout
+
+- `src/`, `crates/core/` — the CLI and the shared core (contract, wire client, state, process).
+- `npm/` — the darwin-only package: `run.js` shim, `install.js` postinstall verifier, bundled
+  `bin/` + `runner/` produced by `scripts/sync-npm-version.sh`.
+- `fixtures/driver/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
+  server (`ToDoUITests/AgentMobileServer.swift`). `am.sh` is a curl helper, `start-device.sh`
+  starts the driver on a physical iPhone, `tunnel-cloudflared.sh` is the reference tunnel adapter.
+- `docs/PRD.md` — the product requirements: contract, phases P1–P4 with experiment exit criteria,
+  engineering practices, risks, and the reliability gate.
+- `docs/research/` and `docs/experiments/` — the 13 research tracks with their synthesis, and the
+  experiment record with verbatim output (Experiments 1–9) plus logs and screenshots.
