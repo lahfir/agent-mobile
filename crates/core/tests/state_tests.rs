@@ -34,6 +34,7 @@ fn entry(url: &str) -> SessionEntry {
         pid: 4242,
         started_at: 1_700_000_000,
         token_file: "dev".to_owned(),
+        runner_pid: None,
         last_snapshot_id: None,
     }
 }

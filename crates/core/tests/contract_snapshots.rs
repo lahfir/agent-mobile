@@ -1,7 +1,7 @@
 //! Golden contract tests: driver-shaped JSON parses into the typed contract,
 //! and every registry code renders its verbatim code plus its next action.
 
-use agent_mobile_core::contract::{Bounds, Data, Envelope, ErrorBody};
+use agent_mobile_core::contract::{Bounds, Data, Envelope, ErrorBody, Snapshot};
 use agent_mobile_core::error::{EXIT_ERROR, EXIT_USAGE, ErrorCode, Failure};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -117,6 +117,14 @@ fn settled_snapshot_envelope_parses() -> TestResult {
     let Some(Data::Snapshot(snap)) = env.data else {
         return Err("expected the snapshot data variant".into());
     };
+    check_settled_snapshot(&snap);
+    insta::assert_debug_snapshot!("settled_snapshot_data", snap);
+    Ok(())
+}
+
+/// The settled snapshot's fixed fields, kept out of the envelope test so
+/// neither trips the complexity lint.
+fn check_settled_snapshot(snap: &Snapshot) {
     assert_eq!(snap.app, "com.example.todo");
     assert_eq!(snap.snapshot_id, "upii2see");
     assert_eq!(snap.ref_count, 3);
@@ -132,8 +140,6 @@ fn settled_snapshot_envelope_parses() -> TestResult {
         }
     );
     assert_eq!(snap.tree.children.len(), 2);
-    insta::assert_debug_snapshot!("settled_snapshot_data", snap);
-    Ok(())
 }
 
 #[test]

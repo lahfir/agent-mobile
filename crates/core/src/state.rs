@@ -37,6 +37,10 @@ pub struct SessionEntry {
     pub started_at: u64,
     /// Token file name inside `tokens/`; the token never appears here.
     pub token_file: String,
+    /// Pid of the `xcodebuild` runner `serve` spawned — the owned child to
+    /// reap when the serve pid dies without cleanup (KTD17).
+    #[serde(default)]
+    pub runner_pid: Option<u32>,
     /// Latest snapshot id the driver minted for this device, enabling local
     /// stale-ref rejection without a round trip.
     #[serde(default)]
@@ -55,6 +59,7 @@ impl SessionEntry {
             pid,
             started_at,
             token_file,
+            runner_pid: None,
             last_snapshot_id: None,
         }
     }
@@ -148,6 +153,12 @@ impl StateStore {
         }
     }
 
+    /// The state directory root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Path of the state file.
     #[must_use]
     pub fn state_file(&self) -> PathBuf {
@@ -158,6 +169,20 @@ impl StateStore {
     #[must_use]
     pub fn lock_file(&self) -> PathBuf {
         self.root.join("boot.lock")
+    }
+
+    /// Path of the serve single-instance lockfile, held with `File::lock`.
+    #[must_use]
+    pub fn serve_lock_file(&self) -> PathBuf {
+        self.root.join("serve.lock")
+    }
+
+    /// Path of the driver log for `device` (`serve` redirects the runner's
+    /// output here; failures stay visible per KTD8).
+    #[must_use]
+    pub fn driver_log(&self, device: &str) -> PathBuf {
+        self.root
+            .join(format!("driver-{}.log", Self::token_file_for(device)))
     }
 
     /// Path of a named token file inside `tokens/`.
@@ -284,6 +309,21 @@ impl StateStore {
     pub fn read_token(&self, entry: &SessionEntry) -> Result<String, Failure> {
         let raw = fs::read_to_string(self.token_path(&entry.token_file))?;
         Ok(raw.trim_end().to_owned())
+    }
+
+    /// Remove a token file; a missing file is not an error. Required before
+    /// every `write_token` for a returning device, since `write_secret`
+    /// refuses to overwrite (KTD6).
+    ///
+    /// # Errors
+    /// Returns [`Failure::Local`] when the name is invalid or removal fails.
+    pub fn remove_token(&self, token_file: &str) -> Result<(), Failure> {
+        validate_token_file(token_file)?;
+        match fs::remove_file(self.token_path(token_file)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Failure::from(e)),
+        }
     }
 
     /// Resolve the endpoint for one invocation, honoring the env overrides.

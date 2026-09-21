@@ -92,7 +92,7 @@ fn calendar_header_line_matches_live_format() -> Result<(), Failure> {
         (r"snapshot=@[a-z0-9]+", "snapshot=@SNAP"),
         (r"elapsed_ms=\d+", "elapsed_ms=N"),
     ]}, {
-        insta::assert_snapshot!(first)
+        insta::assert_snapshot!(first);
     });
     let snap = expect_snapshot(&env)?;
     assert!(first.starts_with(&format!("app={} snapshot=@", snap.app)));

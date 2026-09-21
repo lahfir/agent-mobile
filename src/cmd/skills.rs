@@ -8,6 +8,8 @@ agent-mobile — drive an iOS app through a snapshot -> act loop
 
 COMMANDS
   devices                        list reachable simulators and paired devices
+  serve <device>                 start a driver in the foreground; prints the
+                                 session token once
   status                         active app, device, os, current snapshot id
   snapshot                       mint refs and print the accessibility tree
   tap <ref> | <x> <y>            tap an element ref, or a point in the app frame
@@ -30,6 +32,11 @@ FLAGS (global)
 
 ENVIRONMENT
   AGENT_MOBILE_URL, AGENT_MOBILE_TOKEN   override the saved session per call
+
+SESSIONS
+  Any verb starts the driver on demand when none runs — the first call can
+  take a minute while the runner builds and the simulator boots. `serve`
+  runs the driver in the foreground instead and prints the token once.
 
 THE LOOP
   snapshot -> pick a ref -> act -> repeat. Every action replies with the next
@@ -55,6 +62,6 @@ LAUNCH VS ACTIVATE
 
 /// Run `skills`; prints the guide, no wire involved.
 pub fn run() -> i32 {
-    print!("{GUIDE}");
+    super::emit(GUIDE.trim_end_matches('\n'));
     0
 }

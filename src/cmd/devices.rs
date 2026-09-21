@@ -25,7 +25,7 @@ pub fn run(json: bool) -> Result<i32, Failure> {
             .collect();
         let line = serde_json::to_string(&serde_json::json!({ "devices": out }))
             .map_err(|e| Failure::local(e.to_string(), "report a bug"))?;
-        println!("{line}");
+        super::emit(&line);
         return Ok(0);
     }
     for d in &devices {
@@ -40,10 +40,10 @@ pub fn run(json: bool) -> Result<i32, Failure> {
             .devices
             .get(&d.name)
             .map_or_else(String::new, |e| format!(" serving={}", e.url));
-        println!(
+        super::emit(&format!(
             "name=\"{}\" udid={} kind={}{}{}{}",
             d.name, d.udid, d.kind, os, st, serving
-        );
+        ));
     }
     Ok(0)
 }

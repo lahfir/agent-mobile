@@ -29,6 +29,11 @@ pub struct Cli {
 pub enum Command {
     /// List reachable simulators and paired devices.
     Devices,
+    /// Start a driver for one device in the foreground; prints the token once.
+    Serve {
+        /// Device name or UDID from `agent-mobile devices`.
+        device: String,
+    },
     /// Show the active app and session identity.
     Status,
     /// Capture the accessibility tree and mint refs.

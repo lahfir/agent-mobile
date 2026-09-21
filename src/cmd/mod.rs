@@ -6,7 +6,9 @@ pub mod activate;
 pub mod devices;
 pub mod home;
 pub mod launch;
+pub mod lazy;
 pub mod screenshot;
+pub mod serve;
 pub mod skills;
 pub mod snapshot;
 pub mod status;
@@ -70,25 +72,40 @@ impl Ctx {
         })
     }
 
-    /// Resolve this invocation's endpoint; a miss names the remedy rather
-    /// than starting anything — lazy start arrives with `serve`.
+    /// Resolve this invocation's endpoint, or lazy-start a driver first
+    /// when nothing is running (KTD7).
     fn session(&self) -> Result<Session, Failure> {
+        match self.ready_session()? {
+            Some(s) => Ok(s),
+            None => lazy::session(self),
+        }
+    }
+
+    /// The session for an already-running driver; `None` on a miss or when
+    /// the recorded session's pid is dead — stale state reconciles to a
+    /// lazy boot instead of a wire failure. The stale entry stays on disk
+    /// for `serve` to reclaim: its `runner_pid` reaps any orphaned runner
+    /// still holding the port (KTD7).
+    fn ready_session(&self) -> Result<Option<Session>, Failure> {
         let ResolveOutcome::Ready(ep) = self.store.resolve(self.device.as_deref())? else {
-            return Err(Failure::local(
-                "no driver session is running",
-                "run `agent-mobile serve <device>` or set AGENT_MOBILE_URL and AGENT_MOBILE_TOKEN",
-            ));
+            return Ok(None);
         };
-        let entry = if std::env::var(URL_ENV).is_ok() {
+        let env_pinned = std::env::var(URL_ENV).is_ok();
+        let entry = if env_pinned {
             None
         } else {
             ep.device.as_deref().and_then(|d| self.store.entry(d))
         };
-        Ok(Session {
+        if let Some(e) = &entry
+            && !agent_mobile_core::process::pid_alive(e.pid)
+        {
+            return Ok(None);
+        }
+        Ok(Some(Session {
             wire: Wire::new(&ep.url, ep.token()),
             device: ep.device.clone(),
             last_snapshot_id: entry.and_then(|e| e.last_snapshot_id),
-        })
+        }))
     }
 
     /// Emit one reply: record the snapshot id, honor `--max-depth`, then
@@ -101,7 +118,7 @@ impl Ctx {
         self.record_snapshot(session, &env);
         if self.json {
             match serde_json::to_string(&env) {
-                Ok(line) => println!("{line}"),
+                Ok(line) => emit(&line),
                 Err(e) => {
                     eprintln!("error: cannot serialize the reply: {e}");
                     return 1;
@@ -110,7 +127,7 @@ impl Ctx {
             return i32::from(!env.ok);
         }
         if env.ok {
-            println!("{}", format::render(&env));
+            emit(&format::render(&env));
             0
         } else {
             let f = env.error.as_ref().map_or_else(
@@ -156,6 +173,23 @@ pub fn dispatch(cli: &Cli) -> Result<i32, Failure> {
             Ctx::new(cli).and_then(|ctx| screenshot::run(&ctx, output.as_deref()))
         }
         Command::Stop => Ctx::new(cli).and_then(|ctx| stop::run(&ctx)),
+        Command::Serve { device } => Ctx::new(cli).and_then(|ctx| serve::run(&ctx, device)),
+    }
+}
+
+/// Create the `~/.agent-mobile` state dir before locks or logs touch it.
+pub fn ensure_state_dir(store: &StateStore) -> Result<(), Failure> {
+    agent_mobile_core::secret::create_private_dirs(store.root())
+}
+
+/// Write one line to stdout; a closed pipe (`| head`) is a clean exit, not
+/// a panic (KTD8). `println!` panics on EPIPE, so every stdout write routes
+/// here.
+pub fn emit(line: &str) {
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    if writeln!(out, "{line}").is_err() || out.flush().is_err() {
+        std::process::exit(0);
     }
 }
 

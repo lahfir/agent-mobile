@@ -20,6 +20,6 @@ pub fn run(ctx: &Ctx, output: Option<&str>) -> Result<i32, Failure> {
     };
     let bytes = b64::decode(&shot.png_base64)?;
     std::fs::write(path, &bytes)?;
-    println!("{}", format::screenshot_written(path, bytes.len()));
+    super::emit(&format::screenshot_written(path, bytes.len()));
     Ok(0)
 }

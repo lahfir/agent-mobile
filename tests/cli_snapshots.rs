@@ -186,7 +186,7 @@ fn device_flag_is_remembered_and_routes_next_call() -> Result<(), Failure> {
     store.write_token("sim", "tok")?;
     store.upsert(
         "sim",
-        &SessionEntry::new(s.url.clone(), 4242, "sim".to_owned()),
+        &SessionEntry::new(s.url.clone(), std::process::id(), "sim".to_owned()),
     )?;
     let out = run(&["status", "--device", "sim"], &home, &[])?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -200,9 +200,16 @@ fn device_flag_is_remembered_and_routes_next_call() -> Result<(), Failure> {
 }
 
 #[test]
-fn no_session_names_the_remedy() -> Result<(), Failure> {
+fn unreachable_driver_names_the_remedy() -> Result<(), Failure> {
     let home = tmp_home("nosession")?;
-    let out = run(&["status"], &home, &[])?;
+    let out = run(
+        &["status"],
+        &home,
+        &[
+            ("AGENT_MOBILE_URL", "http://127.0.0.1:1"),
+            ("AGENT_MOBILE_TOKEN", "tok"),
+        ],
+    )?;
     assert_eq!(code(&out), 1);
     let err = stderr(&out);
     assert!(err.contains("serve"), "{err}");
@@ -216,7 +223,11 @@ fn stale_ref_from_state_fails_before_network() -> Result<(), Failure> {
     store.write_token("sim", "tok")?;
     store.upsert(
         "sim",
-        &SessionEntry::new("http://127.0.0.1:1".to_owned(), 4242, "sim".to_owned()),
+        &SessionEntry::new(
+            "http://127.0.0.1:1".to_owned(),
+            std::process::id(),
+            "sim".to_owned(),
+        ),
     )?;
     store.record_snapshot("sim", "newest")?;
     let out = run(&["tap", "@older:e1", "--device", "sim"], &home, &[])?;

@@ -140,6 +140,8 @@ fn commands_in_help() -> Result<BTreeSet<String>, Failure> {
     Ok(names)
 }
 
+/// Command rows indent exactly two spaces; deeper-indented lines are
+/// wrapped descriptions, not new names.
 fn commands_in_skills() -> Result<BTreeSet<String>, Failure> {
     let home = tmp_home("skills")?;
     let out = run(&["skills"], &home, &[])?;
@@ -156,6 +158,7 @@ fn commands_in_skills() -> Result<BTreeSet<String>, Failure> {
         }
         if in_commands
             && line.starts_with("  ")
+            && !line.starts_with("   ")
             && let Some(name) = line.split_whitespace().next()
         {
             names.insert(name.to_owned());
