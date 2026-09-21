@@ -287,7 +287,14 @@ agent-mobile/
 └── docs/             # research tracks, experiments, this PRD
 ```
 
-`crates/android` arrives with the Android driver. There is never a `crates/ios`. The contract types
+`crates/android` arrives with the Android driver.
+
+The platform branch lives in exactly one function. Ten of the thirteen verbs never learn which
+platform they drive: they parse arguments, build JSON, and call the wire, because both drivers
+speak one protocol. Only `devices`, `serve`, and the lazy-start path touch a platform. When
+Android arrives, those three must not grow an `if android` at each call site. One function takes
+the device and returns what `serve` needs: the launch command, the URL, and the address. Adding a
+third platform then edits one match arm. There is never a `crates/ios`. The contract types
 live in `crates/core`.
 
 Toolchain: Rust 1.89.0, pinned in `rust-toolchain.toml`, with clippy and rustfmt. License: Apache-2.0.
