@@ -363,7 +363,30 @@ driver and CLI together in one release.
 3. No token or secret appears in logs, diffs, or committed scripts.
 4. `README.md` and the relevant `docs/` file reflect any command or protocol change.
 
-## 8. Risks
+## 8. Performance budget
+
+Measured on the physical iPhone (Experiments 7 and 8): `status` costs 0 to 2 ms driver-side, so
+the wire is not the cost. One `XCUIElement.snapshot()` costs about 205 ms on the device and about
+122 ms on the simulator. A 2,059 ms `tap` breaks down as:
+
+| Part | ms | Cause |
+|---|---|---|
+| resolve: `q.count` | 205 | full tree evaluation |
+| resolve: `element(boundBy:)` | 205 | the same query evaluated a second time |
+| `.tap()` | ~1090 | Apple's automatic quiescence wait inside every XCUITest interaction |
+| settle: two snapshots | 410 | two full tree reads |
+| settle: fixed `usleep` | 150 | the driver's own pause between reads |
+
+P1 fixes, in payoff order: turn off the quiescence wait as WebDriverAgent does
+(docs/research/01); resolve from one snapshot and tap the matched frame by coordinate instead of
+evaluating the query twice; drop the fixed pause, since a snapshot already takes longer than it;
+reuse the post-action read as the first settle read. Target: about 700 ms per action on a device
+and about 450 ms on the simulator. A `--fast` single-read mode that reports `settled: false`
+reaches about 300 ms. Below 200 ms is not reachable on a physical device while returning a full
+tree, because one tree read is Apple's floor; a depth cap pushed into the driver is the only
+further lever.
+
+## 9. Risks
 
 | Risk (evidence) | Mitigation | Phase |
 |---|---|---|
@@ -377,7 +400,7 @@ driver and CLI together in one release.
 | Developer certificate trust lapsed after about an hour; runner refused to launch until re-trusted (Exp 8, n=2) | `serve` prints the re-trust steps; a paid profile removes the gate | P1 |
 | Field reliability numbers are unaudited; one paper measured 26 to 33 percent seed swings (docs/research/09 §8) | Report the benchmark's seed variance with the mean | P3 |
 
-## 9. Success metrics
+## 10. Success metrics
 
 The P3 benchmark is the reliability gate: ship or stop turns on its result.
 
@@ -394,7 +417,7 @@ Report each metric as a mean and spread across seeds, per task and pooled.
 
 Kill criterion, verbatim: "if agent-mobile is not measurably more reliable than both competitors on the same tasks, stop the product and contribute the ref and settle contract upstream."
 
-## 10. Known limitations
+## 11. Known limitations
 
 - Physical iOS needs a Mac with Xcode alive for the whole session, a paired device, Developer Mode,
   and a trusted developer certificate. No cable after pairing. No zero-host mode on this rail.
@@ -407,7 +430,7 @@ Kill criterion, verbatim: "if agent-mobile is not measurably more reliable than 
 - Canvas, games, and opaque WebViews expose no tree. Vision is out of scope.
 - Android: the agent app is sideload only. Play policy bans this use of the accessibility API.
 
-## 11. Open question
+## 12. Open question
 
 License: Apache-2.0 is assumed. Owner's call.
 
