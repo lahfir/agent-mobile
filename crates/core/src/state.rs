@@ -90,6 +90,8 @@ impl Default for State {
 pub struct ResolvedEndpoint {
     /// Driver base URL.
     pub url: String,
+    /// Device name the endpoint resolved through, when one was selected.
+    pub device: Option<String>,
     token: String,
 }
 
@@ -105,6 +107,7 @@ impl std::fmt::Debug for ResolvedEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedEndpoint")
             .field("url", &self.url)
+            .field("device", &self.device)
             .field("token", &"<redacted>")
             .finish()
     }
@@ -305,14 +308,18 @@ impl StateStore {
         let url_set = env_url.is_some();
         let token_set = env_token.is_some();
         let state = self.load();
-        let entry = device
+        let name = device
             .map(String::from)
-            .or_else(|| state.default_device.clone())
-            .and_then(|n| state.devices.get(&n).cloned());
+            .or_else(|| state.default_device.clone());
+        let entry = name.as_ref().and_then(|n| state.devices.get(n).cloned());
         let url = env_url.or_else(|| entry.as_ref().map(|e| e.url.clone()));
         let token = env_token.or_else(|| entry.and_then(|e| self.read_token(&e).ok()));
         match (url, token) {
-            (Some(url), Some(token)) => Ok(ResolveOutcome::Ready(ResolvedEndpoint { url, token })),
+            (Some(url), Some(token)) => Ok(ResolveOutcome::Ready(ResolvedEndpoint {
+                url,
+                device: name,
+                token,
+            })),
             (None, _) if token_set => Err(Failure::usage(
                 "AGENT_MOBILE_TOKEN has no driver URL to pair with; set AGENT_MOBILE_URL or run `agent-mobile serve`",
             )),

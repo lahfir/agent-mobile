@@ -9,6 +9,7 @@ dependencies = [
  "agent-mobile-core",
  "clap",
  "insta",
+ "serde_json",
 ]
 
 [[package]]

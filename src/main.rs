@@ -1,3 +1,19 @@
-//! `agent-mobile` command-line entry point.
+//! `agent-mobile` command-line entry point: parse, dispatch, map the failure
+//! render to stderr, and exit with the registry code.
 
-fn main() {}
+mod cli;
+mod cmd;
+
+use clap::Parser;
+
+fn main() {
+    let cli = cli::Cli::parse();
+    let code = match cmd::dispatch(&cli) {
+        Ok(code) => code,
+        Err(f) => {
+            eprintln!("{}", f.render());
+            f.exit_code()
+        }
+    };
+    std::process::exit(code);
+}
