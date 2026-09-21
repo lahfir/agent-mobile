@@ -19,7 +19,50 @@ const TOKEN_BYTES: usize = 12;
 
 /// Whole-boot ceiling shared by `serve` and lazy start; a cold xcodebuild
 /// plus a simulator boot can take minutes.
-pub const BOOT_BUDGET: Duration = Duration::from_secs(240);
+pub const BOOT_BUDGET_DEFAULT: Duration = Duration::from_secs(240);
+/// Env var raising the boot ceiling on a slow machine, in whole seconds.
+pub const BOOT_BUDGET_ENV: &str = "AGENT_MOBILE_BOOT_BUDGET_SECS";
+
+/// The boot ceiling for this invocation: the default, unless
+/// [`BOOT_BUDGET_ENV`] names a larger whole number of seconds.
+#[must_use]
+pub fn boot_budget() -> Duration {
+    budget_from(std::env::var(BOOT_BUDGET_ENV).ok().as_deref())
+}
+
+/// [`boot_budget`] with the env value passed in, so it is testable.
+fn budget_from(raw: Option<&str>) -> Duration {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map_or(BOOT_BUDGET_DEFAULT, Duration::from_secs)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::{BOOT_BUDGET_DEFAULT, budget_from};
+    use std::time::Duration;
+
+    #[test]
+    fn unset_or_junk_keeps_the_default() {
+        for raw in [
+            None,
+            Some(
+                "
+",
+            ),
+            Some("soon"),
+            Some("0"),
+            Some("-5"),
+        ] {
+            assert_eq!(budget_from(raw), BOOT_BUDGET_DEFAULT);
+        }
+    }
+
+    #[test]
+    fn a_whole_number_of_seconds_wins() {
+        assert_eq!(budget_from(Some(" 600 ")), Duration::from_secs(600));
+    }
+}
 /// Poll interval for boot waits in `serve` and lazy start.
 pub const BOOT_POLL: Duration = Duration::from_millis(500);
 

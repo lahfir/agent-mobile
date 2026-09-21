@@ -78,6 +78,7 @@ jobs:
       - name: Live simulator gate (one real boot, one real snapshot)
         env:
           AGENT_MOBILE_DRIVER_DIR: ${{ github.workspace }}/drivers/ios/dd/Build/Products
+          AGENT_MOBILE_BOOT_BUDGET_SECS: "600"
         run: cargo test --test integration_snapshot --locked -- --ignored
 
       - name: Driver log on failure

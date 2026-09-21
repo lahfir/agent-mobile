@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::ios;
-use agent_mobile_core::process::{BOOT_BUDGET, BOOT_POLL, BootLock};
+use agent_mobile_core::process::{BOOT_POLL, BootLock, boot_budget};
 
 use super::{Ctx, Session, ensure_state_dir};
 
@@ -16,7 +16,7 @@ use super::{Ctx, Session, ensure_state_dir};
 pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
     ensure_state_dir(&ctx.store)?;
     let lock_path = ctx.store.lock_file();
-    let deadline = Instant::now() + BOOT_BUDGET;
+    let deadline = Instant::now() + boot_budget();
     loop {
         if Instant::now() > deadline {
             return Err(Failure::local(
@@ -27,7 +27,7 @@ pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
         if let Some(lock) = BootLock::take(&lock_path)? {
             return boot_with_lock(ctx, lock, deadline);
         }
-        if BootLock::age(&lock_path).is_some_and(|a| a > BOOT_BUDGET) {
+        if BootLock::age(&lock_path).is_some_and(|a| a > boot_budget()) {
             BootLock::clear(&lock_path);
             continue;
         }

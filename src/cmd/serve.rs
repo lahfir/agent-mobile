@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::ios;
-use agent_mobile_core::process::{BOOT_BUDGET, BOOT_POLL, ServeChild, mint_token, tcp_ready};
+use agent_mobile_core::process::{BOOT_POLL, ServeChild, boot_budget, mint_token, tcp_ready};
 use agent_mobile_core::state::{SessionEntry, StateStore};
 use agent_mobile_core::wire::Wire;
 
@@ -208,7 +208,7 @@ fn await_driver(
 ) -> Result<(), Failure> {
     use std::net::{SocketAddr, ToSocketAddrs};
     use std::sync::atomic::Ordering;
-    let deadline = Instant::now() + BOOT_BUDGET;
+    let deadline = Instant::now() + boot_budget();
     let probe = Wire::with_timeout(url, token, Duration::from_secs(3));
     let mut addrs: Option<Vec<SocketAddr>> = addr.to_socket_addrs().ok().map(Iterator::collect);
     while Instant::now() < deadline {
@@ -257,7 +257,7 @@ fn await_driver(
     Err(Failure::local(
         format!(
             "the driver did not answer {addr} within {}s",
-            BOOT_BUDGET.as_secs()
+            boot_budget().as_secs()
         ),
         format!("check the log at {} and retry `serve`", log.display()),
     ))
