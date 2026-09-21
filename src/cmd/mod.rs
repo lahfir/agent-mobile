@@ -2,9 +2,15 @@
 //! resolution, local ref checks, snapshot bookkeeping, and the
 //! stdout/stderr + exit-code output contract (KTD5, KTD12).
 
+pub mod activate;
 pub mod devices;
+pub mod home;
+pub mod launch;
+pub mod screenshot;
+pub mod skills;
 pub mod snapshot;
 pub mod status;
+pub mod stop;
 pub mod swipe;
 pub mod tap;
 pub mod r#type;
@@ -133,6 +139,7 @@ impl Ctx {
 pub fn dispatch(cli: &Cli) -> Result<i32, Failure> {
     match &cli.command {
         Command::Devices => devices::run(cli.json),
+        Command::Skills => Ok(skills::run()),
         Command::Status => Ctx::new(cli).and_then(|ctx| status::run(&ctx)),
         Command::Snapshot => Ctx::new(cli).and_then(|ctx| snapshot::run(&ctx)),
         Command::Tap { args } => Ctx::new(cli).and_then(|ctx| tap::run(&ctx, args)),
@@ -140,6 +147,15 @@ pub fn dispatch(cli: &Cli) -> Result<i32, Failure> {
         Command::Swipe { direction, target } => {
             Ctx::new(cli).and_then(|ctx| swipe::run(&ctx, *direction, target.as_deref()))
         }
+        Command::Home => Ctx::new(cli).and_then(|ctx| home::run(&ctx)),
+        Command::Launch { bundle_id } => Ctx::new(cli).and_then(|ctx| launch::run(&ctx, bundle_id)),
+        Command::Activate { bundle_id } => {
+            Ctx::new(cli).and_then(|ctx| activate::run(&ctx, bundle_id))
+        }
+        Command::Screenshot { output } => {
+            Ctx::new(cli).and_then(|ctx| screenshot::run(&ctx, output.as_deref()))
+        }
+        Command::Stop => Ctx::new(cli).and_then(|ctx| stop::run(&ctx)),
     }
 }
 

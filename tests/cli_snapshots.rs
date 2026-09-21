@@ -2,133 +2,14 @@
 //! isolated HOME per test, covering the argument shapes, output contract,
 //! and exit codes.
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread::JoinHandle;
+mod common;
 
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::state::{SessionEntry, StateStore};
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn fail(msg: &str) -> Failure {
-    Failure::local(msg.to_owned(), "fix the test")
-}
-
-fn tmp_home(tag: &str) -> Result<PathBuf, Failure> {
-    let dir = std::env::temp_dir().join(format!(
-        "am-cli-test-{}-{tag}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-fn request_complete(buf: &[u8]) -> bool {
-    let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
-    let len = head
-        .lines()
-        .find_map(|l| l.strip_prefix("content-length:"))
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    buf.len() >= pos + 4 + len
-}
-
-/// A stub driver: serves one canned response per connection, then reports
-/// every captured request when joined.
-struct Stub {
-    url: String,
-    join: JoinHandle<Vec<String>>,
-}
-
-fn stub(bodies: &[&str]) -> Result<Stub, Failure> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let payloads: Vec<String> = bodies.iter().map(|b| (*b).to_owned()).collect();
-    let join = std::thread::spawn(move || {
-        let mut captured = Vec::new();
-        for payload in payloads {
-            let Ok((mut stream, _)) = listener.accept() else {
-                break;
-            };
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 8192];
-            while !request_complete(&buf) {
-                match stream.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                }
-            }
-            captured.push(String::from_utf8_lossy(&buf).into_owned());
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                payload.len()
-            );
-            let _ = stream.write_all(resp.as_bytes());
-        }
-        captured
-    });
-    Ok(Stub {
-        url: format!("http://127.0.0.1:{port}"),
-        join,
-    })
-}
-
-fn run(args: &[&str], home: &PathBuf, envs: &[(&str, &str)]) -> Result<Output, Failure> {
-    Command::new(env!("CARGO_BIN_EXE_agent-mobile"))
-        .args(args)
-        .env("HOME", home)
-        .env_remove("AGENT_MOBILE_URL")
-        .env_remove("AGENT_MOBILE_TOKEN")
-        .envs(envs.iter().copied())
-        .stdin(Stdio::null())
-        .output()
-        .map_err(Failure::from)
-}
-
-fn run_wired(args: &[&str], home: &PathBuf, s: &Stub) -> Result<Output, Failure> {
-    run(
-        args,
-        home,
-        &[
-            ("AGENT_MOBILE_URL", s.url.as_str()),
-            ("AGENT_MOBILE_TOKEN", "tok"),
-        ],
-    )
-}
-
-fn stdout(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-fn code(out: &Output) -> i32 {
-    out.status.code().unwrap_or(-1)
-}
-
-fn body_of(req: &str) -> Result<serde_json::Value, Failure> {
-    let body = req
-        .split("\r\n\r\n")
-        .nth(1)
-        .ok_or_else(|| fail("request has no body"))?;
-    serde_json::from_str(body).map_err(|e| fail(&format!("bad json body: {e}")))
-}
-
-const STATUS: &str = r#"{"version":"1","ok":true,"command":"status","elapsed_ms":3,"data":{"app":"com.apple.springboard","device":"Sim","os":"26.0","snapshot_id":"sid1"}}"#;
-
-const SNAPSHOT: &str = r#"{"version":"1","ok":true,"command":"snapshot","elapsed_ms":7,"data":{"app":"com.x","snapshot_id":"snap1","ref_count":2,"complete":true,"settled":true,"reads":2,"text":"t","tree":{"role":"application","name":"App","value":"","ref_id":"@snap1:e1","states":[],"available_actions":[],"bounds":{"x":0.0,"y":0.0,"width":430.0,"height":930.0},"children":[{"role":"group","name":"Outer","value":"","ref_id":"@snap1:e2","states":[],"available_actions":["Tap"],"bounds":{"x":0.0,"y":0.0,"width":100.0,"height":50.0},"children":[{"role":"button","name":"Deep","value":"","ref_id":"@snap1:e3","states":[],"available_actions":["Tap"],"bounds":{"x":1.0,"y":2.0,"width":10.0,"height":10.0},"children":[]}]}]}}}"#;
-
-const STALE: &str = r#"{"version":"1","ok":false,"command":"tap","elapsed_ms":4,"error":{"code":"STALE_REF","message":"ref gone"}}"#;
+use common::{
+    SNAPSHOT, STALE, STATUS, body_of, code, fail, run, run_wired, stderr, stdout, stub, tmp_home,
+};
 
 #[test]
 fn tap_one_arg_sends_ref() -> Result<(), Failure> {
@@ -136,7 +17,7 @@ fn tap_one_arg_sends_ref() -> Result<(), Failure> {
     let s = stub(&[SNAPSHOT])?;
     let out = run_wired(&["tap", "@abc:e1"], &home, &s)?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.join.join().map_err(|_| fail("stub join"))?;
+    let captured = s.captured()?;
     let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
     assert_eq!(v["ref"], "@abc:e1");
     assert!(v.get("x").is_none());
@@ -149,7 +30,7 @@ fn tap_two_args_send_float_coordinates() -> Result<(), Failure> {
     let s = stub(&[SNAPSHOT])?;
     let out = run_wired(&["tap", "10.5", "20"], &home, &s)?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.join.join().map_err(|_| fail("stub join"))?;
+    let captured = s.captured()?;
     let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
     assert_eq!(v["x"], 10.5);
     assert_eq!(v["y"], 20.0);
@@ -180,7 +61,7 @@ fn type_consumes_leading_ref_then_joins_text() -> Result<(), Failure> {
     let s = stub(&[SNAPSHOT])?;
     let out = run_wired(&["type", "@abc:e1", "hello", "world"], &home, &s)?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.join.join().map_err(|_| fail("stub join"))?;
+    let captured = s.captured()?;
     let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
     assert_eq!(v["ref"], "@abc:e1");
     assert_eq!(v["text"], "hello world");
@@ -193,7 +74,7 @@ fn type_at_mention_is_text_not_ref() -> Result<(), Failure> {
     let s = stub(&[SNAPSHOT])?;
     let out = run_wired(&["type", "@handle", "hi"], &home, &s)?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.join.join().map_err(|_| fail("stub join"))?;
+    let captured = s.captured()?;
     let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
     assert!(v.get("ref").is_none(), "{v}");
     assert_eq!(v["text"], "@handle hi");
@@ -226,7 +107,7 @@ fn swipe_direction_and_ref_reach_body() -> Result<(), Failure> {
     let s = stub(&[SNAPSHOT])?;
     let out = run_wired(&["swipe", "left", "@abc:e2"], &home, &s)?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.join.join().map_err(|_| fail("stub join"))?;
+    let captured = s.captured()?;
     let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
     assert_eq!(v["direction"], "left");
     assert_eq!(v["ref"], "@abc:e2");
@@ -278,7 +159,7 @@ fn app_flag_reaches_snapshot_body() -> Result<(), Failure> {
     let s = stub(&[SNAPSHOT])?;
     let out = run_wired(&["snapshot", "--app", "com.foo"], &home, &s)?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.join.join().map_err(|_| fail("stub join"))?;
+    let captured = s.captured()?;
     let v = body_of(captured.first().ok_or_else(|| fail("no request"))?)?;
     assert_eq!(v["app"], "com.foo");
     Ok(())
@@ -311,7 +192,7 @@ fn device_flag_is_remembered_and_routes_next_call() -> Result<(), Failure> {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let out = run(&["status"], &home, &[])?;
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let captured = s.join.join().map_err(|_| fail("stub join"))?;
+    let captured = s.captured()?;
     assert_eq!(captured.len(), 2, "{captured:?}");
     let state = store.load();
     assert_eq!(state.default_device.as_deref(), Some("sim"));

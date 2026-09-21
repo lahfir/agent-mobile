@@ -53,6 +53,27 @@ pub enum Command {
         /// Optional `@<snapshot>:e<N>` ref to swipe on.
         target: Option<String>,
     },
+    /// Press the Home button; returns the springboard tree.
+    Home,
+    /// Cold-start a bundle id; kills any saved app state.
+    Launch {
+        /// Bundle id to launch, e.g. `com.apple.mobilecal`.
+        bundle_id: String,
+    },
+    /// Foreground an already-running app without relaunching it.
+    Activate {
+        /// Bundle id to resume.
+        bundle_id: String,
+    },
+    /// Write a PNG screenshot to a path, or base64 to stdout.
+    Screenshot {
+        /// File to write; omitted prints base64.
+        output: Option<String>,
+    },
+    /// Terminate the active app; the driver stays up.
+    Stop,
+    /// Print the one-page agent guide.
+    Skills,
 }
 
 /// Swipe directions accepted by the driver; anything else fails client-side.
