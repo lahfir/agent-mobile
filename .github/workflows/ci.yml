@@ -52,29 +52,28 @@ jobs:
       - run: rustup toolchain install 1.89.0 --profile minimal
       - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
 
+      - name: Pick and boot the simulator, outside the boot budget
+        run: |
+          scripts/ci-pick-simulator.sh >> "$GITHUB_ENV"
+          . <(grep '^SIM_' "$GITHUB_ENV")
+          echo "picked $SIM_NAME on $SIM_RUNTIME"
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b || true
+
       - name: Cache the built driver
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: drivers/ios/dd
-          key: driver-${{ runner.os }}-${{ hashFiles('drivers/ios/**/*.swift', 'drivers/ios/**/project.pbxproj') }}
+          key: driver-${{ runner.os }}-${{ env.SIM_RUNTIME }}-${{ hashFiles('drivers/ios/**/*.swift', 'drivers/ios/**/project.pbxproj') }}
 
-      - name: Build the driver, outside the boot budget
+      - name: Build the driver for that runtime, outside the boot budget
         run: |
           xcodebuild build-for-testing \
             -project drivers/ios/AgentMobileDriver.xcodeproj \
             -scheme AgentMobileDriver \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath drivers/ios/dd \
             CODE_SIGNING_ALLOWED=NO
-
-      - name: Pre-boot the simulator the CLI picks, outside the boot budget
-        run: |
-          SIM=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; n=[x["name"] for rt in d for x in d[rt] if x.get("isAvailable")]; print(next((i for i in n if "iPhone" in i), ""))')
-          echo "pre-booting ${SIM:-none}"
-          if [ -n "$SIM" ]; then
-            xcrun simctl boot "$SIM" || true
-            xcrun simctl bootstatus "$SIM" -b || true
-          fi
 
       - name: Live simulator gate (one real boot, one real snapshot)
         env:
