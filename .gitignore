@@ -10,3 +10,4 @@ docs/experiments/
 xcuserdata/
 
 target/
+__pycache__/

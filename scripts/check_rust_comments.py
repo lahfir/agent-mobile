@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import re
 import sys
 from pathlib import Path
 
@@ -129,13 +130,46 @@ def long_doc_comments(source, limit=DOC_LINE_LIMIT):
     return findings
 
 
+def _body_after(source, start):
+    open_brace = source.find("{", start)
+    if open_brace < 0:
+        return source[start:]
+    depth = 0
+    cursor = open_brace
+    while cursor < len(source):
+        if source[cursor] == "{":
+            depth += 1
+        elif source[cursor] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[open_brace : cursor + 1]
+        cursor += 1
+    return source[open_brace:]
+
+
+def test_rules(source):
+    findings = []
+    for match in re.finditer(r"#\[test\]", source):
+        line = source.count("\n", 0, match.start()) + 1
+        head = source[match.start() : match.start() + 400]
+        body = _body_after(source, match.end())
+        if "assert" not in body and "should_panic" not in head:
+            findings.append((line, "test has no assertion"))
+        if "sleep" in body:
+            findings.append((line, "test sleeps; make it deterministic"))
+    for match in re.finditer(r"#\[ignore\]", source):
+        line = source.count("\n", 0, match.start()) + 1
+        findings.append((line, "#[ignore] needs a reason: #[ignore = \"why\"]"))
+    return findings
+
+
 def check_path(path):
     if not path.is_file():
         return []
     source = path.read_text(encoding="utf-8")
     if "@generated" in "\n".join(source.splitlines()[:5]):
         return []
-    return forbidden_comments(source) + long_doc_comments(source)
+    return forbidden_comments(source) + long_doc_comments(source) + test_rules(source)
 
 
 def main():

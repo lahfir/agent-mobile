@@ -307,6 +307,7 @@ this repo.
 - No inline `//` or `/* */` comments. Only `///` and `//!` doc comments. The same script enforces this.
 - A doc comment is at most 15 lines per item. The same script enforces this.
 - CI runs `cargo fmt --check` and `cargo deny check`.
+- Test rules in the same script: every `#[test]` asserts, no `sleep` in a test, `#[ignore]` needs a reason. Core tests compare against fixtures recorded from real driver output, so a test cannot re-implement the code it checks. P1 adds `cargo-mutants` on changed files, the only mechanical proof that a test fails when the code breaks.
 
 ### 7.3 Testing
 
