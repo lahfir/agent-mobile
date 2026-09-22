@@ -61,6 +61,53 @@ pub enum Command {
     },
     /// Press the Home button; returns the springboard tree.
     Home,
+    /// Double-tap a ref, or an x y point from the app frame's top-left.
+    Doubletap {
+        /// One `@<snapshot>:e<N>` ref, or two float coordinates.
+        #[arg(num_args = 1..=2, value_name = "REF | X Y")]
+        args: Vec<String>,
+    },
+    /// Pinch-zoom on a ref; scale above 1 zooms out, below 1 zooms in.
+    Pinch {
+        /// `@<snapshot>:e<N>` ref to pinch on.
+        target: String,
+        /// Zoom scale; near-1 or non-positive values are rejected
+        /// driver-side as `BAD_REQUEST`. Non-finite values are rejected
+        /// here: JSON cannot carry them.
+        scale: f64,
+        /// Pinch velocity; omitted leaves the driver default in place.
+        #[arg(long, value_name = "V")]
+        velocity: Option<f64>,
+    },
+    /// Press a ref or point for a duration; surfaces context menus.
+    Hold {
+        /// One `@<snapshot>:e<N>` ref, or two float coordinates.
+        #[arg(num_args = 1..=2, value_name = "REF | X Y")]
+        args: Vec<String>,
+        /// Hold duration in seconds; the driver rejects values outside
+        /// 0 < d <= 10. Negative numbers must reach the driver, so the
+        /// flag accepts them instead of parsing them as flags.
+        #[arg(
+            long,
+            default_value_t = 1.0,
+            value_name = "SECS",
+            allow_negative_numbers = true
+        )]
+        duration: f64,
+    },
+    /// System edge swipe back; no target.
+    Back,
+    /// Two-finger tap on a ref.
+    Twofinger {
+        /// `@<snapshot>:e<N>` ref to tap with two fingers.
+        target: String,
+    },
+    /// Open Notification Center from the `SpringBoard` session.
+    Center {
+        /// Which sheet to open; only `notification` is supported.
+        #[arg(value_parser = ["notification"])]
+        which: String,
+    },
     /// Cold-start a bundle id; kills any saved app state.
     Launch {
         /// Bundle id to launch, e.g. `com.apple.mobilecal`.
@@ -90,6 +137,12 @@ impl Command {
             Self::Type { .. } => "type",
             Self::Swipe { .. } => "swipe",
             Self::Home => "home",
+            Self::Doubletap { .. } => "doubletap",
+            Self::Pinch { .. } => "pinch",
+            Self::Hold { .. } => "hold",
+            Self::Back => "back",
+            Self::Twofinger { .. } => "twofinger",
+            Self::Center { .. } => "center",
             Self::Launch { .. } => "launch",
             Self::Screenshot { .. } => "screenshot",
             Self::Stop => "stop",

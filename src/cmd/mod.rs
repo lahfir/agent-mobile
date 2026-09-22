@@ -2,10 +2,15 @@
 //! resolution and the stdout/stderr + exit-code output contract (KTD5,
 //! KTD12).
 
+pub mod back;
+pub mod center;
 pub mod devices;
+pub mod doubletap;
+pub mod hold;
 pub mod home;
 pub mod launch;
 pub mod lazy;
+pub mod pinch;
 pub mod screenshot;
 pub mod serve;
 pub mod skills;
@@ -14,6 +19,7 @@ pub mod status;
 pub mod stop;
 pub mod swipe;
 pub mod tap;
+pub mod twofinger;
 pub mod r#type;
 
 use serde_json::Value;
@@ -224,6 +230,18 @@ fn ctx_dispatch(cli: &Cli) -> Result<i32, Failure> {
         }
         Command::Stop => Ctx::new(cli).and_then(|ctx| stop::run(&ctx)),
         Command::Serve { device } => Ctx::new(cli).and_then(|ctx| serve::run(&ctx, device)),
+        Command::Doubletap { args } => Ctx::new(cli).and_then(|ctx| doubletap::run(&ctx, args)),
+        Command::Pinch {
+            target,
+            scale,
+            velocity,
+        } => Ctx::new(cli).and_then(|ctx| pinch::run(&ctx, target, *scale, *velocity)),
+        Command::Hold { args, duration } => {
+            Ctx::new(cli).and_then(|ctx| hold::run(&ctx, args, *duration))
+        }
+        Command::Back => Ctx::new(cli).and_then(|ctx| back::run(&ctx)),
+        Command::Twofinger { target } => Ctx::new(cli).and_then(|ctx| twofinger::run(&ctx, target)),
+        Command::Center { which } => Ctx::new(cli).and_then(|ctx| center::run(&ctx, which)),
         Command::Devices => devices::run(cli.json),
         Command::Skills => Ok(skills::run()),
     }
@@ -242,6 +260,35 @@ pub fn emit(line: &str) {
     let mut out = std::io::stdout().lock();
     if writeln!(out, "{line}").is_err() || out.flush().is_err() {
         std::process::exit(0);
+    }
+}
+
+/// Shared one-or-two positional split for point verbs (`doubletap`,
+/// `hold`): one argument is a ref, two are finite `x y` numbers, anything
+/// else is a usage error naming the verb.
+pub fn ref_or_point_body(args: &[String], verb: &str) -> Result<Value, Failure> {
+    match args {
+        [r] => {
+            let r = Ref::parse(r)?;
+            Ok(serde_json::json!({ "ref": r.to_string() }))
+        }
+        [x, y] => {
+            let point = |raw: &str| {
+                raw.parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| {
+                        Failure::usage(format!(
+                            "{verb} takes a ref or an x y point; {raw:?} is not a finite number"
+                        ))
+                    })
+            };
+            let (x, y) = (point(x)?, point(y)?);
+            Ok(serde_json::json!({ "x": x, "y": y }))
+        }
+        _ => Err(Failure::usage(format!(
+            "{verb} takes a ref or an x y point"
+        ))),
     }
 }
 

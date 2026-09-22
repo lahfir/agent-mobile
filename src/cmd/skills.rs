@@ -25,6 +25,24 @@ COMMANDS
   swipe <up|down|left|right> [<ref>]
                                  swipe the app, or one element
   home                           press Home; returns the springboard tree
+  doubletap <ref> | <x> <y>      tap twice on a ref, or a point in the app
+                                 frame's top-left space
+  pinch <ref> <scale> [--velocity <v>]
+                                 zoom on a ref; above 1 zooms out, below 1
+                                 zooms in. Near-1 or non-positive scales
+                                 fail as BAD_REQUEST; non-finite
+                                 scale/velocity fail here
+  hold <ref> | <x> <y> [--duration <s>]
+                                 press and hold 0 < d <= 10 s, default 1.0;
+                                 native context menus surface in the
+                                 snapshot (web long-press is unproven)
+  back                           system edge swipe back; no target. Judge
+                                 from the returned tree: web-history
+                                 back is unproven
+  twofinger <ref>                two-finger tap on a ref
+  center notification            open Notification Center (SpringBoard
+                                 session). Earlier refs die; snapshot or
+                                 --app to return to your app
   launch <bundle_id>             cold-start the app; kills saved state
   screenshot [path]              PNG to a file, or base64 to stdout
                                  (--json stays base64; path+--json is an error)
@@ -61,7 +79,7 @@ SYSTEM DIALOGS
 
 THE LOOP
   snapshot -> pick a ref -> act -> repeat. Every action replies with the next
-  snapshot, so tap, type, and swipe already hand you fresh refs.
+  snapshot, so every verb already hands you fresh refs.
 
 REFS AND ERRORS
   Refs look like @<snapshot>:e<N> and die with their snapshot. After any

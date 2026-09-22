@@ -165,18 +165,69 @@ final class Driver {
             bundle = target
             return out
         case "tap":
-            if let x = p["x"] as? Double, let y = p["y"] as? Double {
-                let pt = CGPoint(x: x, y: y)
-                if !fastTap(pt) { point(pt).tap() }
-                return try settledSnapshot()
-            }
-            let t0 = Date()
-            let (f, base) = try resolve(p["ref"])
-            let t1 = Date()
-            let pt = CGPoint(x: f.midX, y: f.midY)
-            if !fastTap(pt) { point(pt).tap() }
-            NSLog("agent-mobile: tap resolve=%dms synth=%dms", Int(t1.timeIntervalSince(t0) * 1000), Int(Date().timeIntervalSince(t1) * 1000))
+            let (pt, base) = try resolvePoint(p)
+            tapPoint(pt)
             return try settledSnapshot(baseline: base)
+        case "hold":
+            let dur: Double
+            if let raw = p["duration"] {
+                guard let d = raw as? Double else {
+                    throw DrvError(code: "BAD_REQUEST", msg: "duration must be a number")
+                }
+                dur = d
+            } else {
+                dur = 1.0
+            }
+            // Backstop cap: press + settle must fit the CLI wire budget; the
+            // CLI also sizes its own timeout from duration.
+            guard dur > 0, dur.isFinite, dur <= 10 else {
+                throw DrvError(code: "BAD_REQUEST", msg: "duration 0 < d <= 10")
+            }
+            let (pt, hbase) = try resolvePoint(p)
+            guard try pressRecord(pt, liftDelay: dur) else {
+                throw DrvError(code: "DRIVER_ERROR", msg: "pointer-event synthesis returned false")
+            }
+            return try settledSnapshot(baseline: hbase)
+        case "doubletap":
+            let (pt, dbase) = try resolvePoint(p)
+            tapPoint(pt)
+            tapPoint(pt)
+            return try settledSnapshot(baseline: dbase)
+        case "pinch":
+            guard let scale = p["scale"] as? Double, scale > 0, scale.isFinite, abs(scale - 1) >= 0.01 else {
+                throw DrvError(code: "BAD_REQUEST", msg: "scale positive, finite, |scale-1| >= 0.01")
+            }
+            let velocity: Double
+            if let raw = p["velocity"] {
+                guard let v = raw as? Double, v.isFinite else {
+                    throw DrvError(code: "BAD_REQUEST", msg: "velocity finite")
+                }
+                velocity = v
+            } else {
+                velocity = scale > 1 ? 1.0 : -1.0
+            }
+            let (el, base) = try element(p["ref"])
+            try gesture("pinch") { el.pinch(withScale: CGFloat(scale), velocity: CGFloat(velocity)) }
+            return try settledSnapshot(baseline: base)
+        case "twofinger":
+            let (el, base) = try element(p["ref"])
+            try gesture("twofinger") { el.twoFingerTap() }
+            return try settledSnapshot(baseline: base)
+        case "back":
+            let f = app().frame
+            let y = f.minY + f.height * 0.4
+            edgeDrag(from: CGPoint(x: f.minX + f.width * 0.03, y: y),
+                     to: CGPoint(x: f.minX + f.width * 0.8, y: y))
+            return try settledSnapshot()
+        case "center":
+            guard let which = p["which"] as? String, which == "notification" else {
+                throw DrvError(code: "BAD_REQUEST", msg: "which notification")
+            }
+            bundle = "com.apple.springboard"
+            let sf = app().frame
+            edgeDrag(from: CGPoint(x: sf.minX + sf.width * 0.15, y: sf.minY + sf.height * 0.02),
+                     to: CGPoint(x: sf.minX + sf.width * 0.15, y: sf.minY + sf.height * 0.7), hold: 0)
+            return try settledSnapshot()
         case "type":
             let text = try str(p, "text")
             var base: (h: Int, at: Date)? = nil
@@ -214,14 +265,59 @@ final class Driver {
         app().coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: p.x, dy: p.y))
     }
 
+    // One tap through the fast record path with stock-tap fallback.
+    func tapPoint(_ pt: CGPoint) {
+        if !fastTap(pt) { point(pt).tap() }
+    }
+
+    // XCTest signals an unaddressable element by RAISING NSException, which
+    // Swift do/catch cannot intercept: the raise aborts testServe and kills
+    // the driver for every later verb (seen live on a Maps widget whose
+    // coordinates XCTest computed as {inf, inf}). The two element-only
+    // verbs route through the ObjC catcher so a bad element reports
+    // DRIVER_ERROR and the driver stays up.
+    func gesture(_ what: String, _ block: @escaping () -> Void) throws {
+        if let msg = AMGestureCatch.runGesture(block) {
+            throw DrvError(code: "DRIVER_ERROR", msg: "\(what): \(msg)")
+        }
+    }
+
+    // Shared ref-or-coordinates resolution for the point verbs (tap,
+    // doubletap, hold). An explicit x/y pair must arrive together; a body
+    // with only one names neither a point nor (yet) a ref, so it fails here
+    // instead of falling through to a misleading "ref required".
+    func resolvePoint(_ p: [String: Any]) throws -> (pt: CGPoint, base: (h: Int, at: Date)?) {
+        if let x = p["x"] as? Double, let y = p["y"] as? Double {
+            return (CGPoint(x: x, y: y), nil)
+        }
+        if p["x"] != nil || p["y"] != nil {
+            throw DrvError(code: "BAD_REQUEST", msg: "x and y must be sent together")
+        }
+        let (f, base) = try resolve(p["ref"])
+        return (CGPoint(x: f.midX, y: f.midY), base)
+    }
+
     // A tap via XCPointerEventPath + XCSynthesizedEventRecord — the WebDriverAgent
     // event path (docs/research/11). `XCUICoordinate.tap()` pays an element
     // resolution plus XCTest's event plumbing (~480 ms here); the record
     // synthesizes straight through testmanagerd. Every selector is verified at
     // runtime; any miss falls back to the stock coordinate tap.
     func fastTap(_ p: CGPoint) -> Bool {
+        (try? pressRecord(p, liftDelay: 0.05)) ?? false
+    }
+
+    // The shared pointer-event record builder behind `fastTap`. A delayed
+    // `liftUpAtOffset` forms a press-and-hold; XCTest `element.press` stalls
+    // 60–100 s on some targets, so `hold` has no element-press fallback — a
+    // signature miss throws DRIVER_ERROR naming the runtime instead of
+    // falling through to a stall.
+    static func pressMiss() -> DrvError {
+        DrvError(code: "DRIVER_ERROR", msg: "pointer-event record signatures missing on iOS \(UIDevice.current.systemVersion); rebuild the driver with the current Xcode")
+    }
+
+    func pressRecord(_ p: CGPoint, liftDelay: Double) throws -> Bool {
         guard let pathCls = NSClassFromString("XCPointerEventPath"),
-              let recCls = NSClassFromString("XCSynthesizedEventRecord") else { return false }
+              let recCls = NSClassFromString("XCSynthesizedEventRecord") else { throw Driver.pressMiss() }
         let allocSel = NSSelectorFromString("alloc")
         let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
         let liftSel = NSSelectorFromString("liftUpAtOffset:")
@@ -234,7 +330,7 @@ final class Driver {
               let liftM = class_getInstanceMethod(pathCls, liftSel), Driver.sig(liftM, ["d"], "v"),
               let recM = class_getInstanceMethod(recCls, recSel), Driver.sig(recM, ["@", "q"], "@"),
               let addM = class_getInstanceMethod(recCls, addSel), Driver.sig(addM, ["@"], "v"),
-              let synthM = class_getInstanceMethod(recCls, synthSel), Driver.sig(synthM, ["^@"], "B") else { return false }
+              let synthM = class_getInstanceMethod(recCls, synthSel), Driver.sig(synthM, ["^@"], "B") else { throw Driver.pressMiss() }
         typealias ObjFn = @convention(c) (AnyObject, Selector) -> AnyObject
         typealias TouchFn = @convention(c) (AnyObject, Selector, CGPoint, Double) -> AnyObject
         typealias VoidDblFn = @convention(c) (AnyObject, Selector, Double) -> Void
@@ -244,7 +340,7 @@ final class Driver {
         let path = unsafeBitCast(method_getImplementation(initM), to: TouchFn.self)(
             unsafeBitCast(method_getImplementation(allocM), to: ObjFn.self)(pathCls, allocSel),
             initSel, p, 0)
-        unsafeBitCast(method_getImplementation(liftM), to: VoidDblFn.self)(path, liftSel, 0.05)
+        unsafeBitCast(method_getImplementation(liftM), to: VoidDblFn.self)(path, liftSel, liftDelay)
         let ori: Int = switch XCUIDevice.shared.orientation {
         case .landscapeLeft: 3
         case .landscapeRight: 4
@@ -272,6 +368,14 @@ final class Driver {
             .press(forDuration: 0.05, thenDragTo: point(CGPoint(x: f.midX + dx, y: f.midY + dy)))
     }
 
+    // One press-drag primitive for the KTD3 edge verbs (back, center):
+    // endpoints in app-frame coordinates. Back uses the probed 0.1 s hold;
+    // center passes 0 so status-bar recognizers cannot claim the touch.
+    // Same coordinate helpers as flick.
+    func edgeDrag(from a: CGPoint, to b: CGPoint, hold: TimeInterval = 0.1) {
+        point(a).press(forDuration: hold, thenDragTo: point(b))
+    }
+
     func str(_ p: [String: Any], _ k: String) throws -> String {
         guard let v = p[k] as? String, !v.isEmpty else { throw DrvError(code: "BAD_REQUEST", msg: "\(k) required") }
         return v
@@ -283,18 +387,26 @@ final class Driver {
     // the caller acts on the matched frame's coordinates. The read's hash and
     // timestamp are returned so the settle check can count it as the first
     // consecutive read only when it is old enough to prove an interval.
-    func resolve(_ any: Any?) throws -> (frame: CGRect, read: (h: Int, at: Date)) {
+    // Shared ref-ledger preamble for resolve() and element(): string cast,
+    // snapshot-id match, ledger hit. Matching stays per-verb below so the
+    // STALE_REF contract cannot drift between copies.
+    func lookupIdent(_ any: Any?) throws -> (ref: String, id: Ident) {
         guard let ref = any as? String else { throw DrvError(code: "BAD_REQUEST", msg: "ref required") }
         let parts = ref.split(separator: ":")
         guard parts.count == 2, String(parts[0].dropFirst()) == snapId else {
             throw DrvError(code: "STALE_REF", msg: "current snapshot is @\(snapId); ref \(ref) is from another snapshot; re-snapshot")
         }
         guard let id = refs[ref] else { throw DrvError(code: "STALE_REF", msg: "unknown ref \(ref)") }
+        return (ref, id)
+    }
+
+    func resolve(_ any: Any?) throws -> (frame: CGRect, read: (h: Int, at: Date)) {
+        let (ref, id) = try lookupIdent(any)
         let snap = try app().snapshot()
         let at = Date()
         var n = 0; var frame = CGRect.zero
         func walk(_ node: XCUIElementSnapshot) {
-            if node.elementType == id.type, node.identifier == id.id, node.label == id.label,
+            if node.elementType == id.type, Driver.snapString(node, "identifier") == id.id, Driver.snapString(node, "label") == id.label,
                Driver.close(node.frame, id.frame) { n += 1; frame = node.frame }
             node.children.forEach(walk)
         }
@@ -304,8 +416,63 @@ final class Driver {
         return (frame, (hash(snap), at))
     }
 
+    // Ref-to-element twin of resolve() for the verbs XCTest only offers on
+    // XCUIElement (pinch, twoFingerTap). Same ledger, same
+    // STALE_REF/AMBIGUOUS_TARGET contract, matched on type + identifier +
+    // label + frame with no isHittable reads (KTD2). The returned read seeds
+    // the settle baseline like resolve()'s does.
+    func element(_ any: Any?) throws -> (el: XCUIElement, read: (h: Int, at: Date)) {
+        let (ref, id) = try lookupIdent(any)
+        let snap = try app().snapshot()
+        let at = Date()
+        // Filter identifier and label inside XCTest so only candidates pay
+        // IPC materialization; frame stays in Swift (not predicate-safe).
+        // Fall back to the full walk: predicate semantics can miss elements
+        // XCTest reports differently (notably empty identifiers).
+        let pred = NSPredicate(format: "identifier == %@ AND label == %@", id.id, id.label)
+        var found = app().descendants(matching: id.type).matching(pred).allElementsBoundByIndex.filter {
+            Driver.close($0.frame, id.frame)
+        }
+        if found.isEmpty {
+            found = app().descendants(matching: id.type).allElementsBoundByIndex.filter {
+                Driver.snapString($0, "identifier") == id.id && Driver.snapString($0, "label") == id.label && Driver.close($0.frame, id.frame)
+            }
+        }
+        if found.isEmpty { throw DrvError(code: "STALE_REF", msg: "\(ref) no longer matches a live element; re-snapshot") }
+        if found.count > 1 { throw DrvError(code: "AMBIGUOUS_TARGET", msg: "\(ref) matches \(found.count) live elements; re-snapshot") }
+        return (found[0], (hash(snap), at))
+    }
+
     static func close(_ a: CGRect, _ b: CGRect) -> Bool {
         abs(a.minX - b.minX) <= 1 && abs(a.minY - b.minY) <= 1 && abs(a.width - b.width) <= 1 && abs(a.height - b.height) <= 1
+    }
+
+    // System trees can expose non-finite or out-of-range frames that trap a
+    // raw Int(Double). qi quantizes for text/hash; qd preserves fractions
+    // for the JSON bounds dict (JSONSerialization rejects NaN/Inf).
+    // Clamp band is one no real frame reaches.
+    static func qi(_ v: Double) -> Int {
+        guard v.isFinite else { return 0 }
+        return Int(max(-1_000_000, min(1_000_000, v.rounded())))
+    }
+
+    static func qd(_ v: Double) -> Double {
+        guard v.isFinite else { return 0 }
+        return max(-1_000_000, min(1_000_000, v))
+    }
+
+    // Cover-sheet nodes violate nullability the way they violate finite
+    // frames: a nil label/identifier/title against the non-optional type
+    // traps the process (SIGTRAP) at the typed access, killing the driver
+    // mid-snapshot. KVC returns Any?, so this bridge is nil-safe.
+    static func snapString(_ o: Any, _ key: String) -> String {
+        guard let ns = o as? NSObject else {
+            NSLog("agent-mobile: non-NSObject snapshot type=%@", String(describing: type(of: o)))
+            return ""
+        }
+        if let v = ns.value(forKey: key) as? String { return v }
+        NSLog("agent-mobile: nil snapshot string key=%@ type=%@", key, String(describing: type(of: o)))
+        return ""
     }
 
     // Two-read tree-hash idle check with a finite cap (Apple's own quiescence
@@ -340,8 +507,8 @@ final class Driver {
     func hash(_ s: XCUIElementSnapshot) -> Int {
         var h = Hasher()
         func walk(_ n: XCUIElementSnapshot) {
-            h.combine(n.elementType.rawValue); h.combine(Int(n.frame.minX)); h.combine(Int(n.frame.minY))
-            h.combine(Int(n.frame.width)); h.combine(Int(n.frame.height)); h.combine(n.label); h.combine(n.identifier)
+            h.combine(n.elementType.rawValue); h.combine(Driver.qi(n.frame.minX)); h.combine(Driver.qi(n.frame.minY))
+            h.combine(Driver.qi(n.frame.width)); h.combine(Driver.qi(n.frame.height)); h.combine(Driver.snapString(n, "label")); h.combine(Driver.snapString(n, "identifier"))
             h.combine(n.value.map { String(describing: $0) } ?? "")
             n.children.forEach(walk)
         }
@@ -351,9 +518,12 @@ final class Driver {
     func build(_ n: XCUIElementSnapshot, pdepth: Int, lines: inout [String]) -> [String: Any] {
         seq += 1
         let ref = "@\(snapId):e\(seq)"
-        refs[ref] = Ident(type: n.elementType, id: n.identifier, label: n.label, frame: n.frame)
+        let label = Driver.snapString(n, "label")
+        let identifier = Driver.snapString(n, "identifier")
+        refs[ref] = Ident(type: n.elementType, id: identifier, label: label, frame: n.frame)
         let role = Driver.role(n.elementType)
-        let name = !n.label.isEmpty ? n.label : (!n.title.isEmpty ? n.title : (n.placeholderValue ?? n.identifier))
+        let title = Driver.snapString(n, "title")
+        let name = !label.isEmpty ? label : (!title.isEmpty ? title : (n.placeholderValue ?? identifier))
         let value = n.value.map { String(describing: $0) } ?? ""
         var states: [String] = []
         if !n.isEnabled { states.append("disabled") }
@@ -365,14 +535,14 @@ final class Driver {
         if printed {
             var line = String(repeating: "  ", count: pdepth) + "\(ref) \(role) \"\(name)\""
             if !value.isEmpty { line += " value=\"\(value)\"" }
-            line += " at=\(Int(f.minX)),\(Int(f.minY)) size=\(Int(f.width))x\(Int(f.height))"
+            line += " at=\(Driver.qi(f.minX)),\(Driver.qi(f.minY)) size=\(Driver.qi(f.width))x\(Driver.qi(f.height))"
             if !states.isEmpty { line += " [\(states.joined(separator: ","))]" }
             lines.append(line)
         }
         var node: [String: Any] = ["role": role, "name": name, "value": value, "ref_id": ref, "states": states,
                                    "available_actions": actions,
-                                   "bounds": ["x": Double(f.minX), "y": Double(f.minY), "width": Double(f.width), "height": Double(f.height)]]
-        if !n.identifier.isEmpty { node["native_id"] = ["kind": "ax_identifier", "value": n.identifier] }
+                                   "bounds": ["x": Driver.qd(f.minX), "y": Driver.qd(f.minY), "width": Driver.qd(f.width), "height": Driver.qd(f.height)]]
+        if !identifier.isEmpty { node["native_id"] = ["kind": "ax_identifier", "value": identifier] }
         node["children"] = n.children.map { build($0, pdepth: printed ? pdepth + 1 : pdepth, lines: &lines) }
         return node
     }

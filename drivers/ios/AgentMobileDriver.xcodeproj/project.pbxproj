@@ -381,6 +381,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = ai.agentmobile.driver;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = Driver/AgentMobileDriver-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = AgentMobileHost;
@@ -398,6 +399,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = ai.agentmobile.driver;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = Driver/AgentMobileDriver-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = AgentMobileHost;
