@@ -11,7 +11,8 @@ use super::{Ctx, ref_or_point_body, round_trip_within};
 /// `serde_json` would silently encode null and the driver would fall back
 /// to the default. The wire budget scales with duration (press + settle +
 /// headroom) because a fixed 30 s ceiling abandons long presses mid-touch
-/// while the driver keeps holding.
+/// while the driver keeps holding; it is clamped so a huge duration cannot
+/// wedge the client, and the driver caps accepted holds far below anyway.
 pub fn run(ctx: &Ctx, args: &[String], duration: f64) -> Result<i32, Failure> {
     if !duration.is_finite() {
         return Err(Failure::usage(
@@ -21,8 +22,6 @@ pub fn run(ctx: &Ctx, args: &[String], duration: f64) -> Result<i32, Failure> {
     let mut body = ref_or_point_body(args, "hold")?;
     body["duration"] = serde_json::json!(duration);
     let session = ctx.session()?;
-    // Clamped so a huge --duration cannot wedge the client; the driver
-    // caps accepted holds far below this either way.
     let wait = duration.clamp(0.0, 60.0);
     let budget = std::time::Duration::from_secs(30) + std::time::Duration::from_secs_f64(wait);
     round_trip_within(ctx, &session, "hold", &body, budget)
