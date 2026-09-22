@@ -24,7 +24,7 @@ pub mod r#type;
 
 use serde_json::Value;
 
-use agent_mobile_core::contract::{Data, Envelope, trim_snapshot};
+use agent_mobile_core::contract::{Data, Envelope, Ref, trim_snapshot};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::format;
 use agent_mobile_core::ios;
