@@ -81,7 +81,7 @@ flowchart TB
     TUNNEL{{"optional, never core:<br/>any port forwarder for a remote agent"}}
 
     subgraph IOSDRV["iOS device driver — Swift (exists: drivers/ios/)"]
-        IOSD["XCUITest runner + HTTP server<br/>tree: XCUIElement.snapshot()<br/>act: tap · typeText · swipe · home<br/>refs: per snapshot, re-resolve on device<br/>settle: bounded tree-hash<br/>auth: bearer token"]
+        IOSD["XCUITest runner + HTTP server<br/>tree: XCUIElement.snapshot()<br/>act: tap · doubletap · pinch · hold · typeText · swipe · back · twofinger · center · home<br/>refs: per snapshot, re-resolve on device<br/>settle: bounded tree-hash<br/>auth: bearer token"]
     end
 
     subgraph ANDDRV["Android device driver — Kotlin (P2)"]
@@ -134,6 +134,12 @@ Verbs, read from the driver's `handle(_:_:)` switch; "settled snapshot" below me
 | `type` | `text`, `ref?` | settled snapshot | Taps `ref` first if given, else types into current focus. |
 | `swipe` | `direction`, `ref?` | settled snapshot | `direction` is one of up/down/left/right, else `BAD_REQUEST`; swipes `ref` if given, else the whole app. |
 | `home` | none | settled snapshot | Presses the hardware Home button; resets the active bundle to `com.apple.springboard`. |
+| `doubletap` | `ref`, or `x` and `y` | settled snapshot | Target required; shapes mirror `tap`. |
+| `pinch` | `ref`, `scale`, `velocity?` | settled snapshot | `ref` required; `scale` positive, finite, `\|scale - 1\| >= 0.01`, else `BAD_REQUEST`; `velocity` defaults to sign-matched 1.0. |
+| `hold` | `ref` or `x` and `y`, `duration?` | settled snapshot | Target required; `duration` defaults to 1.0 and must satisfy 0 < d <= 10 (press plus settle must fit the wire budget), else `BAD_REQUEST`; a present-but-wrong-type duration is `BAD_REQUEST`, not the default. |
+| `back` | none | settled snapshot | System edge swipe; no target. Works in navigation stacks; web-history back is unproven. |
+| `twofinger` | `ref` | settled snapshot | `ref` required. Elements XCTest cannot address (e.g. widgets) fail as `DRIVER_ERROR`; the driver stays up. |
+| `center` | `which` | settled snapshot | `which` takes only `notification`, opening Notification Center from the SpringBoard session; any other value is `BAD_REQUEST`. The call retargets the session to SpringBoard and discards earlier refs: snapshot or retarget to return to the app. |
 | `screenshot` | none | `png_base64` | No settle step; not a tree snapshot. |
 
 **Envelope.** Success returns `{version, ok, command, elapsed_ms, data}`; failure returns the same shape with `ok:false` and `error:{code, message}` in place of `data`; a 401 for a bad token omits `command` and `elapsed_ms`, returned before the command dispatches. `version` is the protocol version, fixed at `1` for P1, bumped only on a breaking change; today's probe driver reports `0.1-probe`. The error object carries `code` and `message` only. Error codes: `STALE_REF, AMBIGUOUS_TARGET, BAD_REQUEST, UNKNOWN_COMMAND, UNAUTHORIZED, DRIVER_ERROR`; status and agent behavior per code are in §5.3.
@@ -153,7 +159,7 @@ app=com.apple.mobilecal snapshot=@upii2see refs=127 settled=true reads=2 elapsed
 
 ### 5.2 CLI surface
 
-The CLI is stateless per call against the long-lived driver. Eight of eleven P1 commands map to a same-named driver verb; `devices` and `serve` have none, and `stop` sends `terminate`.
+The CLI is stateless per call against the long-lived driver. Fourteen of the seventeen commands below map to a same-named driver verb; `devices` and `serve` have none, and `stop` sends `terminate`.
 
 | Command | Args | Wire call | Notes |
 |---|---|---|---|
@@ -165,6 +171,12 @@ The CLI is stateless per call against the long-lived driver. Eight of eleven P1 
 | `type` | `[ref] <text>` | `type` | A leading argument shaped like `@<id>:eN` is consumed as `ref`; remaining arguments join into `text`. |
 | `swipe` | `<direction> [ref]` | `swipe` | `direction`: up, down, left, or right. |
 | `home` | none | `home` | |
+| `doubletap` | `<ref>`, or `<x> <y>` | `doubletap` | One argument is read as `ref`; two are read as `x y`. |
+| `pinch` | `<ref> <scale> [--velocity <V>]` | `pinch` | `scale` above 1 zooms out, below 1 zooms in; near-1 or non-positive scales are `BAD_REQUEST` driver-side; non-finite scale/velocity fail client-side. Unaddressable elements fail as `DRIVER_ERROR`; the driver stays up. |
+| `hold` | `<ref>`, or `<x> <y>`, `[--duration <SECS>]` | `hold` | `duration` defaults to 1.0 and must satisfy 0 < d <= 10 (`BAD_REQUEST` from the driver); the CLI sizes its wire timeout from the duration. |
+| `back` | none | `back` | |
+| `twofinger` | `<ref>` | `twofinger` | |
+| `center` | `<notification>` | `center` | Only `notification` exists today. |
 | `launch` | `<bundle_id>` | `launch` | |
 | `screenshot` | `[output-path]` | `screenshot` | Decodes `png_base64`; writes to `output-path`, or stdout if omitted. |
 | `stop` | none | `terminate` | |
@@ -204,7 +216,7 @@ P0 is the first phase and it is finished. What it proved:
 **Scope**
 - P1 wraps the existing, already-proven Swift driver (§6.0) in a Rust CLI plus core.
 - It runs on the simulator and an iPhone on the same network.
-- Verb set: devices, serve, status, snapshot, tap, type, swipe, home, launch, screenshot, stop.
+- Verb set: devices, serve, status, snapshot, tap, doubletap, pinch, hold, back, twofinger, center, type, swipe, home, launch, screenshot, stop.
 - Text output by default; `--json` gives JSON.
 - Each session's token is stored under `~/.agent-mobile`.
 - Driver cleanups: envelope version `1`, `X-Agent-Mobile-Version` check, `bounds` keys renamed to `{x,y,width,height}`, Home press at start on the simulator, no default token in any script.
@@ -289,7 +301,7 @@ agent-mobile/
 
 `crates/android` arrives with the Android driver.
 
-The platform branch lives in exactly one function. Ten of the thirteen verbs never learn which
+The platform branch lives in exactly one function. Sixteen of the eighteen verbs never learn which
 platform they drive: they parse arguments, build JSON, and call the wire, because both drivers
 speak one protocol. Only `devices`, `serve`, and the lazy-start path touch a platform. When
 Android arrives, those three must not grow an `if android` at each call site. One function takes
