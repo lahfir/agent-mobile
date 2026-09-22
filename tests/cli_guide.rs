@@ -1,7 +1,6 @@
 //! Guide accuracy: `--help` and `skills` name every command the CLI runs,
 //! so agents discover verbs from either surface.
 
-/// Shared stub harness; this file uses only the unwired half of it.
 #[allow(dead_code, reason = "shared harness; this suite uses the unwired half")]
 mod common;
 
