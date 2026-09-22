@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: after
+---
+app=com.apple.mobilecal snapshot=@SNAP refs=127 settled=true reads=3 elapsed_ms=N complete=false
+@SNAP:eN application "Calendar" at=0,0 size=440x956

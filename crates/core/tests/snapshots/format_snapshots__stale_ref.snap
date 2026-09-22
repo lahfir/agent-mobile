@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: text
+---
+STALE_REF: current snapshot is @2b9z8zvm; ref @SNAP:eN is from another snapshot; re-snapshot
+next: re-snapshot, then retry the action with a fresh ref

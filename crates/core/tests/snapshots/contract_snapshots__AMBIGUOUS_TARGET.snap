@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: rendered
+---
+AMBIGUOUS_TARGET: driver message
+next: pick a ref with a firmer native_id, walk --json bounds, or coordinate-tap from --json, then retry

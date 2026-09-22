@@ -1,0 +1,30 @@
+{
+  "name": "agent-mobile",
+  "version": "0.1.0",
+  "description": "Drive iOS apps through a snapshot -> act loop",
+  "license": "Apache-2.0",
+  "author": "Lahfir",
+  "os": ["darwin"],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "agent-mobile": "run.js"
+  },
+  "files": [
+    "run.js",
+    "install.js",
+    "bin/agent-mobile",
+    "runner/"
+  ],
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "keywords": [
+    "ios",
+    "xctest",
+    "agent",
+    "automation",
+    "simulator"
+  ]
+}

@@ -1,0 +1,5 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: text
+---
+app=com.apple.springboard device="iPhone 17 Pro Max" os=26.0 snapshot=@SNAP elapsed_ms=N

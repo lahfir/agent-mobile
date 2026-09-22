@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: rendered
+---
+UNKNOWN_COMMAND: driver message
+next: fix the client; do not retry

@@ -1,0 +1,10 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: status
+---
+Status {
+    app: "com.example.todo",
+    snapshot_id: "upii2see",
+    device: "iPhone 16 Pro",
+    os: "26.0",
+}

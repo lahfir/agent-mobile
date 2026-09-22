@@ -1,0 +1,1 @@
+{"command":"status","elapsed_ms":0,"error":{"code":"BAD_REQUEST","message":"X-Agent-Mobile-Version must be 1"},"ok":false,"version":"1"}

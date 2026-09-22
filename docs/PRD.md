@@ -80,7 +80,7 @@ flowchart TB
 
     TUNNEL{{"optional, never core:<br/>any port forwarder for a remote agent"}}
 
-    subgraph IOSDRV["iOS device driver — Swift (exists: fixtures/driver/)"]
+    subgraph IOSDRV["iOS device driver — Swift (exists: drivers/ios/)"]
         IOSD["XCUITest runner + HTTP server<br/>tree: XCUIElement.snapshot()<br/>act: tap · typeText · swipe · home<br/>refs: per snapshot, re-resolve on device<br/>settle: bounded tree-hash<br/>auth: bearer token"]
     end
 
@@ -109,9 +109,9 @@ Component rules
 - The core never parses a tree beyond formatting it. Ref resolution runs on the device.
 - One driver process per device, one port each. The CLI maps device to port through a small state
   file under `~/.agent-mobile/`.
-- Today's iOS driver (`fixtures/driver/ToDoUITests/AgentMobileServer.swift`, 267 lines) is the P1
+- Today's iOS driver (`drivers/ios/Driver/AgentMobileServer.swift`, 267 lines) is the P1
   driver as is, plus a Home press at start on the simulator. The host app in that project is a
-  scaffold the UI-test target needs; the driver never touches it.
+  minimal shell the UI-test target needs; the driver never touches it.
 - Physical iOS needs a host process (the Mac) alive for the session (docs/research/02). The agent
   never needs the phone screen; the tree and the screenshot endpoint carry the state.
 
@@ -275,7 +275,7 @@ P0 is the first phase and it is finished. What it proved:
 
 ### 7.1 Workspace and layout
 
-`docs/research/`, `docs/experiments/`, and `fixtures/driver/` exist. The Rust workspace is new.
+`docs/research/`, `docs/experiments/`, and `drivers/ios/` exist. The Rust workspace is new.
 
 ```
 agent-mobile/
@@ -283,11 +283,18 @@ agent-mobile/
 ├── crates/core/      # host logic; the iOS adapter is a module inside it
 ├── src/              # CLI binary, one command per file
 ├── scripts/          # source-rule check, used by CI and the pre-commit hook
-├── fixtures/driver/  # existing Swift XCUITest driver
+├── drivers/ios/      # existing Swift XCUITest driver
 └── docs/             # research tracks, experiments, this PRD
 ```
 
-`crates/android` arrives with the Android driver. There is never a `crates/ios`. The contract types
+`crates/android` arrives with the Android driver.
+
+The platform branch lives in exactly one function. Ten of the thirteen verbs never learn which
+platform they drive: they parse arguments, build JSON, and call the wire, because both drivers
+speak one protocol. Only `devices`, `serve`, and the lazy-start path touch a platform. When
+Android arrives, those three must not grow an `if android` at each call site. One function takes
+the device and returns what `serve` needs: the launch command, the URL, and the address. Adding a
+third platform then edits one match arm. There is never a `crates/ios`. The contract types
 live in `crates/core`.
 
 Toolchain: Rust 1.89.0, pinned in `rust-toolchain.toml`, with clippy and rustfmt. License: Apache-2.0.
@@ -307,6 +314,7 @@ this repo.
 - No inline `//` or `/* */` comments. Only `///` and `//!` doc comments. The same script enforces this.
 - A doc comment is at most 15 lines per item. The same script enforces this.
 - CI runs `cargo fmt --check` and `cargo deny check`.
+- Test rules in the same script: every `#[test]` asserts, no `sleep` in a test, `#[ignore]` needs a reason. Core tests compare against fixtures recorded from real driver output, so a test cannot re-implement the code it checks. P1 adds `cargo-mutants` on changed files, the only mechanical proof that a test fails when the code breaks.
 
 ### 7.3 Testing
 
@@ -353,7 +361,7 @@ driver and CLI together in one release.
 - A token generates fresh per `serve` call, stored under `~/.agent-mobile/` at mode `0600`; no script carries a default.
 - Logs may keep the command name, `elapsed_ms`, and the ok/error outcome, never the token.
 - `SECURITY.md` states the scope: the CLI, the core, and the drivers.
-- P1 cleanup: `fixtures/driver/am.sh` defaults to a committed token today, and `fixtures/driver/start-device.sh` writes its token to `/tmp/agent-mobile-device-token` with no `chmod` call.
+- P1 cleanup: `drivers/ios/am.sh` defaults to a committed token today, and `drivers/ios/start-device.sh` writes its token to `/tmp/agent-mobile-device-token` with no `chmod` call.
 
 ### 7.7 Definition of done for any phase
 
@@ -362,7 +370,30 @@ driver and CLI together in one release.
 3. No token or secret appears in logs, diffs, or committed scripts.
 4. `README.md` and the relevant `docs/` file reflect any command or protocol change.
 
-## 8. Risks
+## 8. Performance budget
+
+Measured on the physical iPhone (Experiments 7 and 8): `status` costs 0 to 2 ms driver-side, so
+the wire is not the cost. One `XCUIElement.snapshot()` costs about 205 ms on the device and about
+122 ms on the simulator. A 2,059 ms `tap` breaks down as:
+
+| Part | ms | Cause |
+|---|---|---|
+| resolve: `q.count` | 205 | full tree evaluation |
+| resolve: `element(boundBy:)` | 205 | the same query evaluated a second time |
+| `.tap()` | ~1090 | Apple's automatic quiescence wait inside every XCUITest interaction |
+| settle: two snapshots | 410 | two full tree reads |
+| settle: fixed `usleep` | 150 | the driver's own pause between reads |
+
+P1 fixes, in payoff order: turn off the quiescence wait as WebDriverAgent does
+(docs/research/01); resolve from one snapshot and tap the matched frame by coordinate instead of
+evaluating the query twice; drop the fixed pause, since a snapshot already takes longer than it;
+reuse the post-action read as the first settle read. Target: about 700 ms per action on a device
+and about 450 ms on the simulator. A `--fast` single-read mode that reports `settled: false`
+reaches about 300 ms. Below 200 ms is not reachable on a physical device while returning a full
+tree, because one tree read is Apple's floor; a depth cap pushed into the driver is the only
+further lever.
+
+## 9. Risks
 
 | Risk (evidence) | Mitigation | Phase |
 |---|---|---|
@@ -376,7 +407,7 @@ driver and CLI together in one release.
 | Developer certificate trust lapsed after about an hour; runner refused to launch until re-trusted (Exp 8, n=2) | `serve` prints the re-trust steps; a paid profile removes the gate | P1 |
 | Field reliability numbers are unaudited; one paper measured 26 to 33 percent seed swings (docs/research/09 §8) | Report the benchmark's seed variance with the mean | P3 |
 
-## 9. Success metrics
+## 10. Success metrics
 
 The P3 benchmark is the reliability gate: ship or stop turns on its result.
 
@@ -393,7 +424,7 @@ Report each metric as a mean and spread across seeds, per task and pooled.
 
 Kill criterion, verbatim: "if agent-mobile is not measurably more reliable than both competitors on the same tasks, stop the product and contribute the ref and settle contract upstream."
 
-## 10. Known limitations
+## 11. Known limitations
 
 - Physical iOS needs a Mac with Xcode alive for the whole session, a paired device, Developer Mode,
   and a trusted developer certificate. No cable after pairing. No zero-host mode on this rail.
@@ -406,7 +437,7 @@ Kill criterion, verbatim: "if agent-mobile is not measurably more reliable than 
 - Canvas, games, and opaque WebViews expose no tree. Vision is out of scope.
 - Android: the agent app is sideload only. Play policy bans this use of the accessibility API.
 
-## 11. Open question
+## 12. Open question
 
 License: Apache-2.0 is assumed. Owner's call.
 

@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: text
+---
+UNKNOWN_COMMAND: bogus
+next: fix the client; do not retry

@@ -1,0 +1,12 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: rendered
+---
+DRIVER_ERROR: connection refused (os error 61)
+next: the driver is unreachable; work through this checklist:
+  - is `agent-mobile serve` running on the Mac? (any verb can lazy-start it)
+  - is the development certificate still trusted on the device?
+    re-trust lives in Settings > General > VPN & Device Management
+  - are the device and the Mac on the same Wi-Fi network?
+  - is the Mac awake? sleep drops the driver
+certificate re-trust is human-only; there is no retry loop

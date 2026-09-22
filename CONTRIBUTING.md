@@ -21,6 +21,9 @@ All of these fail the build. They are the Rust equivalent of an "anti-slop" rule
 - No inline comments. `//` and `/* */` are rejected; only `///` and `//!` doc comments are
   allowed, and a doc comment is at most 15 lines (`scripts/check_rust_comments.py`).
 - Public items carry a doc comment (`missing_docs`).
+- Test rules, same script: every `#[test]` asserts something, no `sleep` in a test, and
+  `#[ignore]` carries a reason. Core tests compare against fixtures recorded from real driver
+  output, so a test never re-implements the code it checks.
 - `cargo deny check` gates advisories, licenses, bans, and sources.
 
 ## Commits

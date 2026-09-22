@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/contract_snapshots.rs
+expression: rendered
+---
+STALE_REF: driver message
+next: re-snapshot, then retry the action with a fresh ref

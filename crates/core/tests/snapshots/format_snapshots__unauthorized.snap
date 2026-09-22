@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: text
+---
+UNAUTHORIZED: Authorization: Bearer <AGENT_MOBILE_TOKEN> required
+next: fix AGENT_MOBILE_TOKEN; do not retry unchanged

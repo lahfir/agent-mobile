@@ -3,10 +3,17 @@
 # doc comments of at most 15 lines. Run from the repo root; CI and the pre-commit hook call it.
 set -euo pipefail
 
+cd "$(git rev-parse --show-toplevel)"
+
 limit=400
 failed=0
 
-while IFS= read -r file; do
+rs_files=()
+while IFS= read -r -d '' file; do
+    rs_files+=("$file")
+done < <(git ls-files -z --cached --others --exclude-standard -- '*.rs')
+
+for file in "${rs_files[@]}"; do
     [ -f "$file" ] || continue
     if head -n 5 "$file" | grep -q '@generated'; then
         continue
@@ -16,10 +23,9 @@ while IFS= read -r file; do
         printf '%s: %s lines (limit %s)\n' "$file" "$lines" "$limit" >&2
         failed=1
     fi
-done < <(git ls-files --cached --others --exclude-standard -- '*.rs')
+done
 
-if ! git ls-files -z --cached --others --exclude-standard -- '*.rs' \
-    | python3 scripts/check_rust_comments.py; then
+if ! printf '%s\0' "${rs_files[@]}" | python3 scripts/check_rust_comments.py; then
     failed=1
 fi
 
