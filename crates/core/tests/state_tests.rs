@@ -86,9 +86,8 @@ fn env_override_wins_without_mutating_state() -> Result<(), Failure> {
     let Some(r) = out else {
         return Err(fail("expected an endpoint"));
     };
-    assert_eq!(r.endpoint.url, "http://env:9");
-    assert_eq!(r.endpoint.token(), "env-token");
-    assert!(r.entry.is_none(), "env-pinned resolution holds no entry");
+    assert_eq!(r.url, "http://env:9");
+    assert_eq!(r.token(), "env-token");
     let raw = fs::read_to_string(store.state_file())?;
     assert!(raw.contains("http://127.0.0.1:8770"));
     assert!(!raw.contains("env:9"));
@@ -109,8 +108,8 @@ fn partial_env_override_completes_from_state() -> Result<(), Failure> {
     let Some(r) = out else {
         return Err(fail("expected an endpoint"));
     };
-    assert_eq!(r.endpoint.url, "http://env:9");
-    assert_eq!(r.endpoint.token(), "state-token");
+    assert_eq!(r.url, "http://env:9");
+    assert_eq!(r.token(), "state-token");
     Ok(())
 }
 
@@ -138,7 +137,7 @@ fn canary_token_never_appears_in_debug() -> Result<(), Failure> {
     let Some(r) = out else {
         return Err(fail("expected an endpoint"));
     };
-    let dbg = format!("{:?}", r.endpoint);
+    let dbg = format!("{r:?}");
     assert!(!dbg.contains("canary-7f3c9a-token"), "Debug leaked a token");
     assert!(dbg.contains("127.0.0.1:8770"));
     Ok(())
@@ -198,13 +197,12 @@ fn state_lock_serializes_mutations() -> Result<(), Failure> {
 }
 
 #[test]
-fn token_file_name_rejects_traversal() -> Result<(), Failure> {
+fn token_file_name_rejects_traversal() {
     let tmp = TempDir::new("tokname");
     let store = StateStore::at(&tmp.0);
     assert!(store.write_token("../escape", "t").is_err());
     assert!(store.write_token("a/b", "t").is_err());
     assert!(store.write_token("", "t").is_err());
-    Ok(())
 }
 
 #[test]
@@ -216,7 +214,7 @@ fn upsert_remove_and_default_device_round_trip() -> Result<(), Failure> {
     assert!(store.entry("sim").is_some());
     store.remember_device("sim")?;
     match store.resolve_with(None, None, None)? {
-        Some(r) => assert_eq!(r.endpoint.url, "http://a:1"),
+        Some(r) => assert_eq!(r.url, "http://a:1"),
         None => return Err(fail("default device must resolve")),
     }
     store.remove("sim")?;

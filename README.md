@@ -184,8 +184,7 @@ automatically, or pass it per call via `AGENT_MOBILE_URL`.
   `bin/` + `runner/` produced by `scripts/sync-npm-version.sh`.
 - `drivers/ios/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
   server (`Driver/AgentMobileServer.swift`); `Host/` is the minimal app the runner attaches to.
-  `am.sh` is a curl helper, `start-device.sh` starts the driver on a physical iPhone,
-  `tunnel-cloudflared.sh` is the reference tunnel adapter.
+  `am.sh` is a curl helper and `tunnel-cloudflared.sh` is the reference tunnel adapter.
 - `docs/PRD.md` — the product requirements: contract, phases P1–P4 with experiment exit criteria,
   engineering practices, risks, and the reliability gate.
 - `docs/research/` and `docs/experiments/` — the 13 research tracks with their synthesis, and the

@@ -91,7 +91,6 @@ for refs in groups.values():
         print(' '.join(refs))
 PY
 }
-> "$OUT/error-ambiguous.json.attempted"
 for round in 1 2 3 4 5; do
     post snapshot '{}' > /dev/null
     CANDIDATES=$(detect_dups | awk '{print $1}')
