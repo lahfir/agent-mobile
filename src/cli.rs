@@ -44,7 +44,7 @@ pub enum Command {
         #[arg(num_args = 1..=2, value_name = "REF | X Y")]
         args: Vec<String>,
     },
-    /// Type text; a leading ref-shaped arg taps that element first.
+    /// Append text; a leading ref-shaped arg writes that field directly, else the focused field gets keystrokes.
     Type {
         /// Optional `@<snapshot>:e<N>` ref, then the text to type. Text that
         /// begins with a hyphen needs `--` first: `type -- -flag`.

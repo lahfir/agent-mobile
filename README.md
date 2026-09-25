@@ -62,7 +62,7 @@ agent-mobile serve "iPhone 17 Pro Max" # prints the session token once when read
 | `status` | active app, device, os, current snapshot id |
 | `snapshot` | mint refs and print the accessibility tree |
 | `tap <ref>` or `tap <x> <y>` | tap an element ref, or a point in the app frame |
-| `type [<ref>] <text...>` | type text; a leading ref taps that field first; use `--` before hyphen-leading text |
+| `type [<ref>] <text...>` | append text: a leading ref writes that field's value directly (no keyboard), otherwise keystrokes go to the focused field; use `--` before hyphen-leading text |
 | `swipe <up\|down\|left\|right> [<ref>]` | swipe the app, or one element |
 | `home` | press Home; returns the springboard tree |
 | `launch <bundle_id>` | cold-start an app; kills saved state |

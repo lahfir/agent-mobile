@@ -19,8 +19,9 @@ COMMANDS
   tap <ref> | <x> <y>            tap an element ref, or a point in the app
                                  frame's top-left space (at=x,y is the node's
                                  origin — tap its center x+w/2, y+h/2)
-  type [<ref>] <text...>         type text; a leading ref taps that field
-                                 first. Text starting with `-` needs `--`:
+  type [<ref>] <text...>         append text; a leading ref writes that field
+                                 directly, else keys go to the focused field.
+                                 Text starting with `-` needs `--`:
                                  type -- -flag
   swipe <up|down|left|right> [<ref>]
                                  swipe the app, or one element

@@ -184,9 +184,7 @@ final class Driver {
                 throw DrvError(code: "BAD_REQUEST", msg: "duration 0 < d <= 10")
             }
             let (pt, hbase) = try resolvePoint(p)
-            guard try pressRecord(pt, liftDelay: dur) else {
-                throw DrvError(code: "DRIVER_ERROR", msg: "pointer-event synthesis returned false")
-            }
+            try Events.press(pt, hold: dur)
             return try settledSnapshot(baseline: hbase)
         case "doubletap":
             let (pt, dbase) = try resolvePoint(p)
@@ -216,8 +214,7 @@ final class Driver {
         case "back":
             let f = app().frame
             let y = f.minY + f.height * 0.4
-            edgeDrag(from: CGPoint(x: f.minX + f.width * 0.03, y: y),
-                     to: CGPoint(x: f.minX + f.width * 0.8, y: y))
+            drag(from: CGPoint(x: f.minX + f.width * 0.03, y: y), to: CGPoint(x: f.minX + f.width * 0.8, y: y), hold: 0.1)
             return try settledSnapshot()
         case "center":
             guard let which = p["which"] as? String, which == "notification" else {
@@ -225,31 +222,30 @@ final class Driver {
             }
             bundle = "com.apple.springboard"
             let sf = app().frame
-            edgeDrag(from: CGPoint(x: sf.minX + sf.width * 0.15, y: sf.minY + sf.height * 0.02),
-                     to: CGPoint(x: sf.minX + sf.width * 0.15, y: sf.minY + sf.height * 0.7), hold: 0)
+            drag(from: CGPoint(x: sf.minX + sf.width * 0.15, y: sf.minY + sf.height * 0.02),
+                 to: CGPoint(x: sf.minX + sf.width * 0.15, y: sf.minY + sf.height * 0.7), hold: 0)
             return try settledSnapshot()
         case "type":
             let text = try str(p, "text")
-            var base: (h: Int, at: Date)? = nil
-            if p["ref"] != nil {
-                let (f, rh) = try resolve(p["ref"])
-                let pt = CGPoint(x: f.midX, y: f.midY)
-                if !fastTap(pt) { point(pt).tap() }
-                base = rh
+            guard p["ref"] != nil else {
+                typeKeys(text)
+                return try settledSnapshot()
             }
-            app().typeText(text); return try settledSnapshot(baseline: base)
+            let (node, base) = try resolve(p["ref"])
+            if try !setValue(node, appending: text) {
+                tapPoint(CGPoint(x: node.frame.midX, y: node.frame.midY))
+                typeKeys(text)
+            }
+            return try settledSnapshot(baseline: base)
         case "swipe":
             let dir = try str(p, "direction")
             guard ["up", "down", "left", "right"].contains(dir) else {
                 throw DrvError(code: "BAD_REQUEST", msg: "direction up|down|left|right")
             }
             if p["ref"] != nil {
-                let (f, h) = try resolve(p["ref"]); flick(dir, from: f); return try settledSnapshot(baseline: h)
+                let (node, h) = try resolve(p["ref"]); flick(dir, across: node.frame, span: 0.6); return try settledSnapshot(baseline: h)
             }
-            let el = app()
-            switch dir {
-            case "up": el.swipeUp(); case "down": el.swipeDown(); case "left": el.swipeLeft(); default: el.swipeRight()
-            }
+            flick(dir, across: app().frame, span: 0.5)
             return try settledSnapshot()
         case "home":
             XCUIDevice.shared.press(.home); bundle = "com.apple.springboard"; return try settledSnapshot()
@@ -293,87 +289,59 @@ final class Driver {
         if p["x"] != nil || p["y"] != nil {
             throw DrvError(code: "BAD_REQUEST", msg: "x and y must be sent together")
         }
-        let (f, base) = try resolve(p["ref"])
-        return (CGPoint(x: f.midX, y: f.midY), base)
+        let (node, base) = try resolve(p["ref"])
+        return (CGPoint(x: node.frame.midX, y: node.frame.midY), base)
     }
 
-    // A tap via XCPointerEventPath + XCSynthesizedEventRecord — the WebDriverAgent
-    // event path (docs/research/11). `XCUICoordinate.tap()` pays an element
-    // resolution plus XCTest's event plumbing (~480 ms here); the record
-    // synthesizes straight through testmanagerd. Every selector is verified at
-    // runtime; any miss falls back to the stock coordinate tap.
+    // A tap through the pointer-event path (~210 ms, vs ~480 ms for
+    // `XCUICoordinate.tap()`); false only when the runtime lacks the path.
     func fastTap(_ p: CGPoint) -> Bool {
-        (try? pressRecord(p, liftDelay: 0.05)) ?? false
+        (try? Events.press(p, hold: 0.05)) != nil
     }
 
-    // The shared pointer-event record builder behind `fastTap`. A delayed
-    // `liftUpAtOffset` forms a press-and-hold; XCTest `element.press` stalls
-    // 60–100 s on some targets, so `hold` has no element-press fallback — a
-    // signature miss throws DRIVER_ERROR naming the runtime instead of
-    // falling through to a stall.
-    static func pressMiss() -> DrvError {
-        DrvError(code: "DRIVER_ERROR", msg: "pointer-event record signatures missing on iOS \(UIDevice.current.systemVersion); rebuild the driver with the current Xcode")
-    }
-
-    func pressRecord(_ p: CGPoint, liftDelay: Double) throws -> Bool {
-        guard let pathCls = NSClassFromString("XCPointerEventPath"),
-              let recCls = NSClassFromString("XCSynthesizedEventRecord") else { throw Driver.pressMiss() }
-        let allocSel = NSSelectorFromString("alloc")
-        let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
-        let liftSel = NSSelectorFromString("liftUpAtOffset:")
-        let recSel = NSSelectorFromString("initWithName:interfaceOrientation:")
-        let addSel = NSSelectorFromString("addPointerEventPath:")
-        let synthSel = NSSelectorFromString("synthesizeWithError:")
-        guard let allocM = class_getClassMethod(pathCls, allocSel), Driver.sig(allocM, [], "@"),
-              let recAllocM = class_getClassMethod(recCls, allocSel), Driver.sig(recAllocM, [], "@"),
-              let initM = class_getInstanceMethod(pathCls, initSel), Driver.sig(initM, ["{CGPoint=dd}", "d"], "@"),
-              let liftM = class_getInstanceMethod(pathCls, liftSel), Driver.sig(liftM, ["d"], "v"),
-              let recM = class_getInstanceMethod(recCls, recSel), Driver.sig(recM, ["@", "q"], "@"),
-              let addM = class_getInstanceMethod(recCls, addSel), Driver.sig(addM, ["@"], "v"),
-              let synthM = class_getInstanceMethod(recCls, synthSel), Driver.sig(synthM, ["^@"], "B") else { throw Driver.pressMiss() }
-        typealias ObjFn = @convention(c) (AnyObject, Selector) -> AnyObject
-        typealias TouchFn = @convention(c) (AnyObject, Selector, CGPoint, Double) -> AnyObject
-        typealias VoidDblFn = @convention(c) (AnyObject, Selector, Double) -> Void
-        typealias NameOriFn = @convention(c) (AnyObject, Selector, AnyObject, Int) -> AnyObject
-        typealias VoidObjFn = @convention(c) (AnyObject, Selector, AnyObject) -> Void
-        typealias SynthFn = @convention(c) (AnyObject, Selector, UnsafeMutablePointer<NSError?>) -> Bool
-        let path = unsafeBitCast(method_getImplementation(initM), to: TouchFn.self)(
-            unsafeBitCast(method_getImplementation(allocM), to: ObjFn.self)(pathCls, allocSel),
-            initSel, p, 0)
-        unsafeBitCast(method_getImplementation(liftM), to: VoidDblFn.self)(path, liftSel, liftDelay)
-        let ori: Int = switch XCUIDevice.shared.orientation {
-        case .landscapeLeft: 3
-        case .landscapeRight: 4
-        case .portraitUpsideDown: 2
-        default: 1
+    // Press-hold, then drag from a to b in `duration` seconds, as one pointer
+    // path (~300 ms vs ~1.2 s for `press(forDuration:thenDragTo:)`, which
+    // stays as the fallback when the runtime lacks the path).
+    func drag(from a: CGPoint, to b: CGPoint, hold: TimeInterval, duration: TimeInterval = 0.15) {
+        if (try? Events.drag(from: a, to: b, hold: hold, duration: duration)) == nil {
+            point(a).press(forDuration: hold, thenDragTo: point(b))
         }
-        let rec = unsafeBitCast(method_getImplementation(recM), to: NameOriFn.self)(
-            unsafeBitCast(method_getImplementation(recAllocM), to: ObjFn.self)(recCls, allocSel),
-            recSel, "agent-mobile" as NSString, ori)
-        unsafeBitCast(method_getImplementation(addM), to: VoidObjFn.self)(rec, addSel, path)
-        var err: NSError?
-        return unsafeBitCast(method_getImplementation(synthM), to: SynthFn.self)(rec, synthSel, &err)
     }
 
-    // A ref-scoped swipe as a press+drag across the element's frame.
-    func flick(_ dir: String, from f: CGRect) {
-        var dx = 0.0, dy = 0.0
-        switch dir {
-        case "up": dy = -f.height * 0.6
-        case "down": dy = f.height * 0.6
-        case "left": dx = -f.width * 0.6
-        default: dx = f.width * 0.6
+    // A swipe through the centre of `f`, travelling `span` of its size.
+    func flick(_ dir: String, across f: CGRect, span: Double) {
+        let c = CGPoint(x: f.midX, y: f.midY)
+        let dx = dir == "left" ? -f.width * span : dir == "right" ? f.width * span : 0
+        let dy = dir == "up" ? -f.height * span : dir == "down" ? f.height * span : 0
+        drag(from: CGPoint(x: c.x - dx / 2, y: c.y - dy / 2), to: CGPoint(x: c.x + dx / 2, y: c.y + dy / 2), hold: 0.05, duration: 0.1)
+    }
+
+    // Keystrokes through the pointer-event text path at 1000 keys/s; XCTest's
+    // `typeText` is fixed at 60 keys/s (200 chars: ~0.3 s vs ~3.8 s).
+    func typeKeys(_ text: String) {
+        if (try? Events.type(text, keysPerSecond: 1000)) == nil { app().typeText(text) }
+    }
+
+    // Write a text field's value through the accessibility client: one IPC,
+    // no keystrokes (200 chars in 12-40 ms; UIKit and SwiftUI bindings both
+    // see it). The value lands only if a re-read shows it; secure fields and
+    // any refusal return false so the caller falls back to keystrokes.
+    func setValue(_ node: XCUIElementSnapshot, appending text: String) throws -> Bool {
+        guard node.elementType != .secureTextField,
+              let el = (node as AnyObject).value(forKey: "accessibilityElement") as AnyObject? else { return false }
+        let current = node.value.map { String(describing: $0) } ?? ""
+        let want = (current == node.placeholderValue ? "" : current) + text
+        guard (try? Events.setValue(want, on: el)) == true else { return false }
+        let id = Ident(type: node.elementType, id: Driver.snapString(node, "identifier"), label: Driver.snapString(node, "label"), frame: node.frame)
+        var got: String?
+        func walk(_ n: XCUIElementSnapshot) {
+            if got == nil, n.elementType == id.type, Driver.snapString(n, "identifier") == id.id, Driver.close(n.frame, id.frame) {
+                got = n.value.map { String(describing: $0) }
+            }
+            n.children.forEach(walk)
         }
-        point(CGPoint(x: f.midX, y: f.midY))
-            .press(forDuration: 0.05, thenDragTo: point(CGPoint(x: f.midX + dx, y: f.midY + dy)))
-    }
-
-    // One press-drag primitive for the KTD3 edge verbs (back, center):
-    // endpoints in app-frame coordinates. Back uses the probed 0.1 s hold;
-    // center passes 0 so status-bar recognizers cannot claim the touch.
-    // Same coordinate helpers as flick.
-    func edgeDrag(from a: CGPoint, to b: CGPoint, hold: TimeInterval = 0.1) {
-        point(a).press(forDuration: hold, thenDragTo: point(b))
+        walk(try app().snapshot())
+        return got == want
     }
 
     func str(_ p: [String: Any], _ k: String) throws -> String {
@@ -400,20 +368,20 @@ final class Driver {
         return (ref, id)
     }
 
-    func resolve(_ any: Any?) throws -> (frame: CGRect, read: (h: Int, at: Date)) {
+    func resolve(_ any: Any?) throws -> (node: XCUIElementSnapshot, read: (h: Int, at: Date)) {
         let (ref, id) = try lookupIdent(any)
         let snap = try app().snapshot()
         let at = Date()
-        var n = 0; var frame = CGRect.zero
+        var hits: [XCUIElementSnapshot] = []
         func walk(_ node: XCUIElementSnapshot) {
             if node.elementType == id.type, Driver.snapString(node, "identifier") == id.id, Driver.snapString(node, "label") == id.label,
-               Driver.close(node.frame, id.frame) { n += 1; frame = node.frame }
+               Driver.close(node.frame, id.frame) { hits.append(node) }
             node.children.forEach(walk)
         }
         walk(snap)
-        if n == 0 { throw DrvError(code: "STALE_REF", msg: "\(ref) no longer matches a live element; re-snapshot") }
-        if n > 1 { throw DrvError(code: "AMBIGUOUS_TARGET", msg: "\(ref) matches \(n) live elements; re-snapshot") }
-        return (frame, (hash(snap), at))
+        if hits.isEmpty { throw DrvError(code: "STALE_REF", msg: "\(ref) no longer matches a live element; re-snapshot") }
+        if hits.count > 1 { throw DrvError(code: "AMBIGUOUS_TARGET", msg: "\(ref) matches \(hits.count) live elements; re-snapshot") }
+        return (hits[0], (hash(snap), at))
     }
 
     // Ref-to-element twin of resolve() for the verbs XCTest only offers on
