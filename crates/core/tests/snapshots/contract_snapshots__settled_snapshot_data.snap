@@ -9,6 +9,7 @@ Snapshot {
     complete: true,
     settled: true,
     reads: 2,
+    settle_ms: None,
     text: "@upii2see:e1 application \"ToDo\" at=0,0 size=440x956\n  @upii2see:e2 textfield \"Title\" value=\"\" at=16,120 size=408x44 [focused]",
     tree: Node {
         role: "application",

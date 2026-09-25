@@ -110,6 +110,23 @@ foreign process holding port 8770 fails fast and names the port, device, and `ls
   ref with a firmer `native_id`, walk bounds via `--json`, or coordinate-tap; transport failures
   print the escalation checklist (serve running? cert trusted? same Wi-Fi? Mac awake?).
 
+## Benchmark
+
+```
+cargo build --release --locked
+python3 scripts/bench.py                     # ~25 min: 3 cold boots, 30 iterations, soak, scenario
+python3 scripts/bench.py --quick             # ~5 min smoke run
+python3 scripts/bench.py --compare bench-results/<old>.json
+python3 scripts/bench.py --render bench-results/<run>.json   # rebuild the HTML only
+```
+
+It drives the release binary against the simulator and writes `bench-results/<stamp>.json` plus a
+self-contained HTML report: 1280×720 slides, one question each, ready to screenshot. It covers cold
+start, per-verb p50/p95, the CLI/driver/settle split, snapshot cost against tree size, typing
+speed, settle rate, stale-ref refusals, error rate, tokens per snapshot, drift, runner memory and
+CPU, and an end-to-end Settings task. The cold boots shut down the simulator; `--cold 0` skips
+them.
+
 ## Physical iPhone
 
 A physical device needs a signed runner, which npm cannot ship — clone this repo so `serve`
@@ -138,7 +155,7 @@ automatically, or pass it per call via `AGENT_MOBILE_URL`.
   `{version, ok:false, command, elapsed_ms, error:{code, message}}`. Error codes: STALE_REF,
   AMBIGUOUS_TARGET, BAD_REQUEST, UNKNOWN_COMMAND, UNAUTHORIZED, DRIVER_ERROR.
 - `data` for snapshot and for every action: `app, snapshot_id, ref_count, complete, settled,
-  reads, text, tree`. Every action returns the fresh post-action tree, so an action costs no
+  reads, settle_ms, text, tree`. Every action returns the fresh post-action tree, so an action costs no
   extra round trip.
 - Node: `role, name, value, ref_id, states, available_actions, native_id {kind:"ax_identifier",
   value}, bounds {x,y,width,height}, children`.

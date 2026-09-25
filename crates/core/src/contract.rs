@@ -111,6 +111,9 @@ pub struct Snapshot {
     pub settled: bool,
     /// How many tree reads the settle loop performed.
     pub reads: u64,
+    /// Milliseconds the settle loop took; absent from older drivers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_ms: Option<u64>,
     /// Driver-rendered text listing of named or interactive nodes.
     pub text: String,
     /// Root accessibility node.
