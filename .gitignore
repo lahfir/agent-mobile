@@ -18,3 +18,6 @@ npm/runner/
 
 # npm pack output
 npm/*.tgz
+
+# benchmark output (scripts/bench.py)
+bench-results/

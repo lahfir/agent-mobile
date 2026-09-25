@@ -252,6 +252,14 @@ P0 is the first phase and it is finished. What it proved:
 - A springboard/system-alert surface handles permission dialogs; `scroll_until_visible` ships.
 - Physical-iOS hardening moves the bind to loopback plus a pairing-channel port forward.
 
+**Benchmark report** — `scripts/bench.py` (runner) and `scripts/bench.html` (template) are the base for the §9 run and every later benchmark. Extend them; do not fork them. Keep the report standard:
+- One question per 1280×720 slide, each a white card on the patterned ground that can be posted as a screenshot. Nothing may overflow the card.
+- Numbers left, one chart right. The footer on every slide carries version, device, OS, SHA, runs, and date.
+- Charts use the reference shapes only: rounded stacked bars, rounded columns with one saturated highlight, the ribbon waterfall, the gapped donut, and thin spark bars. The key value sits in a black chip.
+- Palette in fixed order: `#4F55F0`, `#E0584F`, `#8B5CF6`, `#D4861A`, `#D946C8`. Text stays in ink or muted grey, never the series color.
+- Titles are short questions. No paragraphs. Every value also appears in the "All numbers" table.
+- A competitor run adds its series to the existing slides; it does not add new slide types.
+
 **Out of scope**
 - Everything in §6.5's Later and Never lists.
 

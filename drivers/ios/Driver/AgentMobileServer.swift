@@ -484,7 +484,7 @@ final class Driver {
     func settledSnapshot(timeout: TimeInterval = 3, baseline: (h: Int, at: Date)? = nil, target: String? = nil) throws -> [String: Any] {
         let gap: TimeInterval = 0.15
         let a = app(target ?? bundle)
-        let deadline = Date().addingTimeInterval(timeout)
+        let started = Date(); let deadline = started.addingTimeInterval(timeout)
         var snap = try a.snapshot(); var reads = 1; var h = hash(snap); var at = Date()
         var settled = (baseline ?? lastRead).map { $0.h == h && at.timeIntervalSince($0.at) >= gap } ?? false
         while !settled, Date() < deadline {
@@ -495,13 +495,14 @@ final class Driver {
             if h2 == h { settled = true }
             h = h2; at = at2
         }
+        let settleMs = Int(Date().timeIntervalSince(started) * 1000)
         lastRead = (h, at)
         snapId = newSnapId()
         refs = [:]; seq = 0
         var lines: [String] = []
         let tree = build(snap, pdepth: 0, lines: &lines)
         return ["app": target ?? bundle, "snapshot_id": snapId, "ref_count": seq, "complete": true, "settled": settled,
-                "reads": reads, "text": lines.joined(separator: "\n"), "tree": tree]
+                "reads": reads, "settle_ms": settleMs, "text": lines.joined(separator: "\n"), "tree": tree]
     }
 
     func hash(_ s: XCUIElementSnapshot) -> Int {

@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>agent-mobile benchmark</title>
+<style>
+  :root {
+    --ink: #0d0d12; --ink2: #4a4a5c; --muted: #8a8aa0; --line: #efeef3;
+    --good: #178a4c; --bad: #d23f3f;
+    --observe: #4f55f0; --touch: #e0584f; --gesture: #8b5cf6; --text: #d4861a; --system: #d946c8;
+    font-family: "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    color: var(--ink); -webkit-font-smoothing: antialiased;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #e9e8ee; padding: 48px 24px 96px; display: flex; flex-direction: column; align-items: center; gap: 40px; }
+
+  /* One slide = one post: 1280x720, the card on the patterned ground. */
+  .slide {
+    width: 1280px; height: 720px; flex: none; padding: 44px 56px; display: flex; position: relative; overflow: hidden;
+    background-color: #f6f5f8;
+    background-image:
+      radial-gradient(38% 45% at 8% 20%, rgba(214,190,250,.55) 0%, transparent 70%),
+      radial-gradient(35% 40% at 94% 12%, rgba(252,205,215,.5) 0%, transparent 70%),
+      radial-gradient(40% 45% at 90% 95%, rgba(253,225,190,.5) 0%, transparent 70%),
+      radial-gradient(35% 40% at 10% 98%, rgba(205,208,252,.55) 0%, transparent 70%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='78' height='78'%3E%3Crect x='1' y='1' width='76' height='76' rx='26' fill='none' stroke='%23e8e6ee' stroke-width='1.2'/%3E%3C/svg%3E");
+  }
+  .card {
+    flex: 1; min-width: 0; background: #fff; border-radius: 32px; padding: 36px 44px 26px; display: flex; flex-direction: column;
+    border: 1px solid rgba(30,20,60,.05); box-shadow: 0 1px 1px rgba(30,20,60,.03), 0 40px 80px -40px rgba(90,60,160,.25);
+  }
+  .head { display: flex; align-items: center; gap: 14px; }
+  .head h2 { font-size: 24px; font-weight: 500; letter-spacing: -0.02em; flex: 1; }
+  .head .unit { font-size: 19px; color: var(--muted); white-space: nowrap; }
+  .icon { width: 28px; height: 28px; border-radius: 9px; flex: none; }
+  .body { flex: 1; min-height: 0; display: grid; grid-template-columns: 330px 1fr; gap: 56px; padding: 30px 0 18px; }
+  .body.full { grid-template-columns: 1fr; }
+  .left { display: flex; flex-direction: column; justify-content: center; gap: 26px; }
+  .right { display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; min-height: 0; }
+  .foot { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+  .foot b { color: var(--ink); font-weight: 600; }
+
+  .label { font-size: 17px; color: var(--muted); }
+  .big { font-size: 60px; font-weight: 600; letter-spacing: -0.035em; line-height: 1.05; margin-top: 6px; white-space: nowrap; }
+  .big.m { font-size: 40px; }
+  .big small { font-size: 0.48em; font-weight: 500; letter-spacing: -0.01em; color: var(--ink2); margin-left: 4px; }
+  .sub { font-size: 15px; color: var(--muted); margin-top: 6px; }
+  .chip { background: var(--ink); color: #fff; border-radius: 10px; padding: 5px 11px; }
+  .delta { font-size: 15px; font-weight: 500; margin-left: 10px; letter-spacing: 0; }
+  .delta.good { color: var(--good); } .delta.bad { color: var(--bad); } .delta.flat { color: var(--muted); }
+  .empty { color: var(--muted); font-size: 18px; margin: auto; }
+
+  .legend { display: flex; gap: 26px; flex-wrap: wrap; }
+  .legend span { display: flex; align-items: center; gap: 10px; font-size: 16px; color: var(--muted); }
+  .legend.v { flex-direction: column; gap: 12px; }
+  .legend.v em { font-style: normal; color: var(--ink); margin-left: auto; }
+
+  .overview { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: 1fr 1fr; flex: 1; margin: 26px 0 18px; }
+  .overview > div { padding: 22px 34px; border-left: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; }
+  .overview > div:nth-child(3n + 1) { border-left: 0; padding-left: 0; }
+  .overview > div:nth-child(n + 4) { border-top: 1px solid var(--line); }
+
+  .rows { display: grid; grid-template-columns: max-content 1fr; column-gap: 28px; row-gap: 5px; align-items: center; margin-top: 16px; }
+  .rname { font-size: 14px; line-height: 18px; color: var(--muted); }
+  .track { display: flex; align-items: center; min-width: 0; }
+  .stackh { display: flex; gap: 3px; height: 18px; }
+  .seg { height: 100%; border-radius: 7px; min-width: 5px; }
+  .rval { font-size: 14px; line-height: 18px; margin-left: 12px; white-space: nowrap; }
+  .rval .p95 { color: var(--muted); font-size: 13px; margin-left: 8px; }
+  .rows .chip { padding: 2px 8px; border-radius: 7px; }
+
+  .cols { flex: 1; min-height: 0; display: flex; align-items: flex-end; gap: 16px; }
+  .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+  .col .top { font-size: 17px; margin-bottom: 10px; white-space: nowrap; }
+  .bar { width: 100%; border-radius: 16px; min-height: 8px; }
+  .xl { display: flex; gap: 16px; margin-top: 14px; }
+  .xl > div { flex: 1; text-align: center; font-size: 16px; color: var(--muted); min-width: 0; }
+  .xl .chip { display: inline-block; }
+  .xl small { display: block; font-size: 13px; margin-top: 4px; }
+  .waffle { display: flex; flex-wrap: wrap; gap: 5px; }
+  .waffle i { width: 16px; height: 16px; border-radius: 5px; }
+  .spark { width: 100%; flex: 1; min-height: 0; display: block; }
+  .sparklabel { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); margin: 14px 0 8px; }
+
+  details { width: 1280px; background: #fff; border-radius: 32px; padding: 32px 44px; }
+  summary { cursor: pointer; font-size: 22px; font-weight: 500; letter-spacing: -0.015em; list-style: none; }
+  summary::after { content: "+"; float: right; color: var(--muted); }
+  details[open] summary::after { content: "–"; }
+  table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th { text-align: right; font-weight: 500; color: var(--muted); padding: 0 10px 12px; white-space: nowrap; }
+  td { text-align: right; padding: 8px 10px; border-top: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+
+  #tip {
+    position: fixed; pointer-events: none; z-index: 9; background: var(--ink); color: #fff; font-size: 13px; line-height: 1.55;
+    padding: 10px 13px; border-radius: 12px; opacity: 0; transition: opacity .12s; max-width: 300px; font-variant-numeric: tabular-nums;
+  }
+  #tip b { font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="tip"></div>
+<script>
+/*DATA*/
+</script>
+<script>
+const VERBS = ["status", "snapshot", "screenshot", "tap", "doubletap", "hold", "twofinger", "swipe", "pinch", "back",
+  "type10", "type50", "type200", "launch", "stop", "home", "center"];
+const PARTS = [["CLI + HTTP", "var(--text)"], ["Driver action", "var(--observe)"], ["Settle wait", "var(--system)"]];
+
+const pct = (xs, p) => { const s = xs.filter((x) => x != null).sort((a, b) => a - b); return s.length ? s[Math.round(p * (s.length - 1))] : null; };
+const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+const sd = (xs) => { const m = mean(xs); return xs.length > 1 ? Math.sqrt(xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1)) : 0; };
+const ms = (v) => v == null ? "—" : v < 1000 ? `${Math.round(v)} ms` : v < 10000 ? `${(v / 1000).toFixed(2)} s` : `${(v / 1000).toFixed(1)} s`;
+const msParts = (v) => v == null ? ["—", ""] : v < 1000 ? [Math.round(v), "ms"] : [(v / 1000).toFixed(v < 10000 ? 2 : 1), "s"];
+const kfmt = (n) => n == null ? "—" : n < 1000 ? `${Math.round(n)}` : `${(n / 1000).toFixed(1)}k`;
+const pastel = (c, a = 16) => `linear-gradient(180deg, color-mix(in oklab, ${c} ${a - 6}%, white), color-mix(in oklab, ${c} ${a}%, white))`;
+const solid = (c) => `linear-gradient(180deg, color-mix(in oklab, ${c} 62%, white), ${c})`;
+const legend = (items, cls = "") => `<div class="legend ${cls}">${items.map(([n, c, v]) => `<span><i class="sw" style="background:${solid(c)}"></i>${n}${v != null ? `<em>${v}</em>` : ""}</span>`).join("")}</div>`;
+const stat = (label, [n, u], sub = "", cls = "") => `<div><div class="label">${label}</div><div class="big ${cls}">${n}<small>${u}</small></div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+
+function stats(samples) {
+  const by = {};
+  for (const s of samples) (by[s.v] ??= []).push(s);
+  const out = {};
+  for (const [v, xs] of Object.entries(by)) {
+    const ok = xs.filter((s) => s.ok && s.wall != null);
+    const col = (f) => ok.map(f).filter((x) => x != null);
+    out[v] = {
+      n: xs.length, errors: xs.filter((s) => !s.ok).length,
+      p50: pct(col((s) => s.wall), 0.5), p95: pct(col((s) => s.wall), 0.95), max: pct(col((s) => s.wall), 1),
+      driver: pct(col((s) => s.ms), 0.5), settle: pct(col((s) => s.settle), 0.5),
+      over: pct(col((s) => s.ms != null ? s.wall - s.ms : null), 0.5),
+      act: pct(col((s) => s.ms != null ? s.ms - (s.settle ?? 0) : null), 0.5),
+      reads: mean(col((s) => s.reads)), settled: mean(col((s) => s.settled == null ? null : +s.settled)),
+    };
+  }
+  return out;
+}
+const loop = (run) => run.samples.filter((s) => s.i != null && !["soak", "stale", "scenario"].includes(s.v));
+const all = (run) => Object.assign(stats(run.samples.filter((s) => s.v !== "tree" && s.v !== "soak")), stats(loop(run)));
+const coldTotal = (run) => run?.cold?.length ? mean(run.cold.map((c) => c.boot + c.driver + c.snapshot)) : null;
+const settledRate = (run) => { const xs = run.samples.filter((s) => s.ok && s.settled != null); return xs.length ? xs.filter((s) => s.settled).length / xs.length : null; };
+const staleOf = (run) => { const st = run.samples.filter((s) => s.v === "stale"); return [st.filter((s) => s.err === "STALE_REF").length, st.length]; };
+const unexpected = (run) => run.samples.filter((s) => s.v !== "stale" && !s.ok);
+
+function delta(now, then, lowerIsBetter = true) {
+  if (now == null || then == null || then === 0) return "";
+  const d = (now - then) / then;
+  if (Math.abs(d) < 0.02) return `<span class="delta flat">±0 %</span>`;
+  const good = lowerIsBetter ? d < 0 : d > 0;
+  return `<span class="delta ${good ? "good" : "bad"}">${d < 0 ? "▼" : "▲"} ${Math.abs(d * 100).toFixed(0)} %</span>`;
+}
+
+const S = all(RUN), B = BASE ? all(BASE) : null, M = RUN.meta || {};
+const FOOT = `<div class="foot"><span><b>agent-mobile</b> ${M.cli?.replace("agent-mobile ", "v") ?? ""} · ${M.device ?? "—"} · iOS ${M.os ?? "—"}</span>
+  <span>${M.sha ?? ""}${M.dirty ? "+dirty" : ""} · ${M.runs ?? "—"} runs · ${M.stamp ?? ""}${BASE ? ` · vs ${BASE.meta?.sha ?? "base"}` : ""}</span></div>`;
+const slide = (title, unit, color, body) => `<section class="slide"><div class="card">
+  <div class="head"><div class="icon" style="background:${solid(color)}"></div><h2>${title}</h2><span class="unit">${unit}</span></div>
+  ${body}${FOOT}</div></section>`;
+
+function columns(items, fmtTop, hi, color = "var(--gesture)") {
+  const top = Math.max(...items.map((x) => x.v));
+  const cols = items.map((x, k) => `<div class="col" data-tip="${x.tip || ""}"><div class="top">${fmtTop(x.v)}</div>
+      <div class="bar" style="height:${(x.v / top) * 84}%;background:${k === hi ? solid(color) : pastel(color, 18)}"></div></div>`).join("");
+  const xl = items.map((x, k) => `<div>${k === hi ? `<span class="chip">${x.name}</span>` : x.name}${x.small ? `<small>${x.small}</small>` : ""}</div>`).join("");
+  return `<div class="cols">${cols}</div><div class="xl">${xl}</div>`;
+}
+
+function overview() {
+  const [caught, tries] = staleOf(RUN), sc = RUN.scenario || [], okT = sc.filter((s) => s.ok).map((s) => s.ms);
+  const pctP = (v) => v == null ? ["—", ""] : [(v * 100).toFixed(1), "%"];
+  const cell = (label, parts, d, sub = "") => `<div><div class="label">${label}</div><div class="big">${parts[0]}<small>${parts[1]}</small>${d}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+  const calls = RUN.samples.filter((s) => s.v !== "stale").length;
+  return `<section class="slide"><div class="card">
+    <div class="head"><h2 style="font-size:30px;font-weight:600">agent-mobile <span style="color:var(--muted);font-weight:400">benchmark</span></h2>
+      <span class="unit">${calls} driver calls</span></div>
+    <div class="overview">
+      ${cell("Cold start to first snapshot", msParts(coldTotal(RUN)), delta(coldTotal(RUN), coldTotal(BASE)), RUN.cold?.length ? `mean of ${RUN.cold.length}` : "not measured")}
+      ${cell("Snapshot", msParts(S.snapshot?.p50), delta(S.snapshot?.p50, B?.snapshot?.p50), `p50 · p95 ${ms(S.snapshot?.p95)}`)}
+      ${cell("Tap, settled tree back", msParts(S.tap?.p50), delta(S.tap?.p50, B?.tap?.p50), `p50 · p95 ${ms(S.tap?.p95)}`)}
+      ${cell("Actions settled before cap", pctP(settledRate(RUN)), BASE ? delta(settledRate(RUN), settledRate(BASE), false) : "", "3 s cap")}
+      ${cell("Stale refs refused", [caught, `/ ${tries}`], "", "STALE_REF, never a mistap")}
+      ${cell("End-to-end task", [okT.length, `/ ${sc.length}`], "", sc.length ? `${ms(mean(okT))} ± ${ms(sd(okT))}` : "not run")}
+    </div>${FOOT}</div></section>`;
+}
+
+function verbs() {
+  const parts = (s) => [Math.max(0, s.over), Math.max(0, s.act), Math.max(0, s.settle ?? 0)];
+  const sum = (v) => parts(S[v]).reduce((a, b) => a + b);
+  const vs = VERBS.filter((v) => S[v]?.driver != null).sort((a, b) => sum(b) - sum(a));
+  if (!vs.length) return "";
+  const top = sum(vs[0]);
+  const rows = vs.map((v, k) => {
+    const p = parts(S[v]), s = S[v];
+    const segs = p.map((x, j) => x > 0 ? `<div class="seg" style="flex:${x} 0 0;background:${j === 1 ? solid(PARTS[j][1]) : pastel(PARTS[j][1], 34)}"></div>` : "").join("");
+    const tip = `<b>${v}</b> · ${s.n} calls · ${s.errors} errors<br>p50 ${ms(s.p50)} · p95 ${ms(s.p95)} · max ${ms(s.max)}<br>CLI + HTTP ${ms(p[0])} · action ${ms(p[1])} · settle ${ms(p[2])}<br>mean reads ${s.reads?.toFixed(2) ?? "—"}`;
+    return `<div class="rname">${v}</div><div class="track" data-tip="${tip}"><div class="stackh" style="width:calc((100% - 190px) * ${sum(v) / top})">${segs}</div>
+      <span class="rval">${k === 0 ? `<span class="chip">${ms(s.p50)}</span>` : ms(s.p50)}<span class="p95">p95 ${ms(s.p95)}</span>${delta(s.p50, B?.[v]?.p50)}</span></div>`;
+  }).join("");
+  return slide("Where does each verb spend its time?", "p50 wall time", "var(--observe)",
+    `<div class="body full" style="padding:18px 0 12px;display:flex;flex-direction:column">${legend(PARTS)}<div class="rows">${rows}</div></div>`);
+}
+
+function cold() {
+  const c = RUN.cold || [];
+  if (!c.length) return slide("How long until the first snapshot?", "cold start", "var(--gesture)", `<div class="body full"><div class="empty">No cold boots in this run.</div></div>`);
+  const L = [["Simulator boot", mean(c.map((x) => x.boot)), "var(--observe)"], ["Driver start", mean(c.map((x) => x.driver)), "var(--gesture)"], ["First snapshot", mean(c.map((x) => x.snapshot)), "var(--system)"]];
+  const W = 700, H = 470, base = H - 52, cw = 128, gap = 4, total = L.reduce((a, l) => a + l[1], 0), sc = (base - 64) / total;
+  const xs = [0, (W - cw) / 2, W - cw], hOf = (v) => Math.max(8, v * sc), tops = [];
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:100%;display:block" preserveAspectRatio="xMidYMax meet" role="img" aria-label="Cold start breakdown"><defs>`;
+  L.forEach(([, , col], j) => { svg += `<linearGradient id="g${j}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:color-mix(in oklab, ${col} 60%, white)"/><stop offset="1" style="stop-color:${col}"/></linearGradient>`; });
+  svg += `</defs>`;
+  for (let k = 0; k < 3; k++) {
+    let y = base;
+    tops[k] = [];
+    for (let j = 0; j <= k; j++) {
+      const h = hOf(L[j][1]);
+      tops[k][j] = [y - h, y];
+      svg += `<rect x="${xs[k]}" y="${y - h}" width="${cw}" height="${h - gap}" rx="12" fill="url(#g${j})"><title>${L[j][0]} ${ms(L[j][1])}</title></rect>`;
+      y -= h;
+    }
+  }
+  for (let k = 0; k < 2; k++) for (let j = 0; j <= k; j++) {
+    const [a1, a2] = tops[k][j], [b1, b2] = tops[k + 1][j], x1 = xs[k] + cw + 3, x2 = xs[k + 1] - 3;
+    svg += `<path d="M${x1} ${a1} L${x2} ${b1} L${x2} ${b2 - gap} L${x1} ${a2 - gap} Z" style="fill:color-mix(in oklab, ${L[j][2]} 13%, white)"/>`;
+  }
+  ["Simulator", "+ Driver", "+ Snapshot"].forEach((t, k) => { svg += `<text x="${xs[k] + cw / 2}" y="${tops[k][k][0] - 16}" text-anchor="middle" font-size="20" style="fill:var(--ink)">${t}</text>`; });
+  let run = 0;
+  L.map((l) => (run += l[1])).forEach((v, k) => {
+    const cx = xs[k] + cw / 2;
+    svg += k === 2
+      ? `<rect x="${cx - 40}" y="${H - 38}" width="80" height="34" rx="10" style="fill:var(--ink)"/><text x="${cx}" y="${H - 15}" text-anchor="middle" font-size="18" fill="#fff">${ms(v)}</text>`
+      : `<text x="${cx}" y="${H - 15}" text-anchor="middle" font-size="18" style="fill:var(--muted)">${ms(v)}</text>`;
+  });
+  svg += `</svg>`;
+  return slide("How long until the first snapshot?", `cold start · n=${c.length}`, "var(--gesture)", `<div class="body">
+    <div class="left">${stat("Nothing running to first tree", msParts(total), delta(total, coldTotal(BASE)))}
+      ${legend(L.map((l) => [l[0], l[2], ms(l[1])]), "v")}</div>
+    <div class="right">${svg}</div></div>`);
+}
+
+function snapshotCost() {
+  const by = {};
+  RUN.samples.filter((s) => s.v === "tree" && s.ok).forEach((s) => (by[s.app] ??= []).push(s));
+  const pay = RUN.payload || {};
+  const items = Object.entries(by).map(([app, xs]) => ({ name: app, v: pct(xs.map((s) => s.ms), 0.5), refs: pct(xs.map((s) => s.refs), 0.5) }))
+    .filter((x) => x.v != null).sort((a, b) => a.refs - b.refs);
+  if (!items.length) return "";
+  items.forEach((x) => {
+    const p = pay[x.name];
+    x.small = `${x.refs} refs${p ? ` · ${kfmt(p.text / 4)} tok` : ""}`;
+    x.tip = `<b>${x.name}</b><br>driver p50 ${ms(x.v)} · ${x.refs} refs${p ? `<br>text ${kfmt(p.text / 4)} tok · JSON ${kfmt(p.json / 4)} tok<br>--max-depth 3: ${kfmt(p.d3 / 4)} · 6: ${kfmt(p.d6 / 4)} tok` : ""}`;
+  });
+  const pts = RUN.samples.filter((s) => s.v === "tree" && s.ok && s.refs && s.settle != null);
+  const mx = mean(pts.map((p) => p.refs)), my = mean(pts.map((p) => p.ms - p.settle));
+  const slope = pts.reduce((a, p) => a + (p.refs - mx) * (p.ms - p.settle - my), 0) / pts.reduce((a, p) => a + (p.refs - mx) ** 2, 0);
+  const apps = Object.values(pay), ratio = apps.length ? mean(apps.map((p) => p.json / p.text)) : null;
+  const tok = apps.length ? mean(apps.map((p) => p.text / 4)) : null;
+  return slide("What does a snapshot cost?", "driver time, p50", "var(--gesture)", `<div class="body">
+    <div class="left">${stat("Tree read per 100 refs", [isFinite(slope) ? (slope * 100).toFixed(1) : "—", "ms"])}
+      ${stat("Tokens an agent reads", [kfmt(tok), "tok"], ratio ? `mean per app · JSON is ×${ratio.toFixed(1)} larger` : "", "m")}</div>
+    <div class="right">${columns(items, ms, items.length - 1)}</div></div>`);
+}
+
+function donut(parts, size = 440) {
+  const R = size / 2, r = R * 0.56, tot = parts.reduce((a, p) => a + p.v, 0) || 1;
+  const big = parts.reduce((m, p, k) => (p.v > parts[m].v ? k : m), 0);
+  const pt = (rad, a) => `${R + rad * Math.cos(a)} ${R + rad * Math.sin(a)}`;
+  let a0 = -Math.PI / 2, out = "";
+  parts.forEach((p, k) => {
+    if (!p.v) return;
+    const a1 = a0 + (p.v / tot) * Math.PI * 2 - (p.v === tot ? 0.0001 : 0), lg = a1 - a0 > Math.PI ? 1 : 0;
+    const [c0, c1] = [`color-mix(in oklab, ${p.c} ${k === big ? 60 : 16}%, white)`, k === big ? p.c : `color-mix(in oklab, ${p.c} 24%, white)`];
+    out += `<defs><linearGradient id="d${k}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:${c0}"/><stop offset="1" style="stop-color:${c1}"/></linearGradient></defs>
+      <path d="M${pt(R - 4, a0)} A${R - 4} ${R - 4} 0 ${lg} 1 ${pt(R - 4, a1)} L${pt(r, a1)} A${r} ${r} 0 ${lg} 0 ${pt(r, a0)} Z" fill="url(#d${k})" stroke="#fff" stroke-width="8" stroke-linejoin="round"><title>${p.name}: ${p.v}</title></path>`;
+    const [lx, ly] = pt((R - 4 + r) / 2, (a0 + a1) / 2).split(" ").map(Number);
+    if (p.v / tot > 0.04) out += k === big
+      ? `<rect x="${lx - 30}" y="${ly - 18}" width="60" height="36" rx="10" fill="#0d0d12"/><text x="${lx}" y="${ly + 7}" text-anchor="middle" font-size="19" fill="#fff">${p.v}</text>`
+      : `<text x="${lx}" y="${ly + 7}" text-anchor="middle" font-size="19" fill="#0d0d12">${p.v}</text>`;
+    a0 = a1;
+  });
+  return `<svg viewBox="0 0 ${size} ${size}" style="height:100%;max-height:${size}px;display:block;margin:auto" role="img" aria-label="Settle reads">${out}</svg>`;
+}
+
+function settle() {
+  const xs = RUN.samples.filter((s) => s.ok && s.reads != null);
+  if (!xs.length) return "";
+  const C = ["var(--observe)", "var(--gesture)", "var(--system)", "var(--text)", "var(--touch)"];
+  const parts = [
+    ["Stable on 1st read", (s) => s.settled && s.reads === 1], ["2 reads", (s) => s.settled && s.reads === 2],
+    ["3 reads", (s) => s.settled && s.reads === 3], ["4+ reads", (s) => s.settled && s.reads >= 4], ["Hit the 3 s cap", (s) => !s.settled],
+  ].map(([name, f], k) => ({ name, c: C[k], v: xs.filter(f).length }));
+  const rate = settledRate(RUN), wait = pct(xs.map((s) => s.settle), 0.5);
+  return slide("Does the UI settle before we answer?", `${xs.length} tree replies`, "var(--observe)", `<div class="body">
+    <div class="left">${stat("Settled before the cap", [(rate * 100).toFixed(1), "%"], `mean ${mean(xs.map((s) => s.reads)).toFixed(2)} reads · p50 wait ${ms(wait)}`)}
+      ${legend(parts.map((p) => [p.name, p.c, p.v]), "v")}</div>
+    <div class="right" style="justify-content:center">${donut(parts)}</div></div>`);
+}
+
+function typing() {
+  const items = [10, 50, 200].map((n) => {
+    const xs = RUN.samples.filter((s) => s.v === `type${n}` && s.ok && s.ms != null);
+    const v = pct(xs.map((s) => s.ms - (s.settle ?? 0)), 0.5);
+    return { name: `${n} chars`, n, v, small: `${xs.length} runs`, tip: `<b>${n} chars</b><br>driver action ${ms(v)} · wall ${ms(S[`type${n}`]?.p50)}` };
+  }).filter((x) => x.v != null);
+  if (!items.length) return "";
+  const [a, b] = [items[0], items[items.length - 1]];
+  const slope = b.n > a.n ? (b.v - a.v) / (b.n - a.n) : null;
+  return slide("How fast does it type?", "driver action, p50", "var(--text)", `<div class="body">
+    <div class="left">${stat("Each extra character", [slope == null ? "—" : slope.toFixed(1), "ms"])}
+      ${stat("Fixed cost to focus and start", msParts(slope == null ? null : a.v - slope * a.n), "", "m")}</div>
+    <div class="right">${columns(items, ms, items.length - 1, "var(--text)")}</div></div>`);
+}
+
+function reliability() {
+  const [caught, tries] = staleOf(RUN), errs = unexpected(RUN), calls = RUN.samples.filter((s) => s.v !== "stale").length;
+  const sc = RUN.scenario || [], okT = sc.filter((s) => s.ok).map((s) => s.ms);
+  const slow = sc.reduce((m, s, k) => (s.ms > sc[m].ms ? k : m), 0);
+  const items = sc.map((s, k) => ({ name: `#${k + 1}`, v: s.ms, tip: `<b>run ${k + 1}</b><br>${ms(s.ms)} · ${s.steps} steps · ${s.ok ? "passed" : "failed"}` }));
+  const waffle = `<div class="waffle">${RUN.samples.filter((s) => s.v === "stale").map((s, k) =>
+    `<i data-tip="attempt ${k + 1}: ${s.err ?? "accepted"}" style="background:${solid(s.err === "STALE_REF" ? "var(--gesture)" : "var(--touch)")}"></i>`).join("")}</div>`;
+  const top = Object.entries(errs.reduce((m, s) => ((m[s.v] = (m[s.v] || 0) + 1), m), {})).sort((x, y) => y[1] - x[1]).slice(0, 3);
+  return slide("Does it fail loud, and rarely?", sc.length ? `task: Settings → General → About → search` : "", "var(--touch)", `<div class="body">
+    <div class="left">${stat("Stale refs refused", [caught, `/ ${tries}`])}${waffle}
+      ${stat("Unexpected errors", [errs.length, `/ ${calls}`], top.map(([v, n]) => `${v} ×${n}`).join(" · ") || "every call returned ok", "m")}
+      ${stat("Task passed", [okT.length, `/ ${sc.length}`], sc.length ? `${ms(mean(okT))} ± ${ms(sd(okT))} · ${sc[0].steps} steps` : "", "m")}</div>
+    <div class="right">${items.length ? columns(items, ms, slow, "var(--touch)") : `<div class="empty">No task runs.</div>`}</div></div>`);
+}
+
+function sparkbars(vals, color) {
+  const W = 1100, H = 150, n = vals.length, bw = W / n, top = Math.max(...vals), lo = Math.min(...vals) * 0.9, k = vals.indexOf(top);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${vals.map((v, i) => {
+    const h = Math.max(3, ((v - lo) / (top - lo || 1)) * (H - 4));
+    return `<rect x="${i * bw + bw * 0.12}" y="${H - h}" width="${Math.max(1, bw * 0.76)}" height="${h}" rx="${Math.min(4, bw * 0.3)}" style="fill:${i === k ? color : `color-mix(in oklab, ${color} 28%, white)`}"><title>${Math.round(v)}</title></rect>`;
+  }).join("")}</svg>`;
+}
+
+function stability() {
+  const soak = RUN.samples.filter((s) => s.v === "soak" && s.ok).map((s) => s.wall);
+  const mem = RUN.samples.filter((s) => s.rss != null);
+  if (soak.length < 10) return "";
+  const tenth = Math.max(3, Math.floor(soak.length / 10));
+  const drift = pct(soak.slice(-tenth), 0.5) / pct(soak.slice(0, tenth), 0.5) - 1;
+  const end = mem.length ? mem[mem.length - 1].rss : null, peak = mem.length ? Math.max(...mem.map((s) => s.rss)) : null;
+  const cpu = mem.length > 1 ? ((mem[mem.length - 1].cpu - mem[0].cpu) / (mem.length - 1)) * 1000 : null;
+  return slide("Does it hold up over a long session?", `${soak.length} snapshots back to back`, "var(--gesture)", `<div class="body" style="grid-template-columns:260px 1fr">
+    <div class="left">${stat("Latency drift", [`${drift >= 0 ? "+" : ""}${(drift * 100).toFixed(1)}`, "%"], "last 10 % vs first 10 %", "m")}
+      ${stat("Runner memory", [end ?? "—", "MB"], `peak ${peak ?? "—"} MB`, "m")}
+      ${stat("Runner CPU per call", [cpu == null ? "—" : Math.round(cpu), "ms"], "", "m")}</div>
+    <div class="right" style="justify-content:stretch">
+      <div class="sparklabel" style="margin-top:0"><span>Snapshot wall time, call 1 → ${soak.length}</span><span>${ms(Math.min(...soak))} – ${ms(Math.max(...soak))}</span></div>
+      ${sparkbars(soak, "var(--gesture)")}
+      ${mem.length ? `<div class="sparklabel"><span>Runner RSS, every call of the run</span><span>${mem[0].rss} → ${end} MB</span></div>${sparkbars(mem.map((s) => s.rss), "var(--observe)")}` : ""}
+    </div></div>`);
+}
+
+function table() {
+  const keys = Object.keys(S).sort((a, b) => (VERBS.indexOf(a) + 1 || 99) - (VERBS.indexOf(b) + 1 || 99));
+  const cols = ["n", "p50", "p95", "max", "driver", "settle", "CLI+HTTP", "reads", "settled", "errors", B ? "Δ p50" : ""];
+  const rows = keys.map((v) => {
+    const s = S[v];
+    return `<tr><td>${v}</td><td>${s.n}</td><td>${ms(s.p50)}</td><td>${ms(s.p95)}</td><td>${ms(s.max)}</td><td>${ms(s.driver)}</td><td>${ms(s.settle)}</td>
+      <td>${ms(s.over)}</td><td>${s.reads?.toFixed(2) ?? "—"}</td><td>${s.settled == null ? "—" : `${(s.settled * 100).toFixed(0)} %`}</td><td>${s.errors}</td><td>${B ? delta(s.p50, B[v]?.p50) : ""}</td></tr>`;
+  }).join("");
+  const cold = (RUN.cold || []).map((c, k) => `<tr><td>cold #${k + 1}</td><td colspan="3">simulator ${ms(c.boot)}</td><td colspan="3">driver ${ms(c.driver)}</td><td colspan="5">first snapshot ${ms(c.snapshot)}</td></tr>`).join("");
+  const pay = Object.entries(RUN.payload || {}).map(([a, p]) => `<tr><td>bytes · ${a}</td><td colspan="3">text ${p.text}</td><td colspan="3">json ${p.json}</td><td colspan="5">depth 3: ${p.d3} · depth 6: ${p.d6}</td></tr>`).join("");
+  return `<details><summary>All numbers</summary><table><tr>${["verb", ...cols].map((c) => `<th>${c}</th>`).join("")}</tr>${rows}${cold}${pay}</table></details>`;
+}
+
+document.body.insertAdjacentHTML("beforeend",
+  [overview(), verbs(), cold(), snapshotCost(), settle(), typing(), reliability(), stability(), table()].join(""));
+
+const tip = document.getElementById("tip");
+document.addEventListener("mousemove", (e) => {
+  const t = e.target.closest?.("[data-tip]");
+  if (!t || !t.dataset.tip) { tip.style.opacity = 0; return; }
+  tip.innerHTML = t.dataset.tip;
+  tip.style.opacity = 1;
+  tip.style.left = `${Math.min(e.clientX + 16, innerWidth - tip.offsetWidth - 12)}px`;
+  tip.style.top = `${e.clientY + 16}px`;
+});
+</script>
+</body>
+</html>
