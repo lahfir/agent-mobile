@@ -66,10 +66,11 @@ extension Driver {
 
     // Write a text field's value through the accessibility client: one IPC,
     // no keystrokes (200 chars in 12-40 ms; UIKit and SwiftUI bindings both
-    // see it). The value lands only if a re-read shows it; secure fields and
-    // any refusal return false so the caller falls back to keystrokes.
+    // see it). The value lands only if a re-read shows it; secure fields,
+    // text with a newline (Return must be pressed, not stored) and any
+    // refusal return false so the caller falls back to keystrokes.
     func setValue(_ node: XCUIElementSnapshot, appending text: String) throws -> Bool {
-        guard node.elementType != .secureTextField,
+        guard node.elementType != .secureTextField, !text.contains(where: \.isNewline),
               let el = (node as AnyObject).value(forKey: "accessibilityElement") as AnyObject? else { return false }
         let current = node.value.map { String(describing: $0) } ?? ""
         let want = (current == node.placeholderValue ? "" : current) + text

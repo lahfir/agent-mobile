@@ -20,7 +20,9 @@ COMMANDS
                                  frame's top-left space (at=x,y is the node's
                                  origin — tap its center x+w/2, y+h/2)
   type [<ref>] <text...>         append text; a leading ref writes that field
-                                 directly, else keys go to the focused field.
+                                 directly (the field may not keep focus), else
+                                 keys go to the focused field. A newline
+                                 presses Return.
                                  Text starting with `-` needs `--`:
                                  type -- -flag
   swipe <up|down|left|right> [<ref>]
