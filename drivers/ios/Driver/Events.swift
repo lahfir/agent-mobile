@@ -28,10 +28,9 @@ enum Events {
 
     /// Keystrokes into the focused element at `keysPerSecond`.
     static func type(_ text: String, keysPerSecond: UInt64) throws {
-        let (c, allocSel, allocImp) = try method(NSClassFromString("XCPointerEventPath"), "alloc", [], "@", classMethod: true)
+        let (c, blank): (AnyClass, AnyObject) = try blank("XCPointerEventPath")
         let (_, initSel, initImp) = try method(c, "initForTextInput", [], "@")
         let (_, typeSel, typeImp) = try method(c, "typeText:atOffset:typingSpeed:shouldRedact:", ["@", "d", "Q", "B"], "v")
-        let blank = unsafeBitCast(allocImp, to: AllocFn.self)(c, allocSel)
         let path = unsafeBitCast(initImp, to: (@convention(c) (AnyObject, Selector) -> AnyObject).self)(blank, initSel)
         unsafeBitCast(typeImp, to: (@convention(c) (AnyObject, Selector, AnyObject, Double, UInt64, Bool) -> Void).self)(
             path, typeSel, text as NSString, 0, keysPerSecond, false)
@@ -50,20 +49,23 @@ enum Events {
             client, sel, "XC_kAXXCAttributeValue" as NSString, value as NSString, element, &err)
     }
 
-    private typealias AllocFn = @convention(c) (AnyClass, Selector) -> AnyObject
+    /// An allocated, not yet initialised instance of a private class.
+    private static func blank(_ name: String) throws -> (AnyClass, AnyObject) {
+        let (cls, sel, imp): (AnyClass, Selector, IMP) = try method(NSClassFromString(name), "alloc", [], "@", classMethod: true)
+        return (cls, unsafeBitCast(imp, to: (@convention(c) (AnyClass, Selector) -> AnyObject).self)(cls, sel))
+    }
 
     private static func method(_ cls: AnyClass?, _ name: String, _ args: [String], _ ret: String,
                                classMethod: Bool = false) throws -> (AnyClass, Selector, IMP) {
         let sel = NSSelectorFromString(name)
         guard let cls, let m = classMethod ? class_getClassMethod(cls, sel) : class_getInstanceMethod(cls, sel),
-              Driver.sig(m, args, ret) else { throw miss() }
+              Runtime.sig(m, args, ret) else { throw miss() }
         return (cls, sel, method_getImplementation(m))
     }
 
     private static func touch(at p: CGPoint) throws -> AnyObject {
-        let (c, allocSel, allocImp) = try method(NSClassFromString("XCPointerEventPath"), "alloc", [], "@", classMethod: true)
+        let (c, blank): (AnyClass, AnyObject) = try blank("XCPointerEventPath")
         let (_, sel, imp) = try method(c, "initForTouchAtPoint:offset:", ["{CGPoint=dd}", "d"], "@")
-        let blank = unsafeBitCast(allocImp, to: AllocFn.self)(c, allocSel)
         return unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector, CGPoint, Double) -> AnyObject).self)(blank, sel, p, 0)
     }
 
@@ -78,7 +80,7 @@ enum Events {
     }
 
     private static func send(_ path: AnyObject) throws {
-        let (c, allocSel, allocImp) = try method(NSClassFromString("XCSynthesizedEventRecord"), "alloc", [], "@", classMethod: true)
+        let (c, blank): (AnyClass, AnyObject) = try blank("XCSynthesizedEventRecord")
         let (_, initSel, initImp) = try method(c, "initWithName:interfaceOrientation:", ["@", "q"], "@")
         let (_, addSel, addImp) = try method(c, "addPointerEventPath:", ["@"], "v")
         let (_, synthSel, synthImp) = try method(c, "synthesizeWithError:", ["^@"], "B")
@@ -88,7 +90,6 @@ enum Events {
         case .portraitUpsideDown: 2
         default: 1
         }
-        let blank = unsafeBitCast(allocImp, to: AllocFn.self)(c, allocSel)
         let record = unsafeBitCast(initImp, to: (@convention(c) (AnyObject, Selector, AnyObject, Int) -> AnyObject).self)(
             blank, initSel, "agent-mobile" as NSString, orientation)
         unsafeBitCast(addImp, to: (@convention(c) (AnyObject, Selector, AnyObject) -> Void).self)(record, addSel, path)

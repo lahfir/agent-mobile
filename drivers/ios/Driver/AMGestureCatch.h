@@ -5,5 +5,5 @@
 // (not via Swift errors), so without this the raise aborts the runner
 // and kills the driver for every later verb. Returns nil on success.
 @interface AMGestureCatch : NSObject
-+ (nullable NSString *)runGesture:(void (^)(void))block;
++ (nullable NSString *)runGesture:(void (^_Nonnull)(void))block;
 @end
