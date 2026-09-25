@@ -80,7 +80,7 @@ pub struct ErrorBody {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Data {
-    /// Settled snapshot returned by `snapshot`, `launch`, `activate`, `tap`,
+    /// Settled snapshot returned by `snapshot`, `launch`, `tap`,
     /// `type`, `swipe`, and `home`.
     Snapshot(Box<Snapshot>),
     /// `status` reply: identity and device info, no tree, no settle.

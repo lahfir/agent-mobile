@@ -106,18 +106,6 @@ impl std::fmt::Debug for ResolvedEndpoint {
     }
 }
 
-/// What [`StateStore::resolve`] settled on: the endpoint plus the state
-/// entry that sourced it. `entry` is `None` when an env override supplied
-/// the URL, so callers can tell a state-backed session (pid-checked) from
-/// an env-pinned one (used as given).
-#[derive(Debug)]
-pub struct Resolution {
-    /// The endpoint to point the wire at.
-    pub endpoint: ResolvedEndpoint,
-    /// The live session entry the endpoint's URL came from.
-    pub entry: Option<SessionEntry>,
-}
-
 /// File-backed session store rooted at `~/.agent-mobile` (or an injected dir
 /// in tests). The root is created on first write, not on construction.
 pub struct StateStore {
@@ -343,7 +331,7 @@ impl StateStore {
     /// # Errors
     /// Returns [`Failure::Usage`] when exactly one override var is set and no
     /// state entry completes the pair.
-    pub fn resolve(&self, device: Option<&str>) -> Result<Option<Resolution>, Failure> {
+    pub fn resolve(&self, device: Option<&str>) -> Result<Option<ResolvedEndpoint>, Failure> {
         self.resolve_with(device, env_val(URL_ENV), env_val(TOKEN_ENV))
     }
 
@@ -356,7 +344,7 @@ impl StateStore {
         device: Option<&str>,
         env_url: Option<String>,
         env_token: Option<String>,
-    ) -> Result<Option<Resolution>, Failure> {
+    ) -> Result<Option<ResolvedEndpoint>, Failure> {
         let url_set = env_url.is_some();
         let token_set = env_token.is_some();
         let state = self.load();
@@ -370,13 +358,10 @@ impl StateStore {
         let url = env_url.or_else(|| entry.as_ref().map(|e| e.url.clone()));
         let token = env_token.or_else(|| entry.as_ref().and_then(|e| self.read_token(e).ok()));
         match (url, token) {
-            (Some(url), Some(token)) => Ok(Some(Resolution {
-                endpoint: ResolvedEndpoint {
-                    url,
-                    device: name,
-                    token,
-                },
-                entry: if url_set { None } else { entry },
+            (Some(url), Some(token)) => Ok(Some(ResolvedEndpoint {
+                url,
+                device: name,
+                token,
             })),
             (None, _) if token_set => Err(Failure::usage(
                 "AGENT_MOBILE_TOKEN has no driver URL to pair with; set AGENT_MOBILE_URL or run `agent-mobile serve`",

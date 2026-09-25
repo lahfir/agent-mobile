@@ -107,8 +107,8 @@ impl Ctx {
         let Some(r) = self.store.resolve(self.device.as_deref())? else {
             return Ok(None);
         };
-        let token = r.endpoint.token().to_owned();
-        Ok(Some(Session::new(r.endpoint.url, token)))
+        let token = r.token().to_owned();
+        Ok(Some(Session::new(r.url, token)))
     }
 
     /// Emit one reply: honor `--max-depth`, then write text or JSON to
@@ -263,8 +263,8 @@ pub fn emit(line: &str) {
     }
 }
 
-/// Shared one-or-two positional split for point verbs (`doubletap`,
-/// `hold`): one argument is a ref, two are finite `x y` numbers, anything
+/// Shared one-or-two positional split for point verbs (`tap`,
+/// `doubletap`, `hold`): one argument is a ref, two are finite `x y` numbers, anything
 /// else is a usage error naming the verb.
 pub fn ref_or_point_body(args: &[String], verb: &str) -> Result<Value, Failure> {
     match args {
