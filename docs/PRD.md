@@ -187,7 +187,7 @@ sends `terminate`.
 
 Wire calls are read from the driver. `devices`, `serve`, and the argument shapes are new CLI specification.
 
-**Flags and environment.** `--app` carries an app selector: iOS `snapshot` targets the bundle, Android `snapshot` only validates the foreground package, and `serve --app` launches it after binding. `--max-depth` applies to every settled-snapshot verb and lives in the core: the driver returns the full tree, the core drops nodes below the depth and sets `complete: false`. `--device` accepts a name, raw id, or collision-free `platform:id` key and is remembered. `AGENT_MOBILE_URL` and `AGENT_MOBILE_TOKEN` override the saved address and token.
+**Flags and environment.** `--app` carries an app selector: iOS `snapshot` targets the bundle, Android `snapshot` only validates the foreground package, and `serve --app` launches it after binding. `--max-depth` applies to every settled-snapshot verb and lives in the core: the core drops nodes below the depth and sets `complete: false`; independently, the driver can report `complete: false` — traversal caps, cycles, or unavailable children — so the flag's presence is not the only source, and an incomplete tree cannot prove ref uniqueness (ref actions may fail closed). `--device` accepts a name, raw id, or collision-free `platform:id` key and is remembered. `AGENT_MOBILE_URL` and `AGENT_MOBILE_TOKEN` override the saved address and token.
 
 **Exit codes.** `0` ok, `1` error envelope (including a `DRIVER_ERROR` the CLI synthesizes for a transport failure with no envelope at all), `2` usage error.
 

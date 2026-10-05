@@ -5,14 +5,14 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use agent_mobile_core::contract::{Data, Envelope};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::wire::Wire;
 use serde_json::json;
 
-use crate::adb::{Adb, BUILD_TIMEOUT, CommandRunner, INSTALL_TIMEOUT, failed_op};
+use crate::adb::{Adb, BUILD_TIMEOUT, INSTALL_TIMEOUT, diagnostic_output, failed_op};
 
 /// Driver application id.
 pub const PACKAGE: &str = "com.lahfir.agentmobile.driver";
@@ -21,14 +21,20 @@ pub const SERVICE_COMPONENT: &str =
     "com.lahfir.agentmobile.driver/com.lahfir.agentmobile.driver.AgentMobileAccessibilityService";
 /// Content-provider authority that mints session tokens.
 pub const PROVIDER_URI: &str = "content://com.lahfir.agentmobile.driver.provision";
-/// Device-side HTTP listener the forward points at.
-pub const DEVICE_PORT: u16 = 8770;
+/// Device-side listener port on pre-dynamic state rows.
+pub const LEGACY_DEVICE_PORT: u16 = 8770;
 
 /// Token length minted by the provider: 32 bytes base64url, no padding.
 const TOKEN_LEN: usize = 43;
 
 /// How long to poll `dumpsys accessibility` for the service bind.
 const BIND_BUDGET: Duration = Duration::from_secs(20);
+
+/// One `provision` result: the bearer token plus its bound listener port.
+pub(crate) struct Provisioned {
+    pub(crate) token: SecretToken,
+    pub(crate) device_port: u16,
+}
 
 /// A provisioned bearer token: exists only in memory, never in logs or
 /// error text. Debug and Display both render `<redacted>`.
@@ -67,7 +73,6 @@ fn is_boundary(byte: u8) -> bool {
     matches!(byte, b'{' | b',' | b' ' | b'\t' | b'\n')
 }
 
-/// Is `byte` in the base64url alphabet?
 fn is_b64url(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
 }
@@ -100,17 +105,16 @@ fn extract_token(output: &str) -> Option<String> {
     found.map(str::to_owned)
 }
 
-/// `content call --uri PROVIDER_URI --method provision`; the token never
-/// touches argv, env, or logs.
+/// `content call --uri PROVIDER_URI --method provision` returns token +
+/// bound listener port; neither token nor raw output touches argv, env,
+/// logs, or error text.
 ///
 /// # Errors
-/// [`Failure::Local`] when the provider refuses or returns no token; the
-/// message never embeds provider output.
-pub(crate) fn provision(adb: &Adb, serial: &str) -> Result<SecretToken, Failure> {
-    let out = adb.scoped(
+/// [`Failure::Local`] on refusal or unusable token/port.
+pub(crate) fn provision(adb: &Adb, serial: &str) -> Result<Provisioned, Failure> {
+    let out = adb.remote_shell(
         serial,
         &[
-            "shell",
             "content",
             "call",
             "--uri",
@@ -125,124 +129,49 @@ pub(crate) fn provision(adb: &Adb, serial: &str) -> Result<SecretToken, Failure>
             "reinstall the driver APK and retry",
         ));
     }
-    extract_token(&out.stdout).map(SecretToken).ok_or_else(|| {
-        Failure::local(
+    let Some(token) = extract_token(&out.stdout) else {
+        return Err(Failure::local(
             "provision returned no token",
             "check the driver service is installed and retry",
-        )
+        ));
+    };
+    let Some(device_port) = extract_port(&out.stdout) else {
+        return Err(Failure::local(
+            "provision returned no valid port",
+            "check the driver service is installed and retry",
+        ));
+    };
+    Ok(Provisioned {
+        token: SecretToken(token),
+        device_port,
     })
 }
 
-/// Merge our service component into a `settings secure` value, preserving
-/// existing colon-separated entries in order and never duplicating.
-#[must_use]
-pub(crate) fn merge_enabled_services(raw: &str, ours: &str) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for piece in raw.split(':').map(str::trim) {
-        if piece.is_empty() || piece == "null" {
+/// The single complete `port=<decimal>` field, 1..=65535.
+fn extract_port(output: &str) -> Option<u16> {
+    let bytes = output.as_bytes();
+    let mut found: Option<&str> = None;
+    let mut pos = 0;
+    while let Some(rel) = output[pos..].find("port=") {
+        let start = pos + rel;
+        pos = start + "port=".len();
+        if start > 0 && !is_boundary(bytes[start - 1]) {
             continue;
         }
-        if !parts.iter().any(|p| p == piece) {
-            parts.push(piece.to_owned());
+        let end = bytes[pos..]
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .map_or(bytes.len(), |r| pos + r);
+        let complete = end > pos
+            && (end == bytes.len()
+                || matches!(bytes[end], b'}' | b']' | b',' | b' ' | b'\t' | b'\n'));
+        if !complete || found.is_some() {
+            return None;
         }
+        found = Some(&output[pos..end]);
+        pos = end;
     }
-    let present = parts.iter().any(|p| p == ours)
-        || (ours == SERVICE_COMPONENT && parts.iter().any(|p| is_our_service_entry(p)));
-    if !present {
-        parts.push(ours.to_owned());
-    }
-    parts.join(":")
-}
-
-/// Is this colon-list entry exactly our service, full or short form?
-fn is_our_service_entry(entry: &str) -> bool {
-    let Some((pkg, class)) = entry.trim().split_once('/') else {
-        return false;
-    };
-    pkg == PACKAGE
-        && (entry.trim() == SERVICE_COMPONENT || class == ".AgentMobileAccessibilityService")
-}
-
-/// Bounded `settings get/put` helpers.
-fn settings_get(adb: &Adb, serial: &str, key: &str) -> Result<String, Failure> {
-    let out = adb.scoped_ok(
-        serial,
-        "settings read",
-        &["shell", "settings", "get", "secure", key],
-    )?;
-    Ok(out.stdout.trim().to_owned())
-}
-
-fn settings_put(adb: &Adb, serial: &str, key: &str, value: &str) -> Result<(), Failure> {
-    adb.scoped_ok(
-        serial,
-        "settings write",
-        &["shell", "settings", "put", "secure", key, value],
-    )
-    .map(|_| ())
-    .map_err(|_| bind_failure("settings write was refused"))
-}
-
-/// Enable and verify the accessibility service: writes happen only when
-/// the merged value differs, then a reread and a bounded `dumpsys` poll
-/// confirm the service actually bound.
-///
-/// # Errors
-/// [`Failure::Local`] when writes fail, the service does not appear in
-/// `enabled_accessibility_services`, or it never binds; the refusal names
-/// Settings > Accessibility and App Info > Allow restricted settings.
-pub(crate) fn enable_service(adb: &Adb, serial: &str) -> Result<(), Failure> {
-    enable_service_bounded(adb, serial, BIND_BUDGET)
-}
-
-/// [`enable_service`] with an explicit bind-poll deadline.
-pub(crate) fn enable_service_bounded(
-    adb: &Adb,
-    serial: &str,
-    budget: Duration,
-) -> Result<(), Failure> {
-    let raw = settings_get(adb, serial, "enabled_accessibility_services")?;
-    let merged = merge_enabled_services(&raw, SERVICE_COMPONENT);
-    if merged != raw {
-        settings_put(adb, serial, "enabled_accessibility_services", &merged)?;
-    }
-    if settings_get(adb, serial, "accessibility_enabled")? != "1" {
-        settings_put(adb, serial, "accessibility_enabled", "1")?;
-    }
-    verify_service(adb, serial, budget)
-}
-
-/// Reread the setting for an exact component match, then poll `dumpsys
-/// accessibility` for the actual bound-service record line.
-fn verify_service(adb: &Adb, serial: &str, budget: Duration) -> Result<(), Failure> {
-    let reread = settings_get(adb, serial, "enabled_accessibility_services")?;
-    if !reread.split(':').any(is_our_service_entry) {
-        return Err(bind_failure("service not present after write"));
-    }
-    let deadline = Instant::now() + budget;
-    loop {
-        let out = adb.scoped(serial, &["shell", "dumpsys", "accessibility"])?;
-        if out
-            .stdout
-            .lines()
-            .any(|l| l.contains("Service[label=Agent Mobile Driver,"))
-        {
-            return Ok(());
-        }
-        if Instant::now() > deadline {
-            return Err(bind_failure("service never bound"));
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
-
-/// The standard refusal with its manual remedy.
-fn bind_failure(why: &str) -> Failure {
-    Failure::local(
-        format!("accessibility service {why}"),
-        "enable it in Settings > Accessibility > Agent Mobile Driver; on Android 13+ \
-         first allow App Info > Allow restricted settings",
-    )
+    found?.parse::<u16>().ok().filter(|p| *p > 0)
 }
 
 /// `adb -s <serial> install -r <apk>`; an incompatible-signature refusal
@@ -257,6 +186,7 @@ pub(crate) fn install(adb: &Adb, serial: &str, apk: &Path) -> Result<(), Failure
     if out.success && !text.contains("Failure") && !text.contains("Error") {
         return Ok(());
     }
+    let detail = diagnostic_output(&out);
     if text.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") {
         return Err(Failure::local(
             format!("install refused on {serial}: an incompatible build of {PACKAGE} exists"),
@@ -264,7 +194,7 @@ pub(crate) fn install(adb: &Adb, serial: &str, apk: &Path) -> Result<(), Failure
         ));
     }
     Err(Failure::local(
-        format!("install failed on {serial}: {}", text.trim()),
+        format!("install failed on {serial}: {detail}"),
         "check the APK and device state, then retry",
     ))
 }
@@ -279,7 +209,7 @@ pub(crate) fn install(adb: &Adb, serial: &str, apk: &Path) -> Result<(), Failure
 pub(crate) fn ensure_apk(
     override_apk: Option<&Path>,
     driver_dir: &Path,
-    runner: &Arc<dyn CommandRunner>,
+    adb: &Adb,
 ) -> Result<PathBuf, Failure> {
     if let Some(apk) = override_apk {
         return if apk.is_file() {
@@ -292,10 +222,7 @@ pub(crate) fn ensure_apk(
         };
     }
     let apk = driver_dir.join("app/build/outputs/apk/debug/app-debug.apk");
-    if apk.is_file() {
-        return Ok(apk);
-    }
-    build_apk(driver_dir, runner)?;
+    build_apk(driver_dir, adb)?;
     if apk.is_file() {
         Ok(apk)
     } else {
@@ -306,8 +233,9 @@ pub(crate) fn ensure_apk(
     }
 }
 
-/// Run the checked-in wrapper under the 600 s build bound.
-fn build_apk(driver_dir: &Path, runner: &Arc<dyn CommandRunner>) -> Result<(), Failure> {
+/// Run the checked-in wrapper under the 600 s build bound — through
+/// [`Adb::tool_with`] so a cancellation flag reaches the Gradle child.
+fn build_apk(driver_dir: &Path, adb: &Adb) -> Result<(), Failure> {
     let wrapper = driver_dir.join("gradlew");
     if !wrapper.is_file() {
         return Err(Failure::local(
@@ -316,7 +244,7 @@ fn build_apk(driver_dir: &Path, runner: &Arc<dyn CommandRunner>) -> Result<(), F
         ));
     }
     let dir = driver_dir.to_string_lossy().into_owned();
-    let out = runner.run(
+    let out = adb.tool_with(
         &wrapper,
         &["-p", &dir, ":app:assembleDebug", "--no-daemon"],
         BUILD_TIMEOUT,
@@ -332,11 +260,12 @@ fn build_apk(driver_dir: &Path, runner: &Arc<dyn CommandRunner>) -> Result<(), F
 /// session is declared ready.
 ///
 /// # Errors
-/// [`Failure::Local`] on transport failure or a non-ok envelope.
+/// [`Failure::Local`] on transport failure, a non-ok envelope, or a
+/// well-formed envelope that is not an authenticated `status` payload.
 pub(crate) fn probe_status(url: &str, token: &SecretToken) -> Result<(), Failure> {
-    let wire = Wire::with_timeout(url, token.as_str(), Duration::from_secs(15));
+    let wire = Wire::with_timeout(url, token.as_str(), Duration::from_secs(3));
     let env = wire.call("status", &json!({}))?;
-    if env.ok {
+    if is_status_envelope(&env) {
         Ok(())
     } else {
         Err(Failure::local(
@@ -346,5 +275,13 @@ pub(crate) fn probe_status(url: &str, token: &SecretToken) -> Result<(), Failure
     }
 }
 
+pub(crate) fn is_status_envelope(env: &Envelope) -> bool {
+    env.ok && env.command.as_deref() == Some("status") && matches!(env.data, Some(Data::Status(_)))
+}
+
+mod enable;
+pub(crate) use enable::enable_service;
+#[cfg(test)]
+pub(crate) use enable::{enable_service_bounded, merge_enabled_services};
 #[cfg(test)]
 mod tests;

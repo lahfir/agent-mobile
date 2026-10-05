@@ -14,8 +14,11 @@ pub(crate) const HEAD_CAP: usize = 1 << 20;
 pub(crate) const BODY_CAP: usize = 16 << 20;
 /// Upstream reply cap: 64 MiB.
 pub(crate) const REPLY_CAP: usize = 64 << 20;
-/// Per-socket IO deadline.
+/// Per-socket IO deadline for the client-facing side and writes.
 pub(crate) const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Upstream (device) reply deadline — generous enough for a 10 s driver
+/// hold plus settling margin.
+pub(crate) const UPSTREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Same words the on-device service emits for auth failures.
 pub(crate) const AUTH_MESSAGE: &str = "Authorization: Bearer <token> required";
@@ -234,11 +237,17 @@ pub(crate) fn elapsed_ms(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-/// A complete HTTP/1.1 reply buffer.
+/// A complete HTTP/1.1 reply buffer — JSON by default.
 #[must_use]
 pub(crate) fn http_response(status: &str, body: &str) -> Vec<u8> {
+    http_response_typed(status, body, "application/json")
+}
+
+/// [`http_response`] with an explicit `Content-Type`.
+#[must_use]
+pub(crate) fn http_response_typed(status: &str, body: &str, content_type: &str) -> Vec<u8> {
     format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .into_bytes()

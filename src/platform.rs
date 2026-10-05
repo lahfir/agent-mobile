@@ -7,7 +7,7 @@ mod android_ops;
 mod discovery;
 mod runtime;
 
-pub use android_ops::cleanup_stale;
+pub use android_ops::{cleanup_stale, sweep_pending_forwards};
 pub use discovery::discover;
 pub use runtime::{PlatformRuntime, RuntimeExit};
 

@@ -7,6 +7,8 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -17,7 +19,12 @@ class AgentMobileAccessibilityService : AccessibilityService() {
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val driver by lazy { Driver(this) }
     private val tokenStore by lazy { TokenStore(this) }
+    internal val screenshotExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "agent-mobile-screenshot").apply { isDaemon = true }
+    }
+    private val serverLock = Any()
     private var server: HttpServer? = null
+    private var destroyed = false
 
     override fun onServiceConnected() {
         serviceInfo = serviceInfo.apply {
@@ -25,34 +32,56 @@ class AgentMobileAccessibilityService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                 AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
         }
-        activeInstance = this
-        tokenStore.read()?.let { startListener(it) }
+        synchronized(serverLock) {
+            if (!destroyed) {
+                activeInstance = this
+                tokenStore.read()?.let { startListener(it) }
+            }
+        }
     }
 
-    internal fun onTokenRotated() {
-        mainHandler.post { restartListener() }
-    }
-
-    private fun restartListener() {
-        server?.close()
-        server = null
-        tokenStore.read()?.let { startListener(it) }
-    }
-
-    private fun startListener(token: String) {
+    internal fun rotateSession(token: String): Int = synchronized(serverLock) {
+        check(!destroyed) { "accessibility service destroyed" }
+        val next = HttpServer(0, token, ::handleRequest)
+        next.start()
+        val session = DriverSession(token, next.localPort)
         try {
-            server = HttpServer(LISTEN_PORT, token, ::handleRequest).also { it.start() }
+            tokenStore.replace(session)
+        } catch (e: Exception) {
+            next.close()
+            throw e
+        }
+        val previous = server
+        server = next
+        previous?.close()
+        session.port
+    }
+
+    private fun startListener(session: DriverSession) {
+        try {
+            server = HttpServer(session.port, session.token, ::handleRequest).also { it.start() }
         } catch (e: Exception) {
             Log.w(TAG, "listener start failed: ${e.javaClass.simpleName}: ${e.message}")
             server = null
         }
     }
 
-    internal fun <T> onMain(block: () -> T): T {
+    internal fun <T> onMain(
+        cancellation: RequestCancellation = RequestCancellation(),
+        block: () -> T,
+    ): T {
+        cancellation.check()
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            return block()
+            val result = block()
+            cancellation.check()
+            return result
         }
-        val task = FutureTask(java.util.concurrent.Callable { block() })
+        val task = FutureTask(java.util.concurrent.Callable {
+            cancellation.check()
+            val result = block()
+            cancellation.check()
+            result
+        })
         if (!mainHandler.post(task)) {
             throw RuntimeException("driver main thread unavailable")
         }
@@ -65,32 +94,37 @@ class AgentMobileAccessibilityService : AccessibilityService() {
                 else -> throw cause
             }
         } catch (e: TimeoutException) {
+            cancellation.cancel()
             task.cancel(false)
-            throw RuntimeException("driver operation timed out")
+            throw DriverException("DRIVER_ERROR", "driver operation timed out")
         } catch (e: InterruptedException) {
+            cancellation.cancel()
             task.cancel(false)
             Thread.currentThread().interrupt()
-            throw RuntimeException("driver operation interrupted")
+            throw DriverException("DRIVER_ERROR", "driver operation interrupted")
         }
     }
 
-    private fun handleRequest(command: String, params: JSONObject): JSONObject =
-        driver.handle(command, params)
+    private fun handleRequest(command: String, params: JSONObject, cancellation: RequestCancellation): JSONObject =
+        driver.handle(command, params, cancellation)
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
     override fun onInterrupt() {}
 
     override fun onDestroy() {
-        server?.close()
-        server = null
-        if (activeInstance === this) activeInstance = null
+        synchronized(serverLock) {
+            destroyed = true
+            if (activeInstance === this) activeInstance = null
+            server?.close()
+            server = null
+        }
+        screenshotExecutor.shutdownNow()
         super.onDestroy()
     }
 
     companion object {
-        private const val LISTEN_PORT = 8770
-        private const val MAIN_BRIDGE_TIMEOUT_MS = 10_000L
+        private const val MAIN_BRIDGE_TIMEOUT_MS = 20_000L
         private const val TAG = "AgentMobileDriver"
 
         @Volatile

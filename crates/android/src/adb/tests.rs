@@ -22,7 +22,7 @@ fn scoped_commands_prefix_serial() -> Result<(), Failure> {
 
 #[test]
 fn second_serial_gets_its_own_scope() -> Result<(), Failure> {
-    let runner = FakeRunner::scripted(vec![]);
+    let runner = FakeRunner::scripted(vec![output(true, "", ""), output(true, "", "")]);
     let adb = Adb::with_runner(PathBuf::from("adb"), runner.clone());
     adb.scoped("s-a", &["get-state"])?;
     adb.scoped("s-b", &["get-state"])?;
@@ -34,7 +34,7 @@ fn second_serial_gets_its_own_scope() -> Result<(), Failure> {
 
 #[test]
 fn unscoped_command_carries_no_serial() -> Result<(), Failure> {
-    let runner = FakeRunner::scripted(vec![]);
+    let runner = FakeRunner::scripted(vec![output(true, "", "")]);
     let adb = Adb::with_runner(PathBuf::from("adb"), runner.clone());
     adb.unscoped(&["devices", "-l"])?;
     assert_eq!(runner.calls()[0], ["devices", "-l"]);
@@ -100,12 +100,12 @@ fn failed_provision_never_leaks_bundle_bytes() {
     let sentinel = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
     let runner = FakeRunner::scripted(vec![
         output(false, &format!("Bundle[{{token={sentinel}}}]"), "denied"),
-        output(true, &format!("Bundle[{{token={sentinel}}}]"), ""),
+        output(true, &format!("Bundle[{{token={sentinel} port=9876}}]"), ""),
     ]);
     let adb = Adb::with_runner(PathBuf::from("adb"), runner);
     let first = crate::driver::provision(&adb, "s1").map(|_| ());
     assert!(first.is_err());
-    let ok = crate::driver::provision(&adb, "s1").map(|t| format!("{t:?} {t}"));
+    let ok = crate::driver::provision(&adb, "s1").map(|p| format!("{:?} {}", p.token, p.token));
     if let Ok(text) = &ok {
         assert!(!text.contains(sentinel));
     }
@@ -118,4 +118,41 @@ fn failed_provision_never_leaks_bundle_bytes() {
     ] {
         assert!(!surface.contains(sentinel), "error leaked token: {surface}");
     }
+}
+
+#[test]
+fn failed_op_caps_huge_output_but_keeps_complete_stdout() {
+    let big = "x".repeat(64 * 1024);
+    let out = crate::adb::CommandOutput {
+        success: false,
+        stdout: big.clone(),
+        stderr: String::new(),
+    };
+    assert_eq!(out.stdout.len(), 64 * 1024);
+    let err = crate::adb::failed_op("s1", "install", &out);
+    let text = err.render();
+    assert!(
+        text.len() < 8 * 1024,
+        "diagnostic not capped: {}",
+        text.len()
+    );
+    assert!(text.contains("truncated"), "missing truncation marker");
+}
+
+#[test]
+fn remote_shell_emits_one_quoted_command() -> Result<(), Failure> {
+    let runner = FakeRunner::scripted(vec![output(true, "ok", "")]);
+    let adb = Adb::with_runner(PathBuf::from("adb"), runner.clone());
+    adb.remote_shell("s1", &["am", "start", "a'b", "x;y", "sp ace"])?;
+    let calls = runner.calls();
+    assert_eq!(
+        calls[0],
+        [
+            "-s",
+            "s1",
+            "shell",
+            "'am' 'start' 'a'\"'\"'b' 'x;y' 'sp ace'"
+        ]
+    );
+    Ok(())
 }

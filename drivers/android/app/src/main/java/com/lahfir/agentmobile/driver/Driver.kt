@@ -8,8 +8,8 @@ import kotlin.math.abs
 internal interface DriverPlatform {
     fun status(): PlatformStatus
     fun readTree(): TreeRead
-    fun performNodeAction(identity: NodeIdentity, action: NodeAction): NodeActionResult
-    fun appendToFocused(text: String): NodeActionResult
+    fun performNodeAction(target: RefTarget, action: NodeAction, cancellation: RequestCancellation): NodeActionResult
+    fun appendToFocused(text: String, cancellation: RequestCancellation): NodeActionResult
     fun dispatchGesture(spec: GestureSpec)
     fun performGlobal(action: GlobalAction): Boolean
     fun screenshot(): ByteArray
@@ -42,10 +42,14 @@ private class AndroidDriverPlatform(private val service: AgentMobileAccessibilit
         ).copy(readAtNanos = System.nanoTime())
     }
 
-    override fun performNodeAction(identity: NodeIdentity, action: NodeAction): NodeActionResult =
-        actions.perform(identity, action)
+    override fun performNodeAction(
+        target: RefTarget,
+        action: NodeAction,
+        cancellation: RequestCancellation,
+    ): NodeActionResult = actions.perform(target, action, cancellation)
 
-    override fun appendToFocused(text: String): NodeActionResult = actions.appendToFocused(text)
+    override fun appendToFocused(text: String, cancellation: RequestCancellation): NodeActionResult =
+        actions.appendToFocused(text, cancellation)
 
     override fun dispatchGesture(spec: GestureSpec) {
         gestures.dispatch(spec)
@@ -77,25 +81,46 @@ internal class Driver internal constructor(
     internal val ledger = RefLedger()
     private var lastRead: TreeRead? = null
 
-    fun handle(command: String, params: JSONObject): JSONObject = when (command) {
-        "status" -> status()
-        "snapshot" -> snapshot(params)
-        "tap" -> tap(params)
-        "doubletap" -> doubletap(params)
-        "hold" -> hold(params)
-        "pinch" -> pinch(params)
-        "twofinger" -> twofinger(params)
-        "type" -> type(params)
-        "swipe" -> swipe(params)
-        "back" -> global(GlobalAction.BACK)
-        "home" -> global(GlobalAction.HOME)
-        "center" -> center(params)
-        "screenshot" -> screenshot()
-        else -> throw DriverException("UNKNOWN_COMMAND", "unknown command: $command")
+    fun handle(
+        command: String,
+        params: JSONObject,
+        cancellation: RequestCancellation = RequestCancellation(),
+    ): JSONObject {
+        cancellation.check()
+        val out = when (command) {
+            "status" -> status(cancellation)
+            "snapshot" -> snapshot(params, cancellation)
+            "tap" -> tap(params, cancellation)
+            "doubletap" -> doubletap(params, cancellation)
+            "hold" -> hold(params, cancellation)
+            "pinch" -> pinch(params, cancellation)
+            "twofinger" -> twofinger(params, cancellation)
+            "type" -> type(params, cancellation)
+            "swipe" -> swipe(params, cancellation)
+            "back" -> global(GlobalAction.BACK, cancellation)
+            "home" -> global(GlobalAction.HOME, cancellation)
+            "center" -> center(params, cancellation)
+            "screenshot" -> screenshot(cancellation)
+            else -> throw DriverException("UNKNOWN_COMMAND", "unknown command: $command")
+        }
+        cancellation.check()
+        return out
     }
 
-    private fun status(): JSONObject {
-        val current = platform.status()
+    /** Check cancellation before and after every platform operation. */
+    private fun <T> checked(cancellation: RequestCancellation, block: () -> T): T {
+        cancellation.check()
+        val result = block()
+        cancellation.check()
+        return result
+    }
+
+    private fun status(cancellation: RequestCancellation): JSONObject {
+        val current = checked(cancellation) { platform.status() }
+        if (current.app.isBlank()) {
+            throw DriverException("DRIVER_ERROR", "no active accessibility window; focus a foreground app and retry")
+        }
+        ledger.invalidateIfAppChanged(current.app)
         return JSONObject()
             .put("app", current.app)
             .put("snapshot_id", ledger.snapshotId)
@@ -103,7 +128,7 @@ internal class Driver internal constructor(
             .put("os", current.os)
     }
 
-    private fun snapshot(params: JSONObject): JSONObject {
+    private fun snapshot(params: JSONObject, cancellation: RequestCancellation): JSONObject {
         val requestedApp = when {
             !params.has("app") -> null
             else -> params.opt("app").let {
@@ -114,7 +139,7 @@ internal class Driver internal constructor(
                 }
             }
         }
-        val result = settler.settle(lastRead) { platform.readTree() }
+        val result = settler.settle(lastRead) { checked(cancellation) { platform.readTree() } }
         if (requestedApp != null && requestedApp != result.read.app) {
             throw DriverException("BAD_REQUEST", "app $requestedApp is not the foreground package ${result.read.app}")
         }
@@ -123,8 +148,8 @@ internal class Driver internal constructor(
         return out
     }
 
-    private fun mutate(baseline: TreeRead?): JSONObject {
-        val result = settler.settle(baseline ?: lastRead) { platform.readTree() }
+    private fun mutate(baseline: TreeRead?, cancellation: RequestCancellation): JSONObject {
+        val result = settler.settle(baseline ?: lastRead) { checked(cancellation) { platform.readTree() } }
         val out = ledger.mint(result.read, result.settled, result.reads, result.settleMs)
         lastRead = result.read
         return out
@@ -150,52 +175,81 @@ internal class Driver internal constructor(
         return RawPoint(x.toFloat(), y.toFloat())
     }
 
-    private fun pointInRoot(point: RawPoint, read: TreeRead): RawPoint {
-        val root = read.root.bounds
-        if (point.x < 0 || point.y < 0 || point.x >= root.width || point.y >= root.height) {
+
+
+    private fun resolveRef(any: Any?, cancellation: RequestCancellation): ResolvedNode {
+        val target = ledger.lookup(any)
+        val live = checked(cancellation) { platform.readTree() }
+        return ResolvedNode(RefResolver.resolve(target, live, any.toString()), live)
+    }
+
+    /** A logical point converted to raw must still land inside the active
+        window — density-correct containment, never clipped. */
+    private fun checkedPoint(point: RawPoint, live: TreeRead): RawPoint {
+        val raw = Gestures.toRaw(point, live)
+        if (!live.origin.contains(raw)) {
             throw DriverException("BAD_REQUEST", "x and y must be inside the active window")
         }
-        return Gestures.toRaw(point, read)
+        return raw
     }
 
-    private fun resolveRef(any: Any?): ResolvedNode {
-        val identity = ledger.lookup(any)
-        val live = platform.readTree()
-        return ResolvedNode(RefResolver.resolve(identity, live, any.toString()), live)
+    private fun checkedRootGesture(spec: GestureSpec, live: TreeRead): GestureSpec {
+        if (spec.strokes.flatMap { it.points }.any { !live.origin.contains(it) }) {
+            throw DriverException("STALE_REF", "gesture leaves the active app window; re-snapshot")
+        }
+        return spec
     }
 
-    private fun gestureTarget(params: JSONObject): Pair<RawPoint, TreeRead> {
+    private fun checkedRefGesture(resolved: ResolvedNode, spec: GestureSpec): GestureSpec {
+        val id = resolved.node.identity
+        val rootId = resolved.baseline.root.identity
+        if (!id.visibleToUser || id.packageName != resolved.baseline.app || id.windowId != rootId.windowId) {
+            throw DriverException("STALE_REF", "ref target is not visible in the active app window; re-snapshot")
+        }
+        if (spec.strokes.flatMap { it.points }.any { !resolved.baseline.origin.contains(it) }) {
+            throw DriverException("STALE_REF", "ref target gesture leaves the active app window; re-snapshot")
+        }
+        return spec
+    }
+
+    private fun tap(params: JSONObject, cancellation: RequestCancellation): JSONObject {
         val point = pointOrNull(params)
         if (point != null) {
-            val live = platform.readTree()
-            return pointInRoot(point, live) to live
+            val live = checked(cancellation) { platform.readTree() }
+            checked(cancellation) { platform.dispatchGesture(Gestures.tap(checkedPoint(point, live))) }
+            return mutate(live, cancellation)
         }
-        val resolved = resolveRef(params.opt("ref"))
-        return Gestures.rawCenter(resolved.node.identity.rawBounds) to resolved.baseline
-    }
-
-    private fun tap(params: JSONObject): JSONObject {
-        val point = pointOrNull(params)
-        if (point != null) {
-            val live = platform.readTree()
-            platform.dispatchGesture(Gestures.tap(pointInRoot(point, live)))
-            return mutate(live)
+        val result = checked(cancellation) {
+            platform.performNodeAction(ledger.lookup(params.opt("ref")), NodeAction.Click, cancellation)
         }
-        val identity = ledger.lookup(params.opt("ref"))
-        val result = platform.performNodeAction(identity, NodeAction.Click)
         if (!result.accepted) {
-            platform.dispatchGesture(Gestures.tap(Gestures.rawCenter(result.node.identity.rawBounds)))
+            val resolved = ResolvedNode(result.node, result.read)
+            checked(cancellation) {
+                platform.dispatchGesture(
+                    checkedRefGesture(resolved, Gestures.tap(Gestures.rawCenter(result.node.identity.rawBounds))),
+                )
+            }
         }
-        return mutate(result.read)
+        return mutate(result.read, cancellation)
     }
 
-    private fun doubletap(params: JSONObject): JSONObject {
-        val (center, baseline) = gestureTarget(params)
-        platform.dispatchGesture(Gestures.doubleTap(center))
-        return mutate(baseline)
+    private fun doubletap(params: JSONObject, cancellation: RequestCancellation): JSONObject {
+        val point = pointOrNull(params)
+        if (point != null) {
+            val live = checked(cancellation) { platform.readTree() }
+            checked(cancellation) { platform.dispatchGesture(Gestures.doubleTap(checkedPoint(point, live))) }
+            return mutate(live, cancellation)
+        }
+        val resolved = resolveRef(params.opt("ref"), cancellation)
+        val spec = checkedRefGesture(
+            resolved,
+            Gestures.doubleTap(Gestures.rawCenter(resolved.node.identity.rawBounds)),
+        )
+        checked(cancellation) { platform.dispatchGesture(spec) }
+        return mutate(resolved.baseline, cancellation)
     }
 
-    private fun hold(params: JSONObject): JSONObject {
+    private fun hold(params: JSONObject, cancellation: RequestCancellation): JSONObject {
         val seconds = when {
             !params.has("duration") -> 1.0
             else -> params.opt("duration").let {
@@ -205,12 +259,24 @@ internal class Driver internal constructor(
         if (!seconds.isFinite() || seconds <= 0 || seconds > 10) {
             throw DriverException("BAD_REQUEST", "duration 0 < d <= 10")
         }
-        val (center, baseline) = gestureTarget(params)
-        platform.dispatchGesture(Gestures.hold(center, (seconds * 1000).toLong()))
-        return mutate(baseline)
+        val point = pointOrNull(params)
+        if (point != null) {
+            val live = checked(cancellation) { platform.readTree() }
+            checked(cancellation) {
+                platform.dispatchGesture(Gestures.hold(checkedPoint(point, live), (seconds * 1000).toLong()))
+            }
+            return mutate(live, cancellation)
+        }
+        val resolved = resolveRef(params.opt("ref"), cancellation)
+        val spec = checkedRefGesture(
+            resolved,
+            Gestures.hold(Gestures.rawCenter(resolved.node.identity.rawBounds), (seconds * 1000).toLong()),
+        )
+        checked(cancellation) { platform.dispatchGesture(spec) }
+        return mutate(resolved.baseline, cancellation)
     }
 
-    private fun pinch(params: JSONObject): JSONObject {
+    private fun pinch(params: JSONObject, cancellation: RequestCancellation): JSONObject {
         val rawScale = params.opt("scale")
         val scale = rawScale as? Number
         if (scale == null || !scale.toDouble().isFinite() ||
@@ -218,77 +284,100 @@ internal class Driver internal constructor(
         ) {
             throw DriverException("BAD_REQUEST", "scale positive, finite, |scale-1| >= 0.01")
         }
-        val velocity = when {
-            !params.has("velocity") -> 0.0
-            else -> params.opt("velocity").let {
-                if (it is Number && it.toDouble().isFinite()) {
-                    it.toDouble()
-                } else {
-                    throw DriverException("BAD_REQUEST", "velocity finite")
-                }
+        val velocity = pinchVelocity(params, scale.toDouble())
+        val resolved = resolveRef(params.opt("ref"), cancellation)
+        checked(cancellation) {
+            platform.dispatchGesture(
+                checkedRefGesture(resolved, Gestures.pinch(resolved.node.identity.rawBounds, scale.toDouble(), velocity)),
+            )
+        }
+        return mutate(resolved.baseline, cancellation)
+    }
+
+    /** Omitted velocity defaults to +1 for spread and -1 for converge —
+        the iOS contract; an explicit finite zero stays explicit zero. */
+    internal fun pinchVelocity(params: JSONObject, scale: Double): Double = when {
+        !params.has("velocity") -> if (scale > 1.0) 1.0 else -1.0
+        else -> params.opt("velocity").let {
+            if (it is Number && it.toDouble().isFinite()) {
+                it.toDouble()
+            } else {
+                throw DriverException("BAD_REQUEST", "velocity finite")
             }
         }
-        val resolved = resolveRef(params.opt("ref"))
-        platform.dispatchGesture(Gestures.pinch(resolved.node.identity.rawBounds, scale.toDouble(), velocity))
-        return mutate(resolved.baseline)
     }
 
-    private fun twofinger(params: JSONObject): JSONObject {
-        val resolved = resolveRef(params.opt("ref"))
-        platform.dispatchGesture(Gestures.twoFinger(resolved.node.identity.rawBounds))
-        return mutate(resolved.baseline)
+    private fun twofinger(params: JSONObject, cancellation: RequestCancellation): JSONObject {
+        val resolved = resolveRef(params.opt("ref"), cancellation)
+        checked(cancellation) {
+            platform.dispatchGesture(
+                checkedRefGesture(resolved, Gestures.twoFinger(resolved.node.identity.rawBounds)),
+            )
+        }
+        return mutate(resolved.baseline, cancellation)
     }
 
-    private fun type(params: JSONObject): JSONObject {
+    private fun type(params: JSONObject, cancellation: RequestCancellation): JSONObject {
         val text = params.opt("text")
         if (text !is String || text.isEmpty()) {
             throw DriverException("BAD_REQUEST", "text required")
         }
         val result = if (params.has("ref")) {
-            platform.performNodeAction(ledger.lookup(params.opt("ref")), NodeAction.AppendText(text))
+            checked(cancellation) {
+                platform.performNodeAction(ledger.lookup(params.opt("ref")), NodeAction.AppendText(text), cancellation)
+            }
         } else {
-            platform.appendToFocused(text)
+            checked(cancellation) { platform.appendToFocused(text, cancellation) }
         }
         if (!result.accepted) {
             throw DriverException("DRIVER_ERROR", "type action not accepted by target")
         }
-        return mutate(result.read)
+        return mutate(result.read, cancellation)
     }
 
-    private fun swipe(params: JSONObject): JSONObject {
+    private fun swipe(params: JSONObject, cancellation: RequestCancellation): JSONObject {
         val direction = params.opt("direction")
         if (direction !is String || direction !in setOf("up", "down", "left", "right")) {
             throw DriverException("BAD_REQUEST", "direction up|down|left|right")
         }
         if (params.has("ref")) {
-            val result = platform.performNodeAction(ledger.lookup(params.opt("ref")), NodeAction.Scroll(direction))
-            if (!result.accepted) {
-                platform.dispatchGesture(Gestures.swipe(result.node.identity.rawBounds, direction, 0.6))
+            val result = checked(cancellation) {
+                platform.performNodeAction(ledger.lookup(params.opt("ref")), NodeAction.Scroll(direction), cancellation)
             }
-            return mutate(result.read)
+            if (!result.accepted) {
+                val resolved = ResolvedNode(result.node, result.read)
+                checked(cancellation) {
+                    platform.dispatchGesture(
+                        checkedRefGesture(resolved, Gestures.swipe(result.node.identity.rawBounds, direction, 0.6)),
+                    )
+                }
+            }
+            return mutate(result.read, cancellation)
         }
-        val live = platform.readTree()
-        platform.dispatchGesture(Gestures.swipe(live.origin, direction, 0.5))
-        return mutate(live)
+        val live = checked(cancellation) { platform.readTree() }
+        checked(cancellation) {
+            platform.dispatchGesture(checkedRootGesture(Gestures.swipe(live.origin, direction, 0.5), live))
+        }
+        return mutate(live, cancellation)
     }
 
-    private fun global(action: GlobalAction): JSONObject {
-        if (!platform.performGlobal(action)) {
+    private fun global(action: GlobalAction, cancellation: RequestCancellation): JSONObject {
+        if (!checked(cancellation) { platform.performGlobal(action) }) {
             throw DriverException("DRIVER_ERROR", "${action.name.lowercase()} action refused")
         }
-        return mutate(null)
+        return mutate(null, cancellation)
     }
 
-    private fun center(params: JSONObject): JSONObject {
+    private fun center(params: JSONObject, cancellation: RequestCancellation): JSONObject {
         val which = params.opt("which")
         if (which !is String || which != "notification") {
             throw DriverException("BAD_REQUEST", "which notification")
         }
-        return global(GlobalAction.NOTIFICATIONS)
+        return global(GlobalAction.NOTIFICATIONS, cancellation)
     }
 
-    private fun screenshot(): JSONObject = JSONObject().put(
+    private fun screenshot(cancellation: RequestCancellation): JSONObject = JSONObject().put(
         "png_base64",
-        java.util.Base64.getEncoder().encodeToString(platform.screenshot()),
+        java.util.Base64.getEncoder().encodeToString(checked(cancellation) { platform.screenshot() }),
     )
 }

@@ -32,6 +32,10 @@ pub struct SessionEntry {
     /// Local bridge listen port (Android only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_port: Option<u16>,
+    /// Device-side loopback port the forward targets (Android only); old
+    /// rows without it are the legacy fixed port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_port: Option<u16>,
     /// APK installed for the session (Android only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apk_source: Option<String>,
@@ -41,6 +45,13 @@ pub struct SessionEntry {
     /// Driver/emulator log path for the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_file: Option<String>,
+    /// [`crate::process::process_identity`] marker for `pid`, pinned at
+    /// record time so a recycled pid can never impersonate this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_started_at: Option<String>,
+    /// Display name of the device this session serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 impl SessionEntry {
@@ -57,9 +68,12 @@ impl SessionEntry {
             serial: None,
             forward_port: None,
             bridge_port: None,
+            device_port: None,
             apk_source: None,
             emulator_pid: None,
             log_file: None,
+            process_started_at: crate::process::process_identity(pid),
+            device_name: None,
         }
     }
 }

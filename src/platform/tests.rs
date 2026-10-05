@@ -7,8 +7,9 @@ use agent_mobile_core::ios::{self, DeviceScan};
 use agent_mobile_core::state::SessionEntry;
 
 use super::{
-    Platform, PlatformDevice, PlatformScan, android_ops::android_entry_fields, default_device,
-    select,
+    Platform, PlatformDevice, PlatformScan,
+    android_ops::{AndroidMeta, android_entry_fields},
+    default_device, select,
 };
 
 fn ios_dev(name: &str, udid: &str, kind: &'static str) -> PlatformDevice {
@@ -186,15 +187,25 @@ fn android_entry_fields_carries_cleanup_metadata() {
     );
     android_entry_fields(
         &mut e,
-        Some("emulator-5554"),
-        Some(50001),
-        Some(60001),
-        Some(std::path::Path::new("/repo/app-debug.apk")),
-        Some(50564),
+        AndroidMeta {
+            serial: Some("emulator-5554"),
+            forward_port: Some(50001),
+            device_port: Some(45678),
+            bridge_port: Some(60001),
+            apk_source: Some(std::path::Path::new("/repo/app-debug.apk")),
+            emulator_pid: Some(50564),
+        },
         std::path::Path::new("/tmp/avd.log"),
     );
     assert_eq!(e.serial.as_deref(), Some("emulator-5554"));
     assert_eq!(e.forward_port, Some(50001));
+    assert_eq!(e.device_port, Some(45678));
+    assert_eq!(crate::platform::android_ops::android_device_port(&e), 45678);
+    e.device_port = None;
+    assert_eq!(
+        crate::platform::android_ops::android_device_port(&e),
+        agent_mobile_android::LEGACY_DEVICE_PORT
+    );
     assert_eq!(e.bridge_port, Some(60001));
     assert_eq!(e.apk_source.as_deref(), Some("/repo/app-debug.apk"));
     assert_eq!(e.emulator_pid, Some(50564));
@@ -258,7 +269,9 @@ fn devices_serving_prefers_key_then_legacy_name() {
     let state = State {
         version: 1,
         default_device: None,
+        default_device_key: None,
         devices,
+        pending_forwards: Vec::new(),
     };
     let d = ios_dev("iPhone 17", "UDID-1", "simulator");
     assert_eq!(
@@ -270,7 +283,9 @@ fn devices_serving_prefers_key_then_legacy_name() {
     let state2 = State {
         version: 1,
         default_device: None,
+        default_device_key: None,
         devices: devices2,
+        pending_forwards: Vec::new(),
     };
     assert_eq!(
         crate::cmd::devices::serving_url(&state2, &d),

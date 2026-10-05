@@ -74,11 +74,24 @@ class TokenStoreTest {
     }
 
     @Test
-    fun replacePersistsTokenSynchronously() {
+    fun replacePersistsSessionSynchronously() {
         val store = TokenStore(FakePrefs())
-        store.replace("token-one")
-        assertEquals("token-one", store.read())
-        store.replace("token-two")
-        assertEquals("token-two", store.read())
+        store.replace(DriverSession("token-one", 4321))
+        assertEquals(DriverSession("token-one", 4321), store.read())
+        store.replace(DriverSession("token-two", 9876))
+        assertEquals(DriverSession("token-two", 9876), store.read())
+    }
+
+    @Test
+    fun readReturnsNullWhenPortIsAbsentOrInvalid() {
+        val prefs = FakePrefs()
+        prefs.edit().putString("session_token", "token-one").commit()
+        assertNull(TokenStore(prefs).read())
+        prefs.edit().putInt("session_port", 0).commit()
+        assertNull(TokenStore(prefs).read())
+        prefs.edit().putInt("session_port", 70000).commit()
+        assertNull(TokenStore(prefs).read())
+        prefs.edit().putInt("session_port", 8770).commit()
+        assertEquals(DriverSession("token-one", 8770), TokenStore(prefs).read())
     }
 }

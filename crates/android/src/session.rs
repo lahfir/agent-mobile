@@ -1,5 +1,5 @@
 //! Session assembly: `AndroidAdapter` resolves tools and repo paths, then
-//! `start_session` runs the ordered install → provision → enable →
+//! `start_session` runs the ordered install → enable/bind → provision →
 //! forward → probe → bridge sequence, owning exactly one forward and one
 //! bridge for its whole life.
 
@@ -12,10 +12,9 @@ use agent_mobile_core::error::Failure;
 use crate::adb::{Adb, resolve_sdk};
 use crate::boot::boot_avd;
 use crate::device::{self, AndroidScan, BootedAvd};
-use crate::driver::{SecretToken, enable_service, ensure_apk, install, probe_status, provision};
-use crate::forward::{create_forward, remove_forward};
-use crate::http::{Bridge, start_bridge};
-use crate::lifecycle::AdbLifecycle;
+use crate::driver::SecretToken;
+use crate::forward::{ForwardJournal, remove_owned_forward};
+use crate::http::Bridge;
 
 /// Host-side entry point for Android sessions: resolved `adb`/`emulator`
 /// binaries plus the repo's `drivers/android` directory.
@@ -100,90 +99,26 @@ impl AndroidAdapter {
         crate::boot::boot_avd_until(&self.adb, &self.emulator, name, log, budget, cancelled)
     }
 
-    /// Remove exactly `adb -s <serial> forward --remove tcp:<port>`. When
-    /// the removal itself fails, the row is re-listed and the call still
-    /// succeeds if the exact row is already absent — stale-state cleanup
-    /// must never remove a foreign row.
+    /// Remove exactly the row `<serial> tcp:<local> tcp:<device_port>` —
+    /// listed before and after so a foreign row is never removed and a
+    /// surviving row is never reported clean.
     ///
     /// # Errors
-    /// [`Failure::Local`] when removal fails and the row still exists.
-    pub fn remove_owned_forward(&self, serial: &str, port: u16) -> Result<(), Failure> {
-        match crate::forward::remove_forward(&self.adb, serial, port) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let gone = crate::forward::list_forwards(&self.adb, serial)
-                    .map(|rows| {
-                        !rows
-                            .iter()
-                            .any(|r| r.serial == serial && r.local == format!("tcp:{port}"))
-                    })
-                    .unwrap_or(false);
-                if gone { Ok(()) } else { Err(e) }
-            }
-        }
-    }
-
-    /// Ordered session bring-up for `serial`: state check → APK → install
-    /// → provision → enable → forward → status probe → bridge. Each later
-    /// step's failure unwinds what this call created.
-    ///
-    /// # Errors
-    /// [`Failure::Local`] at any stage; offline/unauthorized states carry
-    /// remedies.
-    pub fn start_session(&self, serial: &str) -> Result<AndroidSession, Failure> {
-        check_device_state(&self.adb, serial)?;
-        let apk = ensure_apk(
-            self.apk_override.as_deref(),
-            &self.driver_dir,
-            self.adb.runner(),
-        )?;
-        install(&self.adb, serial, &apk)?;
-        let token = provision(&self.adb, serial)?;
-        enable_service(&self.adb, serial)?;
-        let forward_port = create_forward(&self.adb, serial)?;
-        self.finish_session(serial, apk, token, forward_port)
-    }
-
-    /// Probe + bridge after the forward exists; failures remove only this
-    /// forward.
-    fn finish_session(
+    /// [`Failure::Local`] when the exact row survives removal.
+    pub fn remove_owned_forward(
         &self,
         serial: &str,
-        apk: PathBuf,
-        token: SecretToken,
-        forward_port: u16,
-    ) -> Result<AndroidSession, Failure> {
-        let result = (|| {
-            probe_status(&format!("http://127.0.0.1:{forward_port}"), &token)?;
-            let lifecycle = Arc::new(AdbLifecycle::new(self.adb.clone(), serial));
-            let bridge = start_bridge(forward_port, &token, lifecycle)?;
-            let url = format!("http://127.0.0.1:{}", bridge.port());
-            Ok((bridge, url))
-        })();
-        match result {
-            Ok((bridge, url)) => Ok(AndroidSession {
-                adb: self.adb.clone(),
-                serial: serial.to_owned(),
-                url,
-                token,
-                local_port: bridge.port(),
-                forward_port,
-                apk_source: apk,
-                bridge: Some(bridge),
-                closed: false,
-            }),
-            Err(e) => {
-                let _ = remove_forward(&self.adb, serial, forward_port);
-                Err(e)
-            }
-        }
+        local_port: u16,
+        device_port: u16,
+    ) -> Result<(), Failure> {
+        crate::forward::remove_owned_forward(&self.adb, serial, local_port, device_port)
     }
 }
 
 /// `adb get-state` must answer exactly `device`; the command exits nonzero
 /// for offline/unauthorized, so success is not required — only the state
 /// word matters.
-fn check_device_state(adb: &Adb, serial: &str) -> Result<(), Failure> {
+pub(super) fn check_device_state(adb: &Adb, serial: &str) -> Result<(), Failure> {
     let out = adb.scoped(serial, &["get-state"])?;
     if out.success && out.stdout.trim() == "device" {
         return Ok(());
@@ -202,7 +137,10 @@ fn check_device_state(adb: &Adb, serial: &str) -> Result<(), Failure> {
         ));
     }
     Err(Failure::local(
-        format!("{serial} reports state {:?}", text.trim()),
+        format!(
+            "{serial} reports state {:?}",
+            crate::adb::bounded_diagnostic(text.trim())
+        ),
         "check `adb devices` and retry",
     ))
 }
@@ -214,7 +152,10 @@ fn probe_tool(adb: &Adb) -> Result<(), Failure> {
         Ok(())
     } else {
         Err(Failure::local(
-            format!("adb version failed: {}", out.stderr),
+            format!(
+                "adb version failed: {}",
+                crate::adb::diagnostic_output(&out)
+            ),
             "install Android SDK platform-tools and retry",
         ))
     }
@@ -230,9 +171,12 @@ pub struct AndroidSession {
     token: SecretToken,
     local_port: u16,
     forward_port: u16,
+    device_port: u16,
     apk_source: PathBuf,
     bridge: Option<Bridge>,
     closed: bool,
+    journal: Arc<dyn ForwardJournal>,
+    journal_pending: bool,
 }
 
 impl AndroidSession {
@@ -266,6 +210,12 @@ impl AndroidSession {
         self.forward_port
     }
 
+    /// Device-side loopback port the forward targets.
+    #[must_use]
+    pub fn device_port(&self) -> u16 {
+        self.device_port
+    }
+
     /// APK path that was installed.
     #[must_use]
     pub fn apk_source(&self) -> &Path {
@@ -277,6 +227,22 @@ impl AndroidSession {
     #[must_use]
     pub fn is_running(&self) -> bool {
         !self.closed && self.bridge.as_ref().is_some_and(Bridge::is_running)
+    }
+
+    /// Clear the pending-forward journal record after the session row is
+    /// registered — the row itself is now the ownership record.
+    ///
+    /// # Errors
+    /// [`Failure::Local`] when the journal clear fails; the record is
+    /// retained for a later retry.
+    pub fn commit_forward_journal(&mut self) -> Result<(), Failure> {
+        if !self.journal_pending {
+            return Ok(());
+        }
+        self.journal
+            .clear(&self.serial, self.forward_port, self.device_port)?;
+        self.journal_pending = false;
+        Ok(())
     }
 
     /// Stop the bridge, then remove only this session's
@@ -292,11 +258,19 @@ impl AndroidSession {
         if let Some(mut bridge) = self.bridge.take() {
             bridge.stop();
         }
-        match remove_forward(&self.adb, &self.serial, self.forward_port) {
-            Ok(()) => {
-                self.closed = true;
-                Ok(())
-            }
+        match remove_owned_forward(
+            &self.adb.without_cancellation(),
+            &self.serial,
+            self.forward_port,
+            self.device_port,
+        ) {
+            Ok(()) => match self.commit_forward_journal() {
+                Ok(()) => {
+                    self.closed = true;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e),
         }
     }
@@ -311,7 +285,15 @@ impl Drop for AndroidSession {
         if let Some(mut bridge) = self.bridge.take() {
             bridge.stop();
         }
-        let _ = remove_forward(&self.adb, &self.serial, self.forward_port);
+        let removed = remove_owned_forward(
+            &self.adb.without_cancellation(),
+            &self.serial,
+            self.forward_port,
+            self.device_port,
+        );
+        if removed.is_ok() {
+            let _ = self.commit_forward_journal();
+        }
     }
 }
 
@@ -328,5 +310,8 @@ impl std::fmt::Debug for AndroidSession {
     }
 }
 
+mod startup;
+#[cfg(test)]
+mod testkit;
 #[cfg(test)]
 mod tests;

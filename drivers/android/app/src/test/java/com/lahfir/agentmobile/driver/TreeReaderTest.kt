@@ -48,12 +48,15 @@ class TreeReaderTest {
             return bounds
         }
         override val childCount get() = children.size
+        var childCalls = 0
         override fun child(index: Int): NodeSource? {
             gate()
+            childCalls += 1
             return children.getOrNull(index)
         }
         override fun sameNode(other: NodeSource): Boolean =
             (other as? FakeNode)?.id == id
+        override val identityHash: Int get() = id
         override fun close() {
             closed = true
         }
@@ -126,6 +129,81 @@ class TreeReaderTest {
         val read = read(root)
         val pw = read.root.children[0]
         assertEquals("securetextfield", pw.role)
+        assertEquals("", pw.value)
+        assertEquals("", pw.identity.text)
+        assertEquals("", pw.identity.contentDescription)
+    }
+
+    private class SecretSource : NodeSource {
+        var textReads = 0
+        var descReads = 0
+        var hintReads = 0
+        override val className = "android.widget.EditText"
+        override val packageName = "com.fake"
+        override val viewIdResourceName = null
+        override val text: String? get() { textReads += 1; return "s3cret-text" }
+        override val contentDescription: String? get() { descReads += 1; return "s3cret-desc" }
+        override val hintText: String? get() { hintReads += 1; return "s3cret-hint" }
+        override val isPassword = true
+        override val isEditable = true
+        override val isEnabled = true
+        override val isSelected = false
+        override val isFocused = false
+        override val isCheckable = false
+        override val isChecked = false
+        override val isHeading = false
+        override val isClickable = false
+        override val isScrollable = false
+        override val hasActionClick = false
+        override val hasActionSetText = false
+        override val hasActionScroll = false
+        override val boundsInScreen = RawBounds(0, 0, 10, 10)
+        override val childCount = 0
+        override fun child(index: Int) = null
+        override fun sameNode(other: NodeSource) = other === this
+        override val identityHash = 42
+        override fun close() {}
+    }
+
+    @Test
+    fun passwordNodeNeverEvaluatesSecretGetters() {
+        val src = SecretSource()
+        val read = TreeReader().read(
+            object : NodeSource {
+                override val className = "android.widget.FrameLayout"
+                override val packageName = "com.fake"
+                override val viewIdResourceName = null
+                override val text = null
+                override val contentDescription = null
+                override val hintText = null
+                override val isPassword = false
+                override val isEditable = false
+                override val isEnabled = true
+                override val isSelected = false
+                override val isFocused = false
+                override val isCheckable = false
+                override val isChecked = false
+                override val isHeading = false
+                override val isClickable = false
+                override val isScrollable = false
+                override val hasActionClick = false
+                override val hasActionSetText = false
+                override val hasActionScroll = false
+                override val boundsInScreen = RawBounds(0, 0, 10, 10)
+                override val childCount = 1
+                override fun child(index: Int): NodeSource = src
+                override fun sameNode(other: NodeSource) = other === this
+                override val identityHash = 7
+                override fun close() {}
+            },
+            0L,
+            1.0,
+        )
+        assertEquals("password text must never be read", 0, src.textReads)
+        assertEquals("password contentDescription must never be read", 0, src.descReads)
+        assertEquals("password hint must never be read", 0, src.hintReads)
+        val pw = read.root.children[0]
+        assertEquals("", pw.name)
         assertEquals("", pw.value)
         assertEquals("", pw.identity.text)
         assertEquals("", pw.identity.contentDescription)
@@ -242,6 +320,26 @@ class TreeReaderTest {
     }
 
     @Test
+    fun nodeCapBoundsChildMaterialization() {
+        val fanOut = 500
+        val root = fake {
+            children = (1..fanOut).map { i -> fake { text = "child-$i" } }
+        }
+        val budget = 8
+        val read = read(root, maxNodes = budget)
+        assertFalse(read.complete)
+        assertEquals(budget - 1, root.childCalls)
+        assertEquals(budget, countNodes(read.root))
+        assertTrue(root.closed)
+        assertTrue(root.children.take(root.childCalls).all { it.closed })
+        assertTrue(root.children.drop(root.childCalls).all { !it.closed })
+        assertEquals((1 until budget).map { "child-$it" }, read.root.children.map { it.name })
+    }
+
+    private fun countNodes(node: com.lahfir.agentmobile.driver.NodeModel): Int =
+        1 + node.children.sumOf(::countNodes)
+
+    @Test
     fun depthCapMarksIncomplete() {
         val leaf = fake()
         val mid = fake { children = listOf(leaf) }
@@ -314,5 +412,251 @@ class TreeReaderTest {
         val root = fake { children = listOf(fake()) }
         read(root)
         assertTrue(created.all { it.closed })
+    }
+}
+
+class AppendWithReturnTest {
+
+    @Test
+    fun newlineUsesImeEnterWhenAvailable() {
+        val sets = mutableListOf<String>()
+        var ime = 0
+        var value = "cur"
+        val ok = appendWithReturn(
+            "hello\n",
+            currentValue = { value },
+            setText = { sets += it; value = it; true },
+            imeEnter = { ime += 1; true },
+        )
+        assertTrue(ok)
+        assertEquals(listOf("curhello"), sets)
+        assertEquals(1, ime)
+    }
+
+    @Test
+    fun imeNewlineUpdatesModeledValueThroughRefresh() {
+        val calls = mutableListOf<String>()
+        var value = ""
+        val ok = appendWithReturn(
+            "a\nb",
+            currentValue = { value },
+            setText = { calls += "set:$it"; value = it; true },
+            imeEnter = { calls += "ime"; value += "\n"; true },
+            afterImeValue = { value },
+        )
+        assertTrue(ok)
+        assertEquals(listOf("set:a", "ime", "set:a\nb"), calls)
+    }
+
+    @Test
+    fun imeWithoutModeledNewlineNeverSynthesizesOne() {
+        val calls = mutableListOf<String>()
+        var value = ""
+        val ok = appendWithReturn(
+            "a\nb",
+            currentValue = { value },
+            setText = { calls += "set:$it"; value = it; true },
+            imeEnter = { calls += "ime"; true },
+            afterImeValue = { value },
+        )
+        assertTrue(ok)
+        assertEquals(listOf("set:a", "ime", "set:ab"), calls)
+    }
+
+    @Test
+    fun imeRefreshFailureStopsAppend() {
+        val calls = mutableListOf<String>()
+        var value = ""
+        val ok = appendWithReturn(
+            "a\nb",
+            currentValue = { value },
+            setText = { calls += "set:$it"; value = it; true },
+            imeEnter = { calls += "ime"; true },
+            afterImeValue = { null },
+        )
+        assertFalse(ok)
+        assertEquals(listOf("set:a", "ime"), calls)
+    }
+
+    @Test
+    fun cancellationAfterFirstSetStopsBeforeIme() {
+        val cancellation = RequestCancellation()
+        val sets = mutableListOf<String>()
+        var value = ""
+        var imeCalls = 0
+        val ok = try {
+            appendWithReturn(
+                "a\nb",
+                currentValue = { value },
+                setText = {
+                    sets += it
+                    value = it
+                    cancellation.cancel()
+                    true
+                },
+                imeEnter = { imeCalls += 1; true },
+                check = cancellation::check,
+            )
+            "completed"
+        } catch (e: DriverException) {
+            e.code
+        }
+        assertEquals("DRIVER_ERROR", ok)
+        assertEquals(listOf("a"), sets)
+        assertEquals(0, imeCalls)
+    }
+
+    @Test
+    fun successfulImeNewlineRemainsInNextSubmittedValue() {
+        val calls = mutableListOf<String>()
+        var value = ""
+        val ok = appendWithReturn(
+            "a\nb",
+            currentValue = { value },
+            setText = { calls += it; value = it; true },
+            imeEnter = { value += "\n"; true },
+            afterImeValue = { value },
+        )
+        assertTrue(ok)
+        assertEquals(listOf("a", "a\nb"), calls)
+    }
+
+    @Test
+    fun trailingNewlineSkipsImeValueRefresh() {
+        var refreshes = 0
+        var value = "cur"
+        val ok = appendWithReturn(
+            "a\n",
+            currentValue = { value },
+            setText = { value = it; true },
+            imeEnter = { true },
+            afterImeValue = { refreshes += 1; null },
+        )
+        assertTrue(ok)
+        assertEquals(0, refreshes)
+    }
+
+    @Test
+    fun newlineFallsBackToLiteralWhenNoImeEnter() {
+        val sets = mutableListOf<String>()
+        var value = "x"
+        val ok = appendWithReturn(
+            "a\nb",
+            currentValue = { value },
+            setText = { sets += it; value = it; true },
+            imeEnter = null,
+        )
+        assertTrue(ok)
+        assertEquals(listOf("xa", "xa\n", "xa\nb"), sets)
+    }
+
+    @Test
+    fun refusedStepStopsRemainingCalls() {
+        val sets = mutableListOf<String>()
+        var value = ""
+        var ime = 0
+        var calls = 0
+        val ok = appendWithReturn(
+            "a\nb\nc",
+            currentValue = { value },
+            setText = {
+                calls += 1
+                sets += it
+                value = it
+                calls < 2
+            },
+            imeEnter = { ime += 1; true },
+        )
+        assertFalse(ok)
+        assertEquals(1, ime)
+        assertEquals(2, calls)
+    }
+}
+
+class IdentityHashTest {
+
+    private class CountingSource(
+        private val hash: Int,
+        private val onCompare: () -> Unit,
+        var same: (Any?) -> Boolean = { false },
+        private val kids: List<NodeSource> = emptyList(),
+        private val pkg: String = "com.fake",
+    ) : NodeSource {
+        override val className = "android.widget.FrameLayout"
+        override var packageName: String? = pkg
+        override var viewIdResourceName: String? = null
+        override var text: String? = null
+        override var contentDescription: String? = null
+        override var hintText: String? = null
+        override var isPassword = false
+        override var isEditable = false
+        override var isEnabled = true
+        override var isSelected = false
+        override var isFocused = false
+        override var isCheckable = false
+        override var isChecked = false
+        override var isHeading = false
+        override var isClickable = false
+        override var isScrollable = false
+        override var hasActionClick = false
+        override var hasActionSetText = false
+        override var hasActionScroll = false
+        override val boundsInScreen = RawBounds(0, 0, 100, 50)
+        override val childCount get() = kids.size
+        override fun child(index: Int): NodeSource? = kids.getOrNull(index)
+        override fun sameNode(other: NodeSource): Boolean {
+            onCompare()
+            return same(other)
+        }
+        override val identityHash: Int get() = hash
+        override fun close() {}
+    }
+
+    @Test
+    fun nearCapUniqueHashesKeepComparisonsLinear() {
+        var compares = 0
+        fun node(hash: Int, kids: List<NodeSource> = emptyList()): CountingSource =
+            CountingSource(hash, { compares += 1 }, { false }, kids)
+        // 64-deep chain of unique hashes: worst case is one bucket lookup per node.
+        var root = node(1)
+        for (i in 2..64) {
+            root = node(i, listOf(root))
+        }
+        val read = TreeReader().read(root, 0L, 1.0)
+        assertTrue(read.complete)
+        assertTrue(
+            "64 unique-hash nodes must stay linear, saw $compares",
+            compares <= 64,
+        )
+    }
+
+    @Test
+    fun sameHashCollisionStillDistinguishesViaSameNode() {
+        var compares = 0
+        val first = CountingSource(42, { compares += 1 })
+        val second = CountingSource(42, { compares += 1 })
+        first.same = { it === first }
+        second.same = { it === second }
+        val dupOfFirst = CountingSource(42, { compares += 1 })
+        first.same = { it === first || it === dupOfFirst }
+        val root = CountingSource(7, { compares += 1 }, kids = listOf(first, second, dupOfFirst))
+        val read = TreeReader().read(root, 0L, 1.0)
+        assertEquals("sameNode must distinguish same-hash nodes", 2, read.root.children.size)
+    }
+
+    @Test
+    fun staleRereadCannotCorruptSubsequentSpans() {
+        var reads = 0
+        val sets = mutableListOf<String>()
+        val ok = appendWithReturn(
+            "a\nb",
+            currentValue = { reads += 1; "base" },
+            setText = { sets += it; true },
+            imeEnter = { true },
+            afterImeValue = { "basea\n" },
+        )
+        assertTrue(ok)
+        assertEquals("currentValue must be read exactly once", 1, reads)
+        assertEquals(listOf("basea", "basea\nb"), sets)
     }
 }

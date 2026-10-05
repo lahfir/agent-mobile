@@ -80,13 +80,44 @@ pub fn seed_console_token(home: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
+fn avd_home_from(
+    avd_home: Option<&str>,
+    user_home: Option<&str>,
+    emulator_home: Option<&str>,
+    home: Option<&str>,
+) -> Option<PathBuf> {
+    avd_home
+        .map(PathBuf::from)
+        .or_else(|| user_home.map(|p| PathBuf::from(p).join("avd")))
+        .or_else(|| emulator_home.map(|p| PathBuf::from(p).join("avd")))
+        .or_else(|| home.map(|p| PathBuf::from(p).join(".android/avd")))
+}
+
+fn inherited_avd_home() -> Result<PathBuf, Failure> {
+    let env_path = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let avd = env_path("ANDROID_AVD_HOME");
+    let user = env_path("ANDROID_USER_HOME");
+    let emulator = env_path("ANDROID_EMULATOR_HOME");
+    let home = env_path("HOME");
+    avd_home_from(
+        avd.as_deref(),
+        user.as_deref(),
+        emulator.as_deref(),
+        home.as_deref(),
+    )
+    .ok_or_else(|| common::fail("no parent AVD home is available"))
+}
+
 pub fn cli(home: &Path, args: &[&str]) -> Result<std::process::Output, Failure> {
+    let avd_home = inherited_avd_home()?;
+    let avd_home = avd_home.to_string_lossy();
     run(
         args,
         &home.to_path_buf(),
         &[
             ("AGENT_MOBILE_REPO_ROOT", env!("CARGO_MANIFEST_DIR")),
             ("AGENT_MOBILE_BOOT_BUDGET_SECS", "600"),
+            ("ANDROID_AVD_HOME", avd_home.as_ref()),
         ],
     )
 }
@@ -129,6 +160,7 @@ pub fn check_entry(home: &Path, key: &str) -> Result<u32, Failure> {
         || e.device_id.as_deref() != Some("avd:agent-mobile-api37")
         || e.serial.is_none()
         || e.forward_port.is_none()
+        || e.device_port.is_none()
         || e.bridge_port.is_none()
         || !agent_mobile_core::process::pid_alive(e.pid)
     {
@@ -157,9 +189,10 @@ pub fn check_forward(home: &Path, key: &str, baseline: &BTreeSet<String>) -> Res
     let e = entry_for(&st, key)?;
     let mut expect = baseline.clone();
     expect.insert(format!(
-        "{} tcp:{} tcp:8770",
+        "{} tcp:{} tcp:{}",
         e.serial.clone().unwrap_or_default(),
-        e.forward_port.unwrap_or_default()
+        e.forward_port.unwrap_or_default(),
+        e.device_port.unwrap_or_default(),
     ));
     if forward_set()? != expect {
         return Err(common::fail("forward set is not baseline + owned row"));
@@ -263,6 +296,7 @@ pub fn driver_log_tail(home: &Path) -> String {
 /// rows, token files, and pids are gone and forwards equal the baseline —
 /// a mid-flow failure cannot leak a live serve while logs are collected.
 pub fn cleanup_remaining(home: &Path, baseline: &BTreeSet<String>) -> Result<(), Failure> {
+    live::cleanup_dead_rows(home)?;
     let st = state(home);
     let targets: Vec<(u32, String)> = st
         .devices
@@ -303,4 +337,34 @@ pub fn snapshot_id(v: &serde_json::Value) -> Result<String, Failure> {
 
 pub fn refs_count(v: &serde_json::Value) -> u64 {
     v["data"]["ref_count"].as_u64().unwrap_or(0)
+}
+
+#[path = "harness_live.rs"]
+pub mod live;
+
+pub use live::*;
+
+#[cfg(test)]
+mod tests {
+    use super::avd_home_from;
+
+    #[test]
+    fn avd_home_precedence_matches_android_tooling() {
+        assert_eq!(
+            avd_home_from(Some("/a"), Some("/u"), Some("/e"), Some("/h")),
+            Some("/a".into())
+        );
+        assert_eq!(
+            avd_home_from(None, Some("/u"), Some("/e"), Some("/h")),
+            Some("/u/avd".into())
+        );
+        assert_eq!(
+            avd_home_from(None, None, Some("/e"), Some("/h")),
+            Some("/e/avd".into())
+        );
+        assert_eq!(
+            avd_home_from(None, None, None, Some("/h")),
+            Some("/h/.android/avd".into())
+        );
+    }
 }

@@ -15,7 +15,7 @@ use crate::testkit::{FakeRunner, output};
 fn assert_os_probes_scoped(calls: &[Vec<String>]) {
     let probes: Vec<_> = calls
         .iter()
-        .filter(|c| c.iter().any(|a| a == "getprop"))
+        .filter(|c| c.iter().any(|a| a.contains("'getprop'")))
         .collect();
     assert_eq!(probes.len(), 3);
     for (probe, serial) in probes.iter().zip([
@@ -323,4 +323,73 @@ fn precancelled_boot_never_spawns_avd() {
         !runner.calls().iter().any(|c| c.iter().any(|a| a == "-avd")),
         "no emulator -avd command may issue when pre-cancelled"
     );
+}
+
+struct BootProbe {
+    emu: Result<&'static str, &'static str>,
+}
+
+impl crate::adb::CommandRunner for BootProbe {
+    fn run(
+        &self,
+        _program: &std::path::Path,
+        args: &[&str],
+        _timeout: std::time::Duration,
+    ) -> Result<crate::adb::CommandOutput, Failure> {
+        if args.contains(&"emu") {
+            return self
+                .emu
+                .map(|reply| output(true, reply, ""))
+                .map_err(|m| Failure::local(m, "check adb"));
+        }
+        if args.contains(&"-list-avds") {
+            return Ok(output(true, "real-avd\n", ""));
+        }
+        Ok(output(true, "emulator-5554\tdevice\n", ""))
+    }
+}
+
+fn boot_err(adb: &Adb) -> String {
+    boot_avd(
+        adb,
+        &PathBuf::from("emulator"),
+        "real-avd",
+        PathBuf::from("/tmp/am-test-boot.log").as_path(),
+        std::time::Duration::from_secs(1),
+    )
+    .err()
+    .map(|e| e.render())
+    .unwrap_or_default()
+}
+
+#[test]
+fn boot_propagates_live_row_identity_probe_failure() {
+    let adb = Adb::with_runner(
+        PathBuf::from("adb"),
+        std::sync::Arc::new(BootProbe {
+            emu: Err("emu probe refused"),
+        }),
+    );
+    assert!(boot_err(&adb).contains("emu probe refused"));
+}
+
+#[test]
+fn boot_fails_closed_on_unprovable_identity() {
+    let adb = Adb::with_runner(
+        PathBuf::from("adb"),
+        std::sync::Arc::new(BootProbe { emu: Ok("OK\n") }),
+    );
+    assert!(boot_err(&adb).contains("cannot prove AVD identity"));
+}
+
+#[test]
+fn boot_foreign_name_row_is_non_match_not_fatal() {
+    let adb = Adb::with_runner(
+        PathBuf::from("adb"),
+        std::sync::Arc::new(BootProbe {
+            emu: Ok("other-avd\nOK\n"),
+        }),
+    );
+    let err = boot_err(&adb);
+    assert!(!err.contains("cannot prove") && !err.is_empty(), "{err}");
 }

@@ -1,5 +1,6 @@
 package com.lahfir.agentmobile.driver
 
+import android.os.SystemClock
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -12,10 +13,12 @@ import java.security.MessageDigest
 import org.json.JSONObject
 
 internal class HttpServer(
-    private val port: Int = 8770,
+    private val port: Int = 0,
     private val token: String,
-    private val handler: (String, JSONObject) -> JSONObject,
+    private val handler: (String, JSONObject, RequestCancellation) -> JSONObject,
     private val socketTimeoutMs: Int = 10_000,
+    private val requestDeadlineMs: Int = 30_000,
+    private val clockMs: () -> Long = { SystemClock.elapsedRealtime() },
     private val maxHeaderBytes: Int = 1_048_576,
     private val maxBodyBytes: Int = 16_777_216,
 ) : AutoCloseable {
@@ -24,12 +27,15 @@ internal class HttpServer(
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
     private var activeClient: Socket? = null
+    private var activeCancellation: RequestCancellation? = null
     private var closed = false
 
     val localPort: Int
         get() = serverSocket?.localPort ?: -1
 
     internal fun hasActiveClient(): Boolean = synchronized(lock) { activeClient != null }
+
+    internal fun workerAlive(): Boolean = synchronized(lock) { acceptThread?.isAlive == true }
 
     fun start() {
         check(serverSocket == null) { "server already started" }
@@ -48,6 +54,7 @@ internal class HttpServer(
         synchronized(lock) {
             closed = true
             client = activeClient
+            activeCancellation?.cancel()
         }
         serverSocket?.let {
             try {
@@ -61,12 +68,17 @@ internal class HttpServer(
             } catch (_: IOException) {
             }
         }
-        acceptThread?.join(socketTimeoutMs.toLong() + JOIN_MARGIN_MS)
-        synchronized(lock) {
-            serverSocket = null
-            activeClient = null
+        val worker = acceptThread
+        worker?.interrupt()
+        worker?.join(socketTimeoutMs.toLong() + JOIN_MARGIN_MS)
+        if (worker == null || !worker.isAlive) {
+            synchronized(lock) {
+                serverSocket = null
+                activeClient = null
+                activeCancellation = null
+            }
+            acceptThread = null
         }
-        acceptThread = null
     }
 
     private fun acceptLoop(socket: ServerSocket) {
@@ -76,9 +88,11 @@ internal class HttpServer(
             } catch (_: IOException) {
                 break
             }
+            val cancellation = RequestCancellation()
             val refuse = synchronized(lock) {
                 if (closed) true else {
                     activeClient = client
+                    activeCancellation = cancellation
                     false
                 }
             }
@@ -90,10 +104,15 @@ internal class HttpServer(
                 break
             }
             try {
-                serve(client)
+                serve(client, cancellation)
             } catch (_: Exception) {
             } finally {
-                synchronized(lock) { if (activeClient === client) activeClient = null }
+                synchronized(lock) {
+                    if (activeClient === client) {
+                        activeClient = null
+                        activeCancellation = null
+                    }
+                }
                 try {
                     client.close()
                 } catch (_: IOException) {
@@ -102,12 +121,75 @@ internal class HttpServer(
         }
     }
 
-    private fun serve(client: Socket) {
-        client.soTimeout = socketTimeoutMs
-        val startMs = System.currentTimeMillis()
+    private fun serve(client: Socket, cancellation: RequestCancellation) {
+        val startMs = clockMs()
+        val deadlineMs = startMs + requestDeadlineMs
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val watchdog = Thread {
+            while (!finished.get()) {
+                val remaining = deadlineMs - clockMs()
+                if (remaining <= 0) {
+                    cancellation.cancel()
+                    try {
+                        client.close()
+                    } catch (_: IOException) {
+                    }
+                    break
+                }
+                try {
+                    Thread.sleep(minOf(remaining, 100L))
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }
+        watchdog.isDaemon = true
+        watchdog.name = "agent-mobile-http-deadline"
+        watchdog.start()
+        try {
+            serveWithinDeadline(client, cancellation, startMs, deadlineMs)
+        } finally {
+            finished.set(true)
+            val wasInterrupted = Thread.interrupted()
+            var interruptCaught = false
+            watchdog.interrupt()
+            try {
+                watchdog.join(JOIN_MARGIN_MS)
+            } catch (_: InterruptedException) {
+                interruptCaught = true
+                try {
+                    watchdog.join(JOIN_MARGIN_MS)
+                } catch (_: InterruptedException) {
+                }
+            }
+            if (wasInterrupted || interruptCaught) {
+                Thread.currentThread().interrupt()
+            }
+        }
+    }
+
+    private fun serveWithinDeadline(
+        client: Socket,
+        cancellation: RequestCancellation,
+        startMs: Long,
+        deadlineMs: Long,
+    ) {
+        var readTimeoutMs = -1
+        fun applyReadTimeout(): Unit {
+            val remaining = deadlineMs - clockMs()
+            if (remaining <= 0) {
+                throw java.net.SocketTimeoutException("request deadline exceeded")
+            }
+            val next = minOf(socketTimeoutMs.toLong(), remaining).coerceAtLeast(1).toInt()
+            if (next != readTimeoutMs) {
+                client.soTimeout = next
+                readTimeoutMs = next
+            }
+        }
+        applyReadTimeout()
         val input = BufferedInputStream(client.getInputStream())
 
-        val headBytes = readHead(input) ?: return
+        val headBytes = readHead(input, ::applyReadTimeout) ?: return
         val head = String(headBytes, Charsets.ISO_8859_1)
         val lines = head.split("\r\n")
         val requestParts = lines[0].split(" ")
@@ -158,6 +240,7 @@ internal class HttpServer(
         val body = ByteArray(contentLength)
         var offset = 0
         while (offset < contentLength) {
+            applyReadTimeout()
             val n = try {
                 input.read(body, offset, contentLength - offset)
             } catch (_: IOException) {
@@ -177,21 +260,29 @@ internal class HttpServer(
             return
         }
 
-        val (status, envelope) = try {
-            200 to Protocol.success(command, elapsedSince(startMs), handler(command, params))
+        cancellation.check()
+        val outcome = try {
+            val data = handler(command, params, cancellation)
+            cancellation.check()
+            200 to Protocol.success(command, elapsedSince(startMs), data)
         } catch (e: DriverException) {
-            409 to failure(command, startMs, e.code, e.message ?: e.code)
+            if (cancellation.isCancelled) null
+            else Protocol.statusForCode(e.code) to failure(command, startMs, e.code, e.message ?: e.code)
         } catch (e: Exception) {
-            500 to failure(command, startMs, "DRIVER_ERROR", e.message ?: e.javaClass.simpleName)
+            if (cancellation.isCancelled) null
+            else 500 to failure(command, startMs, "DRIVER_ERROR", e.message ?: e.javaClass.simpleName)
         }
-        writeResponse(client, status, envelope, headers)
+        if (outcome != null) {
+            writeResponse(client, outcome.first, outcome.second, headers)
+        }
     }
 
-    private fun readHead(input: InputStream): ByteArray? {
+    private fun readHead(input: InputStream, applyReadTimeout: () -> Unit): ByteArray? {
         val buf = ByteArrayOutputStream()
         var window = 0
         while (true) {
             if (buf.size() >= maxHeaderBytes) return null
+            applyReadTimeout()
             val b = try {
                 input.read()
             } catch (_: IOException) {
@@ -208,7 +299,7 @@ internal class HttpServer(
     private fun failure(command: String, startMs: Long, code: String, message: String): JSONObject =
         Protocol.failure(command, elapsedSince(startMs), code, message)
 
-    private fun elapsedSince(startMs: Long): Long = System.currentTimeMillis() - startMs
+    private fun elapsedSince(startMs: Long): Long = clockMs() - startMs
 
     private fun writeResponse(client: Socket, status: Int, envelope: JSONObject, requestHeaders: Map<String, String>) {
         val body: ByteArray
@@ -216,9 +307,14 @@ internal class HttpServer(
         val data = envelope.optJSONObject("data")
         val text = data?.opt("text")
         if (requestHeaders["accept"] == "text/plain" && text is String) {
+            val incomplete = if (data.has("complete") && !data.optBoolean("complete", true)) {
+                " complete=false"
+            } else {
+                ""
+            }
             val header = "app=${data.opt("app") ?: ""} snapshot=@${data.opt("snapshot_id") ?: ""}" +
                 " refs=${data.opt("ref_count") ?: 0} settled=${data.opt("settled") ?: ""}" +
-                " reads=${data.opt("reads") ?: ""} elapsed_ms=${envelope.opt("elapsed_ms") ?: ""}\n"
+                " reads=${data.opt("reads") ?: ""} elapsed_ms=${envelope.opt("elapsed_ms") ?: ""}$incomplete\n"
             body = (header + text + "\n").toByteArray(Charsets.UTF_8)
             contentType = "text/plain"
         } else {

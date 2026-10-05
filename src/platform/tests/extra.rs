@@ -176,3 +176,119 @@ fn combine_reports_each_side_independently() {
     assert!(text.contains("Xcode"), "{text}");
     assert!(text.contains("setup-android-sdk.sh"), "{text}");
 }
+
+use agent_mobile_core::state::{PendingForward, StateStore};
+
+#[test]
+fn pending_sweep_removes_exact_tuple_and_preserves_live_row() -> Result<(), Failure> {
+    let store = pending_store("exact");
+    let live_marker = agent_mobile_core::process::process_identity(std::process::id())
+        .ok_or_else(|| Failure::local("no marker", "fail"))?;
+    let dead = PendingForward {
+        serial: "dead-serial".to_owned(),
+        device_port: 9_001,
+        ..dead_pending("x", 41_001)
+    };
+    let live = PendingForward {
+        owner_pid: std::process::id(),
+        owner_started_at: live_marker,
+        serial: "live-serial".to_owned(),
+        local_port: 41_002,
+        device_port: 9_002,
+    };
+    write_pending(&store, vec![dead.clone(), live.clone()]);
+
+    let removed = std::sync::Mutex::new(Vec::new());
+    crate::platform::android_ops::sweep_pending_with(&store, Some("dead-serial"), |rec| {
+        removed.lock().unwrap_or_else(|_| unreachable!()).push((
+            rec.serial.clone(),
+            rec.local_port,
+            rec.device_port,
+        ));
+        Ok(())
+    })?;
+    let removed = removed.into_inner().unwrap_or_else(|_| unreachable!());
+    assert_eq!(
+        removed,
+        vec![("dead-serial".to_owned(), 41_001, 9_001)],
+        "only the dead owner's exact tuple may be reclaimed: {removed:?}"
+    );
+    assert_eq!(store.pending_forwards(), vec![live]);
+    Ok(())
+}
+
+#[test]
+fn reap_stale_runner_fails_on_unproven_or_stuck_runner() {
+    use agent_mobile_core::state::SessionEntry;
+    let reap = |e: &SessionEntry,
+                l: fn(u32) -> bool,
+                t: fn(u32) -> bool,
+                w: fn(u32, std::time::Duration) -> bool| {
+        crate::platform::android_ops::reap_stale_runner(e, l, t, w)
+            .err()
+            .map(|e| e.render())
+            .unwrap_or_default()
+    };
+    let mut e = SessionEntry::new("u".to_owned(), 1, "t".to_owned());
+    e.runner_pid = Some(4242);
+    let err = reap(&e, |_| true, |_| false, |_, _| true);
+    assert!(err.contains("4242") && err.contains("kill 4242"), "{err}");
+    assert!(reap(&e, |_| true, |_| true, |_, _| false).contains("kill -KILL 4242"));
+    assert!(reap(&e, |_| false, |_| true, |_, _| true).is_empty());
+}
+
+fn dead_pending(serial: &str, port: u16) -> PendingForward {
+    PendingForward {
+        owner_pid: u32::MAX - 1,
+        owner_started_at: "ps:stale".to_owned(),
+        serial: serial.to_owned(),
+        local_port: port,
+        device_port: port % 1000 + 8_000,
+    }
+}
+
+fn pending_store(tag: &str) -> StateStore {
+    let dir = std::env::temp_dir().join(format!("am-sweep-{tag}-{}", std::process::id()));
+    let store = StateStore::at(&dir);
+    std::fs::create_dir_all(store.root()).unwrap_or_default();
+    store
+}
+
+fn write_pending(store: &StateStore, recs: Vec<PendingForward>) {
+    let mut state = store.load();
+    state.pending_forwards = recs;
+    std::fs::write(
+        store.state_file(),
+        serde_json::to_string(&state).unwrap_or_default(),
+    )
+    .unwrap_or_default();
+}
+
+#[test]
+fn pending_sweep_selected_failure_is_fatal_and_retains_record() {
+    let store = pending_store("fatal");
+    let dead = dead_pending("sel", 42_001);
+    write_pending(&store, vec![dead.clone()]);
+    let err = crate::platform::android_ops::sweep_pending_with(&store, Some("sel"), |_| {
+        Err(Failure::local("adb remove refused", "free it"))
+    })
+    .err()
+    .map(|e| e.message().to_owned())
+    .unwrap_or_default();
+    assert!(err.contains("cleanup failed"), "{err}");
+    assert_eq!(store.pending_forwards(), vec![dead]);
+}
+
+#[test]
+fn pending_sweep_unrelated_failure_is_note_and_retains_record() {
+    let store = pending_store("note");
+    let dead = dead_pending("other", 42_002);
+    write_pending(&store, vec![dead.clone()]);
+    assert!(
+        crate::platform::android_ops::sweep_pending_with(&store, Some("sel"), |_| {
+            Err(Failure::local("adb remove refused", "free it"))
+        })
+        .is_ok()
+    );
+    assert_eq!(store.pending_forwards(), vec![dead]);
+}

@@ -210,10 +210,10 @@ fn all_codes_render_verbatim_hints() {
 }
 
 #[test]
-fn driver_error_envelope_retries_once() {
+fn driver_error_envelope_requires_fresh_snapshot() {
     let rendered = Failure::driver(ErrorCode::DriverError, "the runner exploded").render();
     assert!(rendered.contains("DRIVER_ERROR"));
-    assert!(rendered.contains("retry once"));
+    assert!(rendered.contains("fresh snapshot"));
     assert!(!rendered.contains("checklist"));
     insta::assert_snapshot!("driver_error_render", rendered);
 }

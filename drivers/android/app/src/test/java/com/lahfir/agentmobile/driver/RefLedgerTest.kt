@@ -21,7 +21,7 @@ class RefLedgerTest {
         text: String = "",
         contentDescription: String = "",
         bounds: RawBounds = RawBounds(0, 0, 10, 10),
-    ) = NodeIdentity(className, role, resourceId, text, contentDescription, bounds)
+    ) = NodeIdentity(className, role, resourceId, text, contentDescription, bounds, packageName = "com.fake")
 
     private fun node(
         role: String = "button",
@@ -281,15 +281,23 @@ class RefLedgerTest {
                 isEditable = true,
                 isPassword = true,
                 text = "hunter2",
-                contentDescription = "Password",
+                contentDescription = "sentinel-desc",
+                hintText = "sentinel-hint",
             ),
         ))
         val read1 = TreeReader().read(fakeRoot, 0L, 1.0)
+        val pw = read1.root.children[0]
+        assertEquals("", pw.name)
+        assertEquals("", pw.value)
+        assertEquals("", pw.identity.text)
+        assertEquals("", pw.identity.contentDescription)
         val ledger = ledger()
         val out = ledger.mint(read1, true, 1, 0)
         val serialized = out.toString()
-        assertFalse("password value leaked into snapshot JSON", serialized.contains("hunter2"))
-        assertFalse("password value leaked into text listing", out.getString("text").contains("hunter2"))
+        for (sentinel in listOf("hunter2", "sentinel-desc", "sentinel-hint")) {
+            assertFalse("$sentinel leaked into snapshot JSON", serialized.contains(sentinel))
+            assertFalse("$sentinel leaked into text listing", out.getString("text").contains(sentinel))
+        }
 
         val fakeRoot2 = LedgerFakeNode(children = listOf(
             LedgerFakeNode(
@@ -332,6 +340,7 @@ class RefLedgerTest {
         override val childCount get() = children.size
         override fun child(index: Int): NodeSource? = children.getOrNull(index)
         override fun sameNode(other: NodeSource): Boolean = this === other
+        override val identityHash: Int get() = System.identityHashCode(this)
         override fun close() {}
     }
 

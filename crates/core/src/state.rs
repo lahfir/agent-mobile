@@ -9,6 +9,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 mod entry;
+mod journal;
+mod selection;
 
 pub use entry::{ResolvedEndpoint, SessionEntry};
 
@@ -28,18 +30,42 @@ pub const URL_ENV: &str = "AGENT_MOBILE_URL";
 /// Env var overriding the driver token for one invocation.
 pub const TOKEN_ENV: &str = "AGENT_MOBILE_TOKEN";
 
+/// One in-flight `adb forward` allocation recorded before the create call
+/// runs: lets a later invocation reclaim the exact `serial/local/device`
+/// row even when the owning session crashed before writing its state row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingForward {
+    /// Pid that created the forward.
+    pub owner_pid: u32,
+    /// [`crate::process::process_identity`] marker for `owner_pid`.
+    pub owner_started_at: String,
+    /// `adb` serial the forward was created on.
+    pub serial: String,
+    /// Host loopback port.
+    pub local_port: u16,
+    /// Device-side loopback port.
+    pub device_port: u16,
+}
+
 /// On-disk state: the remembered default device plus one entry per live
 /// driver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     /// Schema version; must equal [`STATE_VERSION`] to load.
     pub version: u32,
-    /// `--device`-selected key (legacy name or `platform:id`), reused when omitted.
+    /// `--device`-selected display name (v1 compatibility), reused when omitted.
     #[serde(default)]
     pub default_device: Option<String>,
+    /// Canonical `platform:id` key for the remembered default; written
+    /// alongside `default_device`, preferred at read time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_device_key: Option<String>,
     /// Live sessions keyed by the legacy name or collision-free `platform:id` key.
     #[serde(default)]
     pub devices: BTreeMap<String, SessionEntry>,
+    /// Forwarded tuples created but not yet attached to a session row.
+    #[serde(default)]
+    pub pending_forwards: Vec<PendingForward>,
 }
 
 impl Default for State {
@@ -47,13 +73,16 @@ impl Default for State {
         Self {
             version: STATE_VERSION,
             default_device: None,
+            default_device_key: None,
             devices: BTreeMap::new(),
+            pending_forwards: Vec::new(),
         }
     }
 }
 
 /// File-backed session store rooted at `~/.agent-mobile` (or an injected dir
 /// in tests). The root is created on first write, not on construction.
+#[derive(Clone)]
 pub struct StateStore {
     root: PathBuf,
 }
@@ -210,19 +239,32 @@ impl StateStore {
         self.update(|state| (state.devices.remove(device).is_some(), ()))
     }
 
+    /// Remember `key` as the canonical default and `display_name` as its
+    /// v1-compatible name; an unchanged pair skips the save.
+    ///
+    /// # Errors
+    /// Returns [`Failure::Local`] when the state cannot be saved.
+    pub fn remember_device_selection(&self, key: &str, display_name: &str) -> Result<(), Failure> {
+        self.update(|state| {
+            if state.default_device_key.as_deref() == Some(key)
+                && state.default_device.as_deref() == Some(display_name)
+            {
+                return (false, ());
+            }
+            state.default_device_key = Some(key.to_owned());
+            state.default_device = Some(display_name.to_owned());
+            (true, ())
+        })
+    }
+
     /// Remember `device` as the default for future invocations (`--device`);
-    /// an unchanged default skips the save.
+    /// compatibility wrapper for callers without display context — the
+    /// same string lands in both fields.
     ///
     /// # Errors
     /// Returns [`Failure::Local`] when the state cannot be saved.
     pub fn remember_device(&self, device: &str) -> Result<(), Failure> {
-        self.update(|state| {
-            if state.default_device.as_deref() == Some(device) {
-                return (false, ());
-            }
-            state.default_device = Some(device.to_owned());
-            (true, ())
-        })
+        self.remember_device_selection(device, device)
     }
 
     /// Deterministic token-file name for a device (see
@@ -294,15 +336,30 @@ impl StateStore {
         let url_set = env_url.is_some();
         let token_set = env_token.is_some();
         let state = self.load();
-        let name = device
-            .map(String::from)
-            .or_else(|| state.default_device.clone());
+        if !(url_set && token_set)
+            && let Some((name, entry)) = state.devices.iter().find(|(_, entry)| {
+                entry.process_started_at.is_none() && crate::process::pid_alive(entry.pid)
+            })
+        {
+            return Err(Failure::local(
+                format!(
+                    "pre-upgrade driver session for {name:?} is still running as pid {}, but its process identity cannot be verified safely",
+                    entry.pid
+                ),
+                "stop that existing `agent-mobile serve` process, then retry",
+            ));
+        }
+        let name = selection::choose_device_key(&state, device, url_set && token_set)?;
         let entry = name
             .as_ref()
-            .and_then(|n| state.devices.get(n).cloned())
-            .filter(|e| crate::process::pid_alive(e.pid));
-        let url = env_url.or_else(|| entry.as_ref().map(|e| e.url.clone()));
-        let token = env_token.or_else(|| entry.as_ref().and_then(|e| self.read_token(e).ok()));
+            .and_then(|n| state.devices.get(n))
+            .filter(|e| crate::process::process_matches(e.pid, e.process_started_at.as_deref()));
+        let url = env_url.or_else(|| entry.map(|e| e.url.clone()));
+        let token = match (env_token, entry) {
+            (Some(t), _) => Some(t),
+            (None, Some(e)) => Some(self.read_token(e)?),
+            (None, None) => None,
+        };
         match (url, token) {
             (Some(url), Some(token)) => Ok(Some(ResolvedEndpoint::new(url, name, token))),
             (None, _) if token_set => Err(Failure::usage(

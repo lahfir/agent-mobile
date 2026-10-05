@@ -40,9 +40,16 @@ fn launch_resolves_stops_and_starts_in_order() -> Result<(), LifecycleError> {
     let resolve = &calls[0];
     assert!(resolve[1..].windows(1).any(|w| w[0] == "s1"));
     assert!(resolve.iter().any(|a| a.contains("resolve-activity")));
-    assert_eq!(calls[1][3], "am");
-    assert!(calls[1].contains(&"force-stop".to_owned()));
-    assert!(calls[2].contains(&"com.pkg.app/.MainActivity".to_owned()));
+    assert_eq!(
+        calls[1][3], "'am' 'force-stop' 'com.pkg.app'",
+        "remote words arrive as one quoted shell string: {:?}",
+        calls[1]
+    );
+    assert!(
+        calls[2][3].contains("'com.pkg.app/.MainActivity'"),
+        "{:?}",
+        calls[2]
+    );
     Ok(())
 }
 
@@ -95,9 +102,10 @@ fn terminate_force_stops_only_observed_package() -> Result<(), LifecycleError> {
     ctl.terminate("com.target.app")?;
     let calls = runner.calls();
     let last = &calls[1];
-    assert!(last.contains(&"force-stop".to_owned()));
-    assert!(last.contains(&"com.target.app".to_owned()));
-    assert!(!last.iter().any(|a| a == "com.launcher"));
+    let remote = &last[3];
+    assert!(remote.contains("'force-stop'"), "{remote}");
+    assert!(remote.contains("'com.target.app'"), "{remote}");
+    assert!(!remote.contains("com.launcher"), "{remote}");
     Ok(())
 }
 
@@ -124,4 +132,29 @@ fn exception_line_fails() {
         ctl.launch("com.pkg.app"),
         Err(LifecycleError::Driver(_))
     ));
+}
+
+#[test]
+fn launch_rejects_shell_in_class_before_any_mutation() {
+    let (ctl, runner) = ctl_with(vec![output(true, "com.pkg.app/.Main;id\n", "")]);
+    assert!(matches!(
+        ctl.launch("com.pkg.app"),
+        Err(LifecycleError::BadRequest(_))
+    ));
+    assert_eq!(
+        runner.calls().len(),
+        1,
+        "only resolve ran — no force-stop/start: {:?}",
+        runner.calls()
+    );
+}
+
+#[test]
+fn launch_rejects_foreign_component_package() {
+    let (ctl, runner) = ctl_with(vec![output(true, "com.other/.Main\n", "")]);
+    assert!(matches!(
+        ctl.launch("com.pkg.app"),
+        Err(LifecycleError::BadRequest(_))
+    ));
+    assert_eq!(runner.calls().len(), 1);
 }

@@ -29,32 +29,27 @@ internal class Actions(
     },
 ) {
 
-    fun perform(identity: NodeIdentity, action: NodeAction): NodeActionResult = onTree { read, liveNodes ->
-        if (!read.complete) {
-            throw DriverException("DRIVER_ERROR", "live tree incomplete; cannot prove ref uniqueness")
-        }
-        val hits = liveNodes.filter { RefResolver.matches(identity, it.model.identity) }
-        if (hits.isEmpty()) {
-            throw DriverException("STALE_REF", "ref no longer matches a live element; re-snapshot")
-        }
-        if (hits.size > 1) {
-            throw DriverException("AMBIGUOUS_TARGET", "ref matches ${hits.size} live elements; re-snapshot")
-        }
-        val target = hits[0]
+    fun perform(
+        target: RefTarget,
+        action: NodeAction,
+        cancellation: RequestCancellation,
+    ): NodeActionResult = onTree(cancellation) { read, liveNodes ->
+        val target = RefResolver.resolveOne(target, read, "ref", liveNodes) { it.model.identity }
         val accepted = when (action) {
             NodeAction.Click -> target.click()
-            is NodeAction.AppendText -> target.appendText(action.text)
+            is NodeAction.AppendText -> target.appendText(action.text, cancellation)
             is NodeAction.Scroll -> target.scroll(action.direction)
         }
         NodeActionResult(read, target.model, accepted)
     }
 
-    fun appendToFocused(text: String): NodeActionResult = onTree { read, liveNodes ->
+    fun appendToFocused(text: String, cancellation: RequestCancellation): NodeActionResult = onTree(cancellation) { read, liveNodes ->
         if (!read.complete) {
             throw DriverException("DRIVER_ERROR", "live tree incomplete; cannot prove focused-node uniqueness")
         }
         val focused = liveNodes.filter {
-            "focused" in it.model.states && "Type" in it.model.availableActions
+            RefResolver.isActive(it.model.identity, read) &&
+                "focused" in it.model.states && "Type" in it.model.availableActions
         }
         if (focused.isEmpty()) {
             throw DriverException("DRIVER_ERROR", "no focused editable node")
@@ -63,10 +58,13 @@ internal class Actions(
             throw DriverException("DRIVER_ERROR", "multiple focused editable nodes")
         }
         val target = focused[0]
-        NodeActionResult(read, target.model, target.appendText(text))
+        NodeActionResult(read, target.model, target.appendText(text, cancellation))
     }
 
-    private fun <T> onTree(block: (TreeRead, List<LiveNode>) -> T): T = service.onMain {
+    private fun <T> onTree(
+        cancellation: RequestCancellation,
+        block: (TreeRead, List<LiveNode>) -> T,
+    ): T = service.onMain(cancellation) {
         val source = rootSource()
             ?: throw DriverException("DRIVER_ERROR", "no active accessibility window; focus a foreground app and retry")
         reader.useTree(source, 0L, densityProvider()) { read, liveNodes ->

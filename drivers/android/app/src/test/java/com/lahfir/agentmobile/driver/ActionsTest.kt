@@ -30,6 +30,8 @@ class ActionsTest {
         override var hasActionClick: Boolean = false,
         override var hasActionSetText: Boolean = false,
         override var hasActionScroll: Boolean = false,
+        override var isVisibleToUser: Boolean = true,
+        override var windowId: Int = 0,
         var bounds: RawBounds = RawBounds(0, 0, 100, 50),
         var children: List<FakeSource> = emptyList(),
         var clickResult: Boolean = true,
@@ -47,8 +49,9 @@ class ActionsTest {
         override val childCount get() = children.size
         override fun child(index: Int): NodeSource? = children.getOrNull(index)
         override fun sameNode(other: NodeSource): Boolean = (other as? FakeSource)?.id == id
+        override val identityHash: Int get() = id
         override fun performClick(): Boolean { clicks += 1; return clickResult }
-        override fun appendText(text: String): Boolean { appends += 1; appendedText = text; return appendResult }
+        override fun appendText(text: String, cancellation: RequestCancellation): Boolean { appends += 1; appendedText = text; return appendResult }
         override fun performScroll(direction: String): Boolean { scrolls += 1; scrolledDirection = direction; return scrollResult }
         override fun close() { closed = true }
     }
@@ -94,8 +97,9 @@ class ActionsTest {
         val target = FakeSource(2, className = "android.widget.Button", isClickable = true, hasActionClick = true)
         val root = FakeSource(1, children = listOf(target))
         val result = actions(root).perform(
-            NodeIdentity("android.widget.Button", "button", "", "", "", target.bounds),
+            RefTarget("com.fake", NodeIdentity("android.widget.Button", "button", "", "", "", target.bounds, packageName = "com.fake")),
             NodeAction.Click,
+            RequestCancellation(),
         )
         assertTrue(result.accepted)
         assertEquals(1, target.clicks)
@@ -107,8 +111,9 @@ class ActionsTest {
         val root = FakeSource(1)
         try {
             actions(root).perform(
-                NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(9, 9, 9, 9)),
+                RefTarget("com.fake", NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(9, 9, 9, 9), packageName = "com.fake")),
                 NodeAction.Click,
+                RequestCancellation(),
             )
             fail("expected STALE_REF")
         } catch (e: DriverException) {
@@ -123,8 +128,9 @@ class ActionsTest {
         val root = FakeSource(1, children = listOf(a, b))
         try {
             actions(root).perform(
-                NodeIdentity("android.widget.TextView", "text", "", "same", "", a.bounds),
+                RefTarget("com.fake", NodeIdentity("android.widget.TextView", "text", "", "same", "", a.bounds, packageName = "com.fake")),
                 NodeAction.Click,
+                RequestCancellation(),
             )
             fail("expected AMBIGUOUS_TARGET")
         } catch (e: DriverException) {
@@ -138,7 +144,7 @@ class ActionsTest {
         val shared = FakeSource(2)
         val root = FakeSource(1, children = listOf(shared, shared))
         try {
-            actions(root).perform(NodeIdentity("", "group", "", "", "", RawBounds(0, 0, 0, 0)), NodeAction.Click)
+            actions(root).perform(RefTarget("com.fake", NodeIdentity("", "group", "", "", "", RawBounds(0, 0, 0, 0), packageName = "com.fake")), NodeAction.Click, RequestCancellation())
             fail("expected DRIVER_ERROR")
         } catch (e: DriverException) {
             assertEquals("DRIVER_ERROR", e.code)
@@ -150,8 +156,9 @@ class ActionsTest {
         val target = FakeSource(2, className = "android.widget.Button", clickResult = false)
         val root = FakeSource(1, children = listOf(target))
         val result = actions(root).perform(
-            NodeIdentity("android.widget.Button", "button", "", "", "", target.bounds),
+            RefTarget("com.fake", NodeIdentity("android.widget.Button", "button", "", "", "", target.bounds, packageName = "com.fake")),
             NodeAction.Click,
+            RequestCancellation(),
         )
         assertFalse(result.accepted)
         assertEquals(target.bounds, result.node.identity.rawBounds)
@@ -167,7 +174,7 @@ class ActionsTest {
             hasActionSetText = true,
         )
         val root = FakeSource(1, children = listOf(focused))
-        val result = actions(root).appendToFocused("hello")
+        val result = actions(root).appendToFocused("hello", RequestCancellation())
         assertTrue(result.accepted)
         assertEquals("hello", focused.appendedText)
     }
@@ -178,7 +185,7 @@ class ActionsTest {
             FakeSource(id, className = "android.widget.EditText", isEditable = true, isFocused = true, hasActionSetText = true)
         }
         try {
-            actions(FakeSource(1)).appendToFocused("x")
+            actions(FakeSource(1)).appendToFocused("x", RequestCancellation())
             fail("expected DRIVER_ERROR")
         } catch (e: DriverException) {
             assertEquals("DRIVER_ERROR", e.code)
@@ -187,7 +194,7 @@ class ActionsTest {
         val b = editable(3)
         val root = FakeSource(1, children = listOf(a, b))
         try {
-            actions(root).appendToFocused("x")
+            actions(root).appendToFocused("x", RequestCancellation())
             fail("expected DRIVER_ERROR")
         } catch (e: DriverException) {
             assertEquals("DRIVER_ERROR", e.code)
@@ -206,7 +213,7 @@ class ActionsTest {
         )
         val root = FakeSource(1, children = listOf(shared, shared))
         try {
-            actions(root).appendToFocused("x")
+            actions(root).appendToFocused("x", RequestCancellation())
             fail("expected DRIVER_ERROR")
         } catch (e: DriverException) {
             assertEquals("DRIVER_ERROR", e.code)
@@ -219,10 +226,81 @@ class ActionsTest {
         val target = FakeSource(2, isScrollable = true, hasActionScroll = true, bounds = RawBounds(10, 10, 90, 90))
         val root = FakeSource(1, children = listOf(target))
         val result = actions(root).perform(
-            NodeIdentity("android.widget.FrameLayout", "group", "", "", "", target.bounds),
+            RefTarget("com.fake", NodeIdentity("android.widget.FrameLayout", "group", "", "", "", target.bounds, packageName = "com.fake")),
             NodeAction.Scroll("down"),
+            RequestCancellation(),
         )
         assertTrue(result.accepted)
         assertEquals("down", target.scrolledDirection)
+    }
+
+    @Test
+    fun crossAppRefPerformsNoAction() {
+        val target = FakeSource(2, className = "android.widget.Button", isClickable = true, hasActionClick = true)
+        val root = FakeSource(1, children = listOf(target))
+        try {
+            actions(root).perform(
+                RefTarget("com.other", NodeIdentity("android.widget.Button", "button", "", "", "", target.bounds, packageName = "com.fake")),
+                NodeAction.Click,
+                RequestCancellation(),
+            )
+            fail("expected STALE_REF")
+        } catch (e: DriverException) {
+            assertEquals("STALE_REF", e.code)
+        }
+        assertEquals(0, target.clicks)
+    }
+
+    @Test
+    fun hiddenRefRefusesSemanticActionBeforeDispatch() {
+        val target = FakeSource(
+            2,
+            className = "android.widget.Button",
+            isClickable = true,
+            hasActionClick = true,
+            isVisibleToUser = false,
+        )
+        val root = FakeSource(1, children = listOf(target))
+        try {
+            actions(root).perform(
+                RefTarget(
+                    "com.fake",
+                    NodeIdentity("android.widget.Button", "button", "", "", "", target.bounds, packageName = "com.fake", visibleToUser = false),
+                ),
+                NodeAction.Click,
+                RequestCancellation(),
+            )
+            fail("expected STALE_REF")
+        } catch (e: DriverException) {
+            assertEquals("STALE_REF", e.code)
+        }
+        assertEquals(0, target.clicks)
+    }
+
+    @Test
+    fun hiddenOrForeignWindowFocusedNodeIsNotActionable() {
+        for (case in listOf(
+            Triple("hidden", false, 0),
+            Triple("foreign-window", true, 99),
+        )) {
+            val (label, visible, window) = case
+            val focus = FakeSource(
+                2,
+                className = "android.widget.EditText",
+                isEditable = true,
+                isFocused = true,
+                hasActionSetText = true,
+                isVisibleToUser = visible,
+                windowId = window,
+            )
+            val root = FakeSource(1, children = listOf(focus))
+            try {
+                actions(root).appendToFocused("x", RequestCancellation())
+                fail("$label: expected DRIVER_ERROR")
+            } catch (e: DriverException) {
+                assertEquals("$label: ${e.message}", "DRIVER_ERROR", e.code)
+            }
+            assertEquals("$label: no append allowed", 0, focus.appends)
+        }
     }
 }

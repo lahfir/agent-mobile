@@ -76,7 +76,9 @@ impl ErrorCode {
             Self::BadRequest => "fix the request; do not retry unchanged",
             Self::UnknownCommand => "fix the client; do not retry",
             Self::Unauthorized => "fix AGENT_MOBILE_TOKEN; do not retry unchanged",
-            Self::DriverError => "retry once; escalate if it recurs",
+            Self::DriverError => {
+                "take a fresh snapshot to verify the current state before retrying; escalate if it recurs"
+            }
         }
     }
 

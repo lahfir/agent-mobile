@@ -13,9 +13,10 @@ use agent_mobile_core::error::Failure;
 
 use common::{code, stderr, stdout, tmp_home};
 use harness::{
-    check_device_survives, check_entry, check_forward, cleanup_remaining, cli, cli_ok_json,
-    device_key, driver_log_tail, entry_for, forward_set, refs_count, seed_console_token,
-    snapshot_id, state, terminate_and_wait,
+    check_device_survives, check_entry, check_forward, check_provider_denial, check_token_hygiene,
+    cleanup_remaining, cli, cli_ok_json, device_key, driver_log_tail, entry_for, first_tap_ref,
+    forward_set, refs_count, seed_console_token, sigkill_and_await_stale, snapshot_id, state,
+    terminate_and_wait,
 };
 
 #[path = "integration_android/harness.rs"]
@@ -56,19 +57,13 @@ fn flow(home: &Path, key: &str, baseline: &BTreeSet<String>) -> Result<(), Failu
     }
     let pid1 = check_entry(home, key)?;
     check_forward(home, key, baseline)?;
-    let launch = cli_ok_json(
-        home,
-        &[&dev, "--json", "launch", "com.google.android.deskclock"],
-    )?;
-    if launch["data"]["app"] != "com.google.android.deskclock" || refs_count(&launch) == 0 {
-        return Err(common::fail("launch returned no deskclock snapshot"));
-    }
-    let launch_id = snapshot_id(&launch)?;
-    let snap = cli_ok_json(home, &[&dev, "--json", "snapshot"])?;
-    let snap_id = snapshot_id(&snap)?;
-    if snap_id == launch_id || refs_count(&snap) == 0 || !snap["data"]["tree"].is_object() {
-        return Err(common::fail("snapshot not fresh or empty"));
-    }
+    check_token_hygiene(home, key)?;
+    let serial = entry_for(&state(home), key)?
+        .serial
+        .clone()
+        .unwrap_or_default();
+    check_provider_denial(&serial)?;
+    let snap_id = verbs_and_refs(home, &dev)?;
     let home_out = cli_ok_json(home, &[&dev, "--json", "home"])?;
     let home_id = snapshot_id(&home_out)?;
     if home_id == snap_id {
@@ -87,10 +82,6 @@ fn flow(home: &Path, key: &str, baseline: &BTreeSet<String>) -> Result<(), Failu
     if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
         return Err(common::fail("screenshot is not a PNG"));
     }
-    let serial = entry_for(&state(home), key)?
-        .serial
-        .clone()
-        .unwrap_or_default();
     terminate_and_wait(home, key, baseline)?;
     check_device_survives(&serial)?;
     let re = cli_ok_json(home, &[&dev, "--json", "status"])?;
@@ -102,9 +93,56 @@ fn flow(home: &Path, key: &str, baseline: &BTreeSet<String>) -> Result<(), Failu
         return Err(common::fail("re-serve reused the dead pid"));
     }
     check_forward(home, key, baseline)?;
+    let killed = sigkill_and_await_stale(home, key)?;
+    let re2 = cli_ok_json(home, &[&dev, "--json", "status"])?;
+    if re2["ok"] != true {
+        return Err(common::fail("post-SIGKILL status not ok"));
+    }
+    let pid3 = check_entry(home, key)?;
+    if pid3 == pid2 || pid3 == killed {
+        return Err(common::fail("stale reclaim did not start a new serve"));
+    }
+    check_forward(home, key, baseline)?;
     terminate_and_wait(home, key, baseline)?;
     check_device_survives(&serial)?;
     Ok(())
+}
+
+/// Verb surface on the live session: launch → snapshot → ref tap →
+/// `STALE_REF` → home; returns the last fresh snapshot id for the caller's
+/// downstream comparisons.
+fn verbs_and_refs(home: &Path, dev: &str) -> Result<String, Failure> {
+    let launch = cli_ok_json(
+        home,
+        &[dev, "--json", "launch", "com.google.android.deskclock"],
+    )?;
+    if launch["data"]["app"] != "com.google.android.deskclock" || refs_count(&launch) == 0 {
+        return Err(common::fail("launch returned no deskclock snapshot"));
+    }
+    let launch_id = snapshot_id(&launch)?;
+    let snap = cli_ok_json(home, &[dev, "--json", "snapshot"])?;
+    let mut snap_id = snapshot_id(&snap)?;
+    if snap_id == launch_id || refs_count(&snap) == 0 || !snap["data"]["tree"].is_object() {
+        return Err(common::fail("snapshot not fresh or empty"));
+    }
+    let Some(tap_ref) = first_tap_ref(&snap["data"]["tree"]) else {
+        return Err(common::fail("no tappable ref in deskclock snapshot"));
+    };
+    let tap = cli_ok_json(home, &[dev, "--json", "tap", &tap_ref])?;
+    if snapshot_id(&tap)? == snap_id {
+        return Err(common::fail("tap did not mint a fresh snapshot"));
+    }
+    let stale = cli(home, &[dev, "--json", "tap", &tap_ref])?;
+    if code(&stale) == 0 {
+        return Err(common::fail("stale ref accepted"));
+    }
+    let stale_env: serde_json::Value =
+        serde_json::from_str(&stdout(&stale)).map_err(|e| common::fail(&format!("{e}")))?;
+    if stale_env["error"]["code"] != "STALE_REF" {
+        return Err(common::fail("reused ref did not fail STALE_REF"));
+    }
+    snap_id = snapshot_id(&cli_ok_json(home, &[dev, "--json", "snapshot"])?)?;
+    Ok(snap_id)
 }
 
 #[test]

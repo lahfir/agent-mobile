@@ -12,7 +12,7 @@ use agent_mobile_core::error::ErrorCode;
 use agent_mobile_core::wire::Wire;
 use serde_json::json;
 
-use crate::driver::SecretToken;
+use crate::driver::{SecretToken, is_status_envelope};
 use crate::lifecycle::{LifecycleControl, LifecycleError, valid_package};
 
 /// Upstream address for the forwarded device listener.
@@ -25,14 +25,19 @@ fn upstream(upstream_port: u16) -> String {
 fn status_for_code(code: &str) -> &'static str {
     match ErrorCode::from_code(code) {
         Some(ErrorCode::Unauthorized) => "401 Unauthorized",
-        Some(_) => "409 Conflict",
-        None => "500 Internal Server Error",
+        Some(
+            ErrorCode::BadRequest
+            | ErrorCode::StaleRef
+            | ErrorCode::AmbiguousTarget
+            | ErrorCode::UnknownCommand,
+        ) => "409 Conflict",
+        _ => "500 Internal Server Error",
     }
 }
 
 use crate::proxy::{
-    AUTH_MESSAGE, IO_TIMEOUT, Request, bearer_matches, elapsed_ms, error_envelope, http_response,
-    success_envelope,
+    AUTH_MESSAGE, Request, UPSTREAM_TIMEOUT, bearer_matches, elapsed_ms, error_envelope,
+    http_response, http_response_typed, success_envelope,
 };
 
 /// Shared envelope write for the local routes.
@@ -119,9 +124,10 @@ pub(crate) fn lifecycle_route(
     let Some(body) = gate(sock, req, verb, token, started) else {
         return;
     };
-    let wire = Wire::with_timeout(&upstream(upstream_port), token.as_str(), IO_TIMEOUT);
+    let wants_text = req.header("accept").as_deref() == Some("text/plain");
+    let wire = Wire::with_timeout(&upstream(upstream_port), token.as_str(), UPSTREAM_TIMEOUT);
     if verb == "launch" {
-        launch_route(sock, &body, &wire, lifecycle, started);
+        launch_route(sock, &body, &wire, lifecycle, started, wants_text);
     } else {
         terminate_route(sock, &wire, lifecycle, started);
     }
@@ -143,6 +149,38 @@ fn lifecycle_fail(sock: &mut TcpStream, verb: &str, started: Instant, err: Lifec
     }
 }
 
+/// Authenticated upstream `status` before any ADB side effect.
+fn preflight_status(sock: &mut TcpStream, wire: &Wire, started: Instant) -> bool {
+    match wire.call("status", &json!({})) {
+        Ok(env) if is_status_envelope(&env) => true,
+        Ok(env) if !env.ok => {
+            let (code, msg) = env.error.map_or_else(
+                || ("DRIVER_ERROR".to_owned(), "status failed".to_owned()),
+                |e| (e.code, e.message),
+            );
+            respond(
+                sock,
+                status_for_code(&code),
+                &error_envelope(Some("launch"), Some(elapsed_ms(started)), &code, &msg),
+            );
+            false
+        }
+        _ => {
+            respond(
+                sock,
+                "500 Internal Server Error",
+                &error_envelope(
+                    Some("launch"),
+                    Some(elapsed_ms(started)),
+                    "DRIVER_ERROR",
+                    "pre-launch status probe failed",
+                ),
+            );
+            false
+        }
+    }
+}
+
 /// `launch`: `bundle_id` → adb start → upstream `snapshot {app}` →
 /// command/elapsed rewritten, snapshot data preserved.
 fn launch_route(
@@ -151,6 +189,7 @@ fn launch_route(
     wire: &Wire,
     lifecycle: &Arc<dyn LifecycleControl>,
     started: Instant,
+    wants_text: bool,
 ) {
     let bundle = body.get("bundle_id").and_then(|v| v.as_str()).unwrap_or("");
     if bundle.is_empty() || !valid_package(bundle) {
@@ -164,6 +203,9 @@ fn launch_route(
                 "bundle_id must be a valid package name",
             ),
         );
+        return;
+    }
+    if !preflight_status(sock, wire, started) {
         return;
     }
     if let Err(e) = lifecycle.launch(bundle) {
@@ -194,11 +236,25 @@ fn launch_route(
         }
         Ok(env) => match env.data {
             Some(Data::Snapshot(snap)) if snap.app == bundle => match serde_json::to_value(&snap) {
-                Ok(data) => respond(
-                    sock,
-                    "200 OK",
-                    &success_envelope("launch", elapsed_ms(started), &data),
-                ),
+                Ok(data) => {
+                    let elapsed = elapsed_ms(started);
+                    if wants_text {
+                        let body = format!(
+                            "app={} snapshot=@{} refs={} settled={} reads={} elapsed_ms={}{}\n{}\n",
+                            snap.app,
+                            snap.snapshot_id,
+                            snap.ref_count,
+                            snap.settled,
+                            snap.reads,
+                            elapsed,
+                            if snap.complete { "" } else { " complete=false" },
+                            snap.text
+                        );
+                        let _ = sock.write_all(&http_response_typed("200 OK", &body, "text/plain"));
+                    } else {
+                        respond(sock, "200 OK", &success_envelope("launch", elapsed, &data));
+                    }
+                }
                 Err(_) => respond(
                     sock,
                     "500 Internal Server Error",

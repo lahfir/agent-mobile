@@ -18,5 +18,7 @@ mod session;
 mod testkit;
 
 pub use device::{AndroidDeviceKind, AndroidDeviceState, AndroidScan, AndroidTarget, BootedAvd};
+pub use driver::LEGACY_DEVICE_PORT;
+pub use forward::ForwardJournal;
 pub use lifecycle::{LifecycleControl, LifecycleError};
 pub use session::{AndroidAdapter, AndroidSession};

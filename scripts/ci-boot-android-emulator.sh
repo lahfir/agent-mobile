@@ -51,6 +51,19 @@ avdmanager_bin() {
 adb_t() { timeout "$ADB_TIMEOUT" "$(adb_bin)" "$@"; }
 emu_t() { timeout "$EMU_TIMEOUT" "$(emulator_bin)" "$@"; }
 
+# Strict identity probe: succeeds only when `emu avd name` exits zero and
+# its first line is a nonempty name (never `OK`); prints that CR-trimmed
+# first line. Any command failure or empty/OK-only reply is exit 1 — the
+# caller must decide match/no-match itself; this helper never guesses.
+probe_avd_name() {
+    local serial="$1" out first
+    out=$(adb_t -s "$serial" emu avd name 2>/dev/null) || return 1
+    first=${out%%$'\n'*}
+    first=${first%$'\r'}
+    { [ -n "$first" ] && [ "$first" != "OK" ]; } || return 1
+    printf '%s\n' "$first"
+}
+
 valid_pid() { [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -gt 1 ]; }
 valid_serial() { [[ "${1:-}" =~ ^emulator-[0-9]+$ ]]; }
 
@@ -126,7 +139,8 @@ pid_is_our_emulator() {
 # the single serial whose `emu avd name` is exactly ours; exits 1 when
 # zero or more than one matches.
 unique_avd_serial() {
-    local row cand state name found=0 serial=""
+    local row cand state name found=0 serial="" devices
+    devices=$(adb_t devices 2>/dev/null) || return 2
     while IFS= read -r row; do
         read -r cand state _ <<< "$row"
         case "$cand" in
@@ -134,14 +148,12 @@ unique_avd_serial() {
             *) continue ;;
         esac
         [ "$state" = "device" ] || continue
-        name=$(adb_t -s "$cand" emu avd name 2>/dev/null | head -1 || true)
+        name=$(probe_avd_name "$cand") || return 2
         if [ "$name" = "$AVD_NAME" ]; then
             found=$((found + 1))
             serial="$cand"
         fi
-    done <<EOF
-$(adb_t devices 2>/dev/null | tail -n +2 || true)
-EOF
+    done <<< "$devices"
     [ "$found" -eq 1 ] || return 1
     echo "$serial"
 }
@@ -149,8 +161,8 @@ EOF
 # Before spawn: every live emulator row must answer `emu avd name`, and
 # none may already claim our exact AVD — CI only owns what it starts.
 reject_existing_avd() {
-    adb_t devices >/dev/null 2>&1 ||         fail "adb devices failed before spawn" "check the adb server health"
-    local row cand state name
+    local devices row cand state name
+    devices=$(adb_t devices) ||         fail "adb devices failed before spawn" "check the adb server health"
     while IFS= read -r row; do
         read -r cand state _ <<< "$row"
         case "$cand" in
@@ -158,12 +170,11 @@ reject_existing_avd() {
             *) continue ;;
         esac
         [ "$state" = "device" ] || continue
-        name=$(adb_t -s "$cand" emu avd name 2>/dev/null | head -1 || true)
+        name=$(probe_avd_name "$cand") ||             fail "cannot prove AVD identity for $cand" \
+                "check \`adb -s $cand emu avd name\` and retry"
         [ "$name" = "$AVD_NAME" ] &&             fail "an emulator already runs $AVD_NAME on $cand" \
                 "CI never adopts a foreign emulator; stop it or pick a new AVD"
-    done <<EOF
-$(adb_t devices 2>/dev/null | tail -n +2)
-EOF
+    done <<< "$devices"
 }
 
 # Every emulator-<n> row in state `device` gets a bounded `emu avd name`
@@ -173,6 +184,8 @@ wait_for_boot() {
     deadline=$((SECONDS + BOOT_BUDGET_SECS))
     while [ "$SECONDS" -lt "$deadline" ]; do
         matches=""
+        local devices
+        devices=$(adb_t devices) ||             { echo "adb devices failed during boot wait" >&2; return 1; }
         while IFS= read -r row; do
             read -r cand state _ <<< "$row"
             case "$cand" in
@@ -180,11 +193,12 @@ wait_for_boot() {
                 *) continue ;;
             esac
             [ "$state" = "device" ] || continue
-            name=$(adb_t -s "$cand" emu avd name 2>/dev/null | head -1 || true)
+            name=$(probe_avd_name "$cand") || {
+                echo "cannot prove AVD identity for $cand" >&2
+                return 1
+            }
             [ "$name" = "$AVD_NAME" ] && matches="$matches $cand"
-        done <<EOF
-$(adb_t devices 2>/dev/null | tail -n +2 || true)
-EOF
+        done <<< "$devices"
         # shellcheck disable=SC2086
         set -- $matches
         if [ "$#" -gt 1 ]; then
@@ -298,23 +312,39 @@ cmd_stop() {
     [ -z "$serial" ] || valid_serial "$serial" || \
         fail "serial file content $serial is not an emulator serial" "inspect $SERIAL_FILE"
     adb="$(adb_bin 2>/dev/null || true)"
+    if valid_serial "${serial:-}" && { [ -z "$adb" ] || [ ! -x "$adb" ]; }; then
+        fail "adb unavailable for the recorded serial $serial" \
+            "restore the SDK/adb path; state is retained"
+    fi
     # A valid PID without a serial means start died before boot_completed
     # wrote it — start already rejected pre-existing same-name emulators,
     # so a unique exact-name AVD correlation is provably ours.
     if [ -n "$pid" ] && [ -z "$serial" ] && [ -n "$adb" ] && [ -x "$adb" ]; then
-        serial=$(unique_avd_serial 2>/dev/null || true)
+        local rc=0
+        serial=$(unique_avd_serial 2>/dev/null) || rc=$?
+        if [ "$rc" -eq 2 ]; then
+            fail "cannot prove AVD identity for a live emulator row"                 "check adb server and \`emu avd name\` probes, then retry stop"
+        fi
     fi
-    # Kill by adb only when the recorded serial is a live emulator whose
-    # console name is exactly our AVD — never another emulator's row.
-    if valid_serial "$serial" && [ -n "$adb" ] && [ -x "$adb" ] && \
+    # Kill by adb only when ALL ownership links hold: recorded PID alive
+    # AND still an emulator running our AVD, recorded serial in `device`
+    # state, and its console name exactly ours. Any lost link skips the
+    # adb kill — the live-serial re-check below still fails closed.
+    if pid_is_our_emulator "${pid:-}" && valid_serial "$serial" && \
+        [ -n "$adb" ] && [ -x "$adb" ] && \
         timeout "$ADB_TIMEOUT" "$adb" devices 2>/dev/null | \
         awk '{print $1, $2}' | grep -qx "$serial device"; then
-        name=$(timeout "$ADB_TIMEOUT" "$adb" -s "$serial" emu avd name 2>/dev/null | head -1 || true)
-        if [ "$name" = "$AVD_NAME" ]; then
-            timeout "$ADB_TIMEOUT" "$adb" -s "$serial" emu kill >/dev/null 2>&1 || true
+        if name=$(probe_avd_name "$serial"); then
+            if [ "$name" = "$AVD_NAME" ]; then
+                timeout "$ADB_TIMEOUT" "$adb" -s "$serial" emu kill >/dev/null 2>&1 || true
+            else
+                echo "serial $serial reports AVD '$name', not $AVD_NAME — skipping emu kill" >&2
+            fi
         else
-            echo "serial $serial reports AVD '$name', not $AVD_NAME — skipping emu kill" >&2
+            echo "cannot prove AVD identity for $serial — skipping emu kill" >&2
         fi
+    elif [ -n "${serial:-}" ] && valid_serial "$serial"; then
+        echo "skipping emu kill: recorded pid ${pid:-none} not proven to be $AVD_NAME" >&2
     fi
     if [ -n "$pid" ]; then
         local waited=0
@@ -343,9 +373,15 @@ cmd_stop() {
     # If the owned serial still answers as OUR booted AVD, stop failed —
     # never hide a live emulator behind a successful stop.
     if [ -n "$adb" ] && [ -x "$adb" ] && valid_serial "${serial:-}"; then
-        if timeout "$ADB_TIMEOUT" "$adb" devices 2>/dev/null | \
+        local devices_now
+        devices_now=$(timeout "$ADB_TIMEOUT" "$adb" devices 2>/dev/null) || \
+            fail "adb devices failed during the final stop proof" \
+                "check the adb server; state is retained"
+        if printf '%s\n' "$devices_now" | \
             awk '{print $1, $2}' | grep -qx "$serial device"; then
-            name=$(timeout "$ADB_TIMEOUT" "$adb" -s "$serial" emu avd name 2>/dev/null | head -1 || true)
+            name=$(probe_avd_name "$serial") || \
+                fail "cannot prove AVD identity for $serial" \
+                    "check \`adb -s $serial emu avd name\`; the row is still live"
             [ "$name" = "$AVD_NAME" ] && \
                 fail "emulator $serial still runs $AVD_NAME" \
                     "kill it with: adb -s $serial emu kill"

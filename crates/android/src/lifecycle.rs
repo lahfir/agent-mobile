@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::adb::Adb;
+use crate::adb::{Adb, diagnostic_output};
 use crate::driver::PACKAGE;
 
 /// Launcher category for `resolve-activity`.
@@ -69,6 +69,32 @@ pub(crate) fn valid_package(package: &str) -> bool {
         })
 }
 
+/// A resolved `pkg/class` is usable only with exactly one slash, a valid
+/// package, and a nonempty class of `[A-Za-z0-9_.$]`; an explicit package
+/// lookup must resolve to that same package — anything else fails before
+/// any `force-stop`/`start` mutation reaches the device.
+fn valid_component(component: &str, package: Option<&str>) -> Result<String, LifecycleError> {
+    let bad = || LifecycleError::BadRequest(format!("malformed component {component:?}"));
+    if component.matches('/').count() != 1 {
+        return Err(bad());
+    }
+    let (pkg, class) = component.split_once('/').ok_or_else(bad)?;
+    if !valid_package(pkg)
+        || class.is_empty()
+        || !class
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'))
+    {
+        return Err(bad());
+    }
+    if package.is_some_and(|p| p != pkg) {
+        return Err(LifecycleError::BadRequest(format!(
+            "package {package:?} resolved to foreign component {component:?}"
+        )));
+    }
+    Ok(component.to_owned())
+}
+
 impl AdbLifecycle {
     /// Control bound to one serial.
     #[must_use]
@@ -79,12 +105,12 @@ impl AdbLifecycle {
         }
     }
 
-    /// One `adb -s <serial> shell …` that must succeed and carry no
-    /// `Error:`/`Exception` text.
+    /// One remote shell command (words quoted at the adb boundary) that
+    /// must succeed and carry no `Error:`/`Exception` text.
     fn shell(&self, op: &str, args: &[&str]) -> Result<String, LifecycleError> {
         let out = self
             .adb
-            .scoped(&self.serial, args)
+            .remote_shell(&self.serial, args)
             .map_err(|e| LifecycleError::Driver(format!("adb {op} failed: {}", e.message())))?;
         let text = format!("{} {}", out.stdout, out.stderr);
         let bad_line = text.lines().any(|line| {
@@ -95,7 +121,7 @@ impl AdbLifecycle {
             return Err(LifecycleError::Driver(format!(
                 "adb {op} failed on {}: {}",
                 self.serial,
-                text.trim()
+                diagnostic_output(&out)
             )));
         }
         Ok(out.stdout)
@@ -105,7 +131,6 @@ impl AdbLifecycle {
     /// `package` is only present for explicit per-package lookups.
     fn resolve(&self, package: Option<&str>, category: &str) -> Result<String, LifecycleError> {
         let mut args = vec![
-            "shell",
             "cmd",
             "package",
             "resolve-activity",
@@ -127,7 +152,7 @@ impl AdbLifecycle {
             .filter(|l| l.contains('/') && !l.contains(' '))
             .collect();
         match components.as_slice() {
-            [single] => Ok((*single).to_owned()),
+            [single] => Ok(valid_component(single, package)?),
             _ => Err(LifecycleError::BadRequest(format!(
                 "resolve-activity returned {} components",
                 components.len()
@@ -154,13 +179,8 @@ impl LifecycleControl for AdbLifecycle {
             )));
         }
         let component = self.resolve(Some(package), CAT_LAUNCHER)?;
-        if !component.starts_with(&format!("{package}/")) {
-            return Err(LifecycleError::BadRequest(format!(
-                "package {package} resolved to foreign component {component}"
-            )));
-        }
-        self.shell("force-stop", &["shell", "am", "force-stop", package])?;
-        self.shell("start", &["shell", "am", "start", "-W", "-n", &component])?;
+        self.shell("force-stop", &["am", "force-stop", package])?;
+        self.shell("start", &["am", "start", "-W", "-n", &component])?;
         Ok(())
     }
 
@@ -182,7 +202,7 @@ impl LifecycleControl for AdbLifecycle {
                 "refusing to terminate the home launcher {package}"
             )));
         }
-        self.shell("force-stop", &["shell", "am", "force-stop", package])?;
+        self.shell("force-stop", &["am", "force-stop", package])?;
         Ok(())
     }
 }

@@ -6,15 +6,15 @@ use std::sync::Arc;
 use agent_mobile_core::error::Failure;
 
 use super::{
-    DEVICE_PORT, PACKAGE, SERVICE_COMPONENT, enable_service, enable_service_bounded, ensure_apk,
-    install, merge_enabled_services, provision,
+    PACKAGE, SERVICE_COMPONENT, enable_service, enable_service_bounded, ensure_apk, install,
+    merge_enabled_services, provision,
 };
 use crate::adb::{Adb, CommandOutput};
-use crate::forward::{create_forward, remove_forward};
 use crate::testkit::{FakeRunner, output};
 
 const TOKEN: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
-const PROVISION: &str = "result=Bundle[{token=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq}]";
+const PROVISION: &str =
+    "result=Bundle[{token=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq port=9876}]";
 
 fn adb_with(replies: Vec<CommandOutput>) -> (Adb, Arc<FakeRunner>) {
     let runner = FakeRunner::scripted(replies);
@@ -27,10 +27,11 @@ fn adb_with(replies: Vec<CommandOutput>) -> (Adb, Arc<FakeRunner>) {
 #[test]
 fn provision_extracts_token_and_redacts() -> Result<(), Failure> {
     let (adb, _) = adb_with(vec![output(true, PROVISION, "")]);
-    let token = provision(&adb, "s1")?;
-    assert_eq!(token.as_str(), TOKEN);
-    assert_eq!(format!("{token:?}"), "<redacted>");
-    assert_eq!(format!("{token}"), "<redacted>");
+    let got = provision(&adb, "s1")?;
+    assert_eq!(got.token.as_str(), TOKEN);
+    assert_eq!(got.device_port, 9876);
+    assert_eq!(format!("{:?}", got.token), "<redacted>");
+    assert_eq!(format!("{}", got.token), "<redacted>");
     Ok(())
 }
 
@@ -80,7 +81,13 @@ fn enable_skips_writes_when_already_set() -> Result<(), Failure> {
     let (adb, runner) = adb_with(replies);
     enable_service(&adb, "s1")?;
     let calls = runner.calls();
-    assert!(!calls.iter().any(|c| c.contains(&"put".to_owned())));
+    assert!(!calls.iter().any(|c| c.iter().any(|a| a.contains("'put'"))));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.iter().any(|a| a.contains("'getprop'"))),
+        "already-enabled path must not probe qemu: {calls:?}"
+    );
     Ok(())
 }
 
@@ -90,8 +97,10 @@ fn enable_writes_only_the_diff() -> Result<(), Failure> {
     let merged = format!("{existing}:{SERVICE_COMPONENT}");
     let replies = vec![
         output(true, existing, ""),
-        output(true, "", ""),
         output(true, "1", ""),
+        output(true, "1", ""),
+        output(true, existing, ""),
+        output(true, "", ""),
         output(true, &merged, ""),
         output(
             true,
@@ -104,10 +113,10 @@ fn enable_writes_only_the_diff() -> Result<(), Failure> {
     let calls = runner.calls();
     let puts: Vec<_> = calls
         .iter()
-        .filter(|c| c.contains(&"put".to_owned()))
+        .filter(|c| c.iter().any(|a| a.contains("'put'")))
         .collect();
     assert_eq!(puts.len(), 1);
-    assert!(puts[0].iter().any(|a| a == &merged));
+    assert!(puts[0].iter().any(|a| a.contains(&format!("'{merged}'"))));
     assert!(calls.iter().all(|c| c[0] == "-s" && c[1] == "s1"));
     Ok(())
 }
@@ -132,71 +141,16 @@ fn install_incompatible_gives_explicit_remedy() {
 }
 
 #[test]
-fn forward_roundtrip_owns_exact_row() -> Result<(), Failure> {
-    let replies = vec![
-        output(true, "other tcp:1 tcp:2", ""),
-        output(true, "58285", ""),
-        output(
-            true,
-            &format!("emulator-5554 tcp:58285 tcp:{DEVICE_PORT}\nother tcp:1 tcp:2"),
-            "",
-        ),
-        output(true, "", ""),
-    ];
-    let (adb, runner) = adb_with(replies);
-    let port = create_forward(&adb, "emulator-5554")?;
-    assert_eq!(port, 58285);
-    remove_forward(&adb, "emulator-5554", port)?;
-    let calls = runner.calls();
-    let last = &calls[3];
-    assert_eq!(
-        last,
-        &["-s", "emulator-5554", "forward", "--remove", "tcp:58285"]
-    );
-    assert!(!last.iter().any(|a| a == &"tcp:1".to_owned()));
-    Ok(())
-}
-
-#[test]
-fn forward_fails_when_row_absent() {
-    let (adb, runner) = adb_with(vec![
-        output(
-            true,
-            "emulator-5554 tcp:7000 tcp:8770\nother tcp:1 tcp:2",
-            "",
-        ),
-        output(true, "59999", ""),
-        output(
-            true,
-            "emulator-5554 tcp:7000 tcp:8770\nother tcp:1 tcp:2",
-            "",
-        ),
-        output(true, "", ""),
-    ]);
-    assert!(create_forward(&adb, "emulator-5554").is_err());
-    let calls = runner.calls();
-    assert!(calls.iter().any(|c| {
-        c.iter().map(String::as_str).collect::<Vec<_>>()
-            == ["-s", "emulator-5554", "forward", "--remove", "tcp:59999"]
-    }));
-    assert!(
-        !calls
-            .iter()
-            .any(|c| c.iter().any(|a| a == "tcp:7000" || a == "tcp:1"))
-    );
-}
-
-#[test]
 fn apk_env_override_wins() -> Result<(), Failure> {
     let dir = std::env::temp_dir().join(format!("am-apk-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(Failure::from)?;
     let apk = dir.join("driver.apk");
     std::fs::write(&apk, b"apk").map_err(Failure::from)?;
-    let runner: std::sync::Arc<dyn crate::adb::CommandRunner> = FakeRunner::scripted(vec![]);
+    let (adb, _r) = adb_with(vec![]);
     let got = ensure_apk(
         Some(apk.as_path()),
         PathBuf::from("/missing").as_path(),
-        &runner,
+        &adb,
     )?;
     assert_eq!(got, apk);
     Ok(())
@@ -205,14 +159,22 @@ fn apk_env_override_wins() -> Result<(), Failure> {
 #[test]
 fn token_parse_requires_exact_bundle_field() {
     let (adb, _r) = adb_with(vec![
-        output(true, &format!("Bundle[{{token={TOKEN}}}]"), ""),
-        output(true, &format!("Bundle[{{not_token={TOKEN}}}]"), ""),
-        output(true, &format!("Bundle[{{token={}}}]", &TOKEN[..42]), ""),
-        output(true, &format!("Bundle[{{token={TOKEN}x}}]"), ""),
-        output(true, &format!("Bundle[{{token={}*}}]", &TOKEN[..42]), ""),
+        output(true, &format!("Bundle[{{token={TOKEN} port=9}}]"), ""),
+        output(true, &format!("Bundle[{{not_token={TOKEN} port=9}}]"), ""),
         output(
             true,
-            &format!("Bundle[{{a=1,token={TOKEN},token={TOKEN}}}]"),
+            &format!("Bundle[{{token={} port=9}}]", &TOKEN[..42]),
+            "",
+        ),
+        output(true, &format!("Bundle[{{token={TOKEN}x port=9}}]"), ""),
+        output(
+            true,
+            &format!("Bundle[{{token={}* port=9}}]", &TOKEN[..42]),
+            "",
+        ),
+        output(
+            true,
+            &format!("Bundle[{{a=1,token={TOKEN},token={TOKEN},port=9}}]"),
             "",
         ),
     ]);
@@ -298,6 +260,9 @@ fn dumpsys_needs_bound_service_label() {
 fn put_refusal_names_restricted_settings() {
     let (adb, _r) = adb_with(vec![
         output(true, "a.b/.C", ""),
+        output(true, "0", ""),
+        output(true, "1", ""),
+        output(true, "a.b/.C", ""),
         output(false, "", "Permission denial"),
     ]);
     let err = enable_service(&adb, "s1")
@@ -308,44 +273,82 @@ fn put_refusal_names_restricted_settings() {
     assert!(err.contains("Accessibility"), "{err}");
     assert!(err.contains("Agent Mobile Driver"), "{err}");
 }
-
 #[test]
-fn forward_cleanup_on_list_failure() {
-    let (adb, runner) = adb_with(vec![
-        output(true, "", ""),
-        output(true, "59999", ""),
-        output(false, "", "list broke"),
-        output(true, "", ""),
-    ]);
-    assert!(create_forward(&adb, "emulator-5554").is_err());
-    let calls = runner.calls();
-    assert!(
-        calls.iter().any(|c| c
-            == &vec![
-                "-s".to_owned(),
-                "emulator-5554".to_owned(),
-                "forward".to_owned(),
-                "--remove".to_owned(),
-                "tcp:59999".to_owned(),
-            ]),
-        "{calls:?}"
-    );
+fn port_parse_requires_bounded_complete_field() {
+    let t = "x".repeat(43);
+    for (body, want) in [
+        ("Bundle[{token=T port=9876}]", Some(9876)),
+        ("Bundle[{port=1, token=T}]", Some(1)),
+        ("Bundle[{token=T,port=65535}]", Some(65535)),
+        ("result=Bundle[{token=T port=9}]", Some(9)),
+        ("Bundle[{token=T port=0}]", None),
+        ("Bundle[{token=T port=65536}]", None),
+        ("Bundle[{token=T port=987x}]", None),
+        ("Bundle[{token=T port=}]", None),
+        ("Bundle[{token=T airport=9}]", None),
+        ("Bundle[{token=T port=9 port=8}]", None),
+        ("Bundle[{token=T}]", None),
+    ] {
+        let body = body.replace("token=T", &format!("token={t}"));
+        let (adb, _r) = adb_with(vec![output(true, &body, "")]);
+        let got = provision(&adb, "s1");
+        match want {
+            Some(p) => assert_eq!(got.map(|g| g.device_port).ok(), Some(p), "{body}"),
+            None => assert!(got.is_err(), "{body} accepted a bad port"),
+        }
+    }
 }
 
 #[test]
-fn forward_malformed_port_diffs_rows() {
+fn disabled_physical_device_never_writes() {
+    for qemu_reply in [
+        output(true, "0", ""),
+        output(true, "", ""),
+        output(true, "qemu-1x", ""),
+        output(false, "1", "getprop refused"),
+    ] {
+        let (adb, runner) = adb_with(vec![
+            output(true, "a.b/.C", ""),
+            output(true, "0", ""),
+            qemu_reply,
+        ]);
+        let err = enable_service(&adb, "s1")
+            .err()
+            .map(|e| e.render())
+            .unwrap_or_default();
+        assert!(err.contains("Accessibility"), "{err}");
+        assert!(err.contains("Agent Mobile Driver"), "{err}");
+        assert!(err.contains("Allow restricted settings"), "{err}");
+        let calls = runner.calls();
+        assert!(
+            !calls.iter().any(|c| c.contains(&"put".to_owned())),
+            "physical/unproven device must see zero writes: {calls:?}"
+        );
+    }
+}
+
+#[test]
+fn emulator_enabled_needs_no_qemu_probe() -> Result<(), Failure> {
+    let existing = format!("a.b/.C:{SERVICE_COMPONENT}");
     let (adb, runner) = adb_with(vec![
-        output(true, "other tcp:1 tcp:2", ""),
-        output(true, "not-a-port", ""),
+        output(true, &existing, ""),
+        output(true, "1", ""),
+        output(true, &existing, ""),
         output(
             true,
-            "other tcp:1 tcp:2\nemulator-5554 tcp:9999 tcp:8770",
+            "Bound services:{Service[label=Agent Mobile Driver, feedbackType[0]]}",
             "",
         ),
-        output(true, "", ""),
     ]);
-    assert!(create_forward(&adb, "emulator-5554").is_err());
-    let calls = runner.calls();
-    assert!(calls.iter().any(|c| c.iter().any(|a| a == "tcp:9999")));
-    assert!(!calls.iter().any(|c| c.iter().any(|a| a == "tcp:1")));
+    enable_service(&adb, "s1")?;
+    assert!(
+        !runner
+            .calls()
+            .iter()
+            .any(|c| c.contains(&"getprop".to_owned())),
+        "enabled device must not probe qemu"
+    );
+    Ok(())
 }
+
+mod corrections;

@@ -155,8 +155,43 @@ def scenario(b):
     b.scenario.append({"ms": round((time.perf_counter() - start) * 1000), "steps": steps + 2, "ok": ok})
 
 
+def select_device(devices, selector):
+    exact_key = [d for d in devices if d.get("key") == selector]
+    if len(exact_key) == 1:
+        return exact_key[0]
+    stable = [d for d in devices if selector in (d.get("id"), d.get("udid"))]
+    if len(stable) == 1:
+        return stable[0]
+    names = [d for d in devices if d.get("name") == selector]
+    return names[0] if len(names) == 1 else None
+
+
+def canonical_bench_selection(selected, selector):
+    """(device_key, pinned): canonical `key` when the row carries one,
+    else the raw selector so a remembered display name still resolves."""
+    key = selected.get("key")
+    return (key, True) if key else (selector, selector is not None)
+
+
+def simulator_udid(selected, selector):
+    """Simulator UDID for a selected row, or a SystemExit reason.
+
+    Only an explicitly non-iOS platform is rejected — a legacy row with no
+    platform/key stays accepted and derives its UDID from `udid`.
+    """
+    if not selected:
+        raise SystemExit(f"no simulator matching {selector!r}; pass --device <name> (see `agent-mobile devices`)")
+    platform = selected.get("platform")
+    if platform is not None and platform != "ios":
+        raise SystemExit(f"benchmark device {selector!r} is {platform}; iOS simulators only")
+    udid = selected.get("id") or selected.get("udid")
+    if not udid:
+        raise SystemExit(f"no simulator UDID for {selector!r}; pass --device <name> (see `agent-mobile devices`)")
+    return udid
+
+
 def meta(b, runs, udid):
-    dev = next((d for d in json.loads(b.call("devices")[2] or b"{}").get("devices", []) if d["udid"] == udid), {})
+    dev = select_device(json.loads(b.call("devices")[2] or b"{}").get("devices", []), udid) or {}
     return {"stamp": time.strftime("%Y-%m-%d %H:%M"), "runs": runs, "device": b.device, "os": dev.get("os"),
             "sha": sh("git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"),
             "dirty": bool(sh("git", "-C", str(ROOT), "status", "--porcelain")),
@@ -188,9 +223,11 @@ def main():
     runs, colds = (5, 1) if a.quick else (a.runs, a.cold)
     device = a.device or (json.loads(STATE.read_text()).get("default_device") if STATE.exists() else None)
     b = Bench(a.bin, device, bool(a.device))
-    udid = next((d["udid"] for d in json.loads(b.call("devices")[2])["devices"] if d["name"] == device), None)
-    if not udid:
-        raise SystemExit(f"no simulator named {device!r}; pass --device <name> (see `agent-mobile devices`)")
+    devices = json.loads(b.call("devices")[2])["devices"]
+    selected = select_device(devices, device)
+    udid = simulator_udid(selected, device)
+    device, pinned = canonical_bench_selection(selected, device)
+    b = Bench(a.bin, device, pinned)
     for n in range(colds):
         print(f"cold boot {n + 1}/{colds}", flush=True)
         cold(b, udid)

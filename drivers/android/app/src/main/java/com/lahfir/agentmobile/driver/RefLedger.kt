@@ -7,27 +7,53 @@ import kotlin.math.abs
 
 internal data class ResolvedNode(val node: NodeModel, val baseline: TreeRead)
 
+internal data class RefTarget(val app: String, val identity: NodeIdentity)
+
 internal object RefResolver {
 
-    fun resolve(identity: NodeIdentity, live: TreeRead, ref: String): NodeModel {
-        if (!live.complete) {
-            throw DriverException("DRIVER_ERROR", "live tree incomplete; cannot prove ref uniqueness")
-        }
-        val matches = mutableListOf<NodeModel>()
+    fun resolve(target: RefTarget, live: TreeRead, ref: String): NodeModel {
+        val nodes = mutableListOf<NodeModel>()
         fun walk(node: NodeModel) {
-            if (matches(identity, node.identity)) {
-                matches += node
-            }
+            nodes += node
             node.children.forEach(::walk)
         }
         walk(live.root)
+        return resolveOne(target, live, ref, nodes) { it.identity }
+    }
+
+    fun <T> resolveOne(
+        target: RefTarget,
+        live: TreeRead,
+        ref: String,
+        candidates: List<T>,
+        identity: (T) -> NodeIdentity,
+    ): T {
+        if (target.app != live.app) {
+            throw DriverException("STALE_REF", "ref $ref belongs to ${target.app}, not ${live.app}; re-snapshot")
+        }
+        if (!live.complete) {
+            throw DriverException("DRIVER_ERROR", "live tree incomplete; cannot prove ref uniqueness")
+        }
+        val matches = candidates.filter { matches(target.identity, identity(it)) }
         if (matches.isEmpty()) {
             throw DriverException("STALE_REF", "ref $ref no longer matches a live element; re-snapshot")
         }
         if (matches.size > 1) {
             throw DriverException("AMBIGUOUS_TARGET", "ref $ref matches ${matches.size} live elements; re-snapshot")
         }
+        requireActive(identity(matches[0]), live, ref)
         return matches[0]
+    }
+
+    fun isActive(identity: NodeIdentity, live: TreeRead): Boolean {
+        val root = live.root.identity
+        return identity.visibleToUser && identity.packageName == live.app && identity.windowId == root.windowId
+    }
+
+    private fun requireActive(identity: NodeIdentity, live: TreeRead, ref: String) {
+        if (!isActive(identity, live)) {
+            throw DriverException("STALE_REF", "ref $ref is not visible in the active app window; re-snapshot")
+        }
     }
 
     fun matches(a: NodeIdentity, b: NodeIdentity): Boolean =
@@ -36,6 +62,9 @@ internal object RefResolver {
             a.resourceId == b.resourceId &&
             a.text == b.text &&
             a.contentDescription == b.contentDescription &&
+            a.packageName == b.packageName &&
+            a.visibleToUser == b.visibleToUser &&
+            a.windowId == b.windowId &&
             abs(a.rawBounds.left - b.rawBounds.left) <= 1 &&
             abs(a.rawBounds.top - b.rawBounds.top) <= 1 &&
             abs(a.rawBounds.right - b.rawBounds.right) <= 1 &&
@@ -45,7 +74,9 @@ internal object RefResolver {
 internal class RefLedger(
     private val newSnapshotId: () -> String = { generateSnapshotId() },
 ) {
-    private var refs: Map<String, NodeIdentity> = emptyMap()
+    private var refs: Map<String, RefTarget> = emptyMap()
+
+    private var snapshotApp: String? = null
 
     var snapshotId: String = ""
         private set
@@ -62,14 +93,14 @@ internal class RefLedger(
         }
         val id = chosen
             ?: throw DriverException("DRIVER_ERROR", "snapshot id generator failed to produce a fresh valid id")
-        val newRefs = LinkedHashMap<String, NodeIdentity>()
+        val newRefs = LinkedHashMap<String, RefTarget>()
         val lines = mutableListOf<String>()
         var sequence = 0
 
         fun serialize(node: NodeModel, printedDepth: Int): JSONObject {
             sequence += 1
             val ref = "@$id:e$sequence"
-            newRefs[ref] = node.identity
+            newRefs[ref] = RefTarget(read.app, node.identity)
             val printed = node.name.isNotEmpty() || node.value.isNotEmpty() || node.availableActions.isNotEmpty()
             if (printed) {
                 var line = "  ".repeat(printedDepth) + ref + " " + node.role + " \"" + clean(node.name) + "\""
@@ -121,11 +152,12 @@ internal class RefLedger(
             .put("text", lines.joinToString("\n"))
             .put("tree", treeJson)
         refs = newRefs
+        snapshotApp = read.app
         snapshotId = id
         return out
     }
 
-    fun lookup(any: Any?): NodeIdentity {
+    fun lookup(any: Any?): RefTarget {
         if (any !is String) {
             throw DriverException("BAD_REQUEST", "ref required")
         }
@@ -138,9 +170,17 @@ internal class RefLedger(
             ?: throw DriverException("STALE_REF", "ref $any no longer matches a live element; re-snapshot")
     }
 
+    fun invalidateIfAppChanged(app: String) {
+        if (snapshotApp != null && snapshotApp != app) {
+            refs = emptyMap()
+            snapshotApp = null
+            snapshotId = ""
+        }
+    }
+
     fun resolve(any: Any?, live: TreeRead): ResolvedNode {
-        val identity = lookup(any)
-        return ResolvedNode(RefResolver.resolve(identity, live, any.toString()), live)
+        val target = lookup(any)
+        return ResolvedNode(RefResolver.resolve(target, live, any.toString()), live)
     }
 
     private fun parseRef(ref: String): Pair<String, Int>? {

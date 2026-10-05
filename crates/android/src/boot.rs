@@ -70,11 +70,21 @@ fn valid_avd_name(name: &str) -> bool {
 
 /// Find the emulator row reporting `name` as its AVD, keeping its state.
 /// A failed `devices` probe is a hard error, never "not running".
-fn find_avd_row(adb: &Adb, name: &str) -> Result<Option<DeviceRow>, Failure> {
+/// `strict_identity` fails closed on any unproven emulator row (used
+/// pre-spawn so a duplicate can never launch); relaxed mode treats an
+/// unproven row as still booting and keeps scanning others.
+fn find_avd_row(
+    adb: &Adb,
+    name: &str,
+    strict_identity: bool,
+) -> Result<Option<DeviceRow>, Failure> {
     let out = adb.unscoped(&["devices"])?;
     if !out.success {
         return Err(Failure::local(
-            format!("adb devices failed: {}", out.stderr.trim()),
+            format!(
+                "adb devices failed: {}",
+                crate::adb::diagnostic_output(&out)
+            ),
             "restart the adb server and retry",
         ));
     }
@@ -82,18 +92,23 @@ fn find_avd_row(adb: &Adb, name: &str) -> Result<Option<DeviceRow>, Failure> {
         if kind_of(&row.serial) != AndroidDeviceKind::Emulator {
             continue;
         }
-        if let Ok(Some(found)) = avd_name(adb, &row.serial)
-            && found == name
-        {
-            return Ok(Some(row));
+        match avd_name(adb, &row.serial)?.as_deref() {
+            Some(found) if found == name => return Ok(Some(row)),
+            None if strict_identity => {
+                return Err(Failure::local(
+                    format!("cannot prove AVD identity for {}", row.serial),
+                    format!("check `adb -s {} emu avd name` and retry", row.serial),
+                ));
+            }
+            _ => {}
         }
     }
     Ok(None)
 }
 
 /// Poll until a correlated row is `device` and `sys.boot_completed` is `1`.
-/// Offline/unauthorized rows surface an executable remedy; the deadline is
-/// `budget` from `started`.
+/// Offline rows remain pending; unauthorized rows surface an executable
+/// remedy. The deadline is `budget` from `started`.
 fn await_avd_ready(
     adb: &Adb,
     name: &str,
@@ -111,12 +126,12 @@ fn await_avd_ready(
         }
         let found = match pending.take() {
             Some(row) => Some(row),
-            None => find_avd_row(adb, name)?,
+            None => find_avd_row(adb, name, false)?,
         };
         if let Some(row) = found {
             match row.state.as_str() {
                 "device" if boot_completed(adb, &row.serial) => return Ok(row.serial),
-                "offline" | "unauthorized" => {
+                "unauthorized" => {
                     return Err(Failure::local(
                         format!("AVD {name:?} is {} on {}", row.state, row.serial),
                         "accept the USB debugging prompt or run `adb reconnect` and retry",
@@ -137,7 +152,7 @@ fn await_avd_ready(
 
 /// Whether `sys.boot_completed` reports `1` on `serial`.
 fn boot_completed(adb: &Adb, serial: &str) -> bool {
-    adb.scoped(serial, &["shell", "getprop", "sys.boot_completed"])
+    adb.remote_shell(serial, &["getprop", "sys.boot_completed"])
         .map(|o| o.stdout.trim() == "1")
         .unwrap_or(false)
 }
@@ -194,7 +209,7 @@ pub(crate) fn boot_avd_until(
         ));
     }
     let deadline = Instant::now() + budget;
-    let first = find_avd_row(adb, name)?;
+    let first = find_avd_row(adb, name, true)?;
     let mut pid = 0;
     if first.is_none() {
         if cancelled.load(Ordering::Relaxed) {
@@ -221,3 +236,6 @@ pub(crate) fn boot_avd_until(
         log: log.to_path_buf(),
     })
 }
+
+#[cfg(test)]
+mod tests;

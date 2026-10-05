@@ -3,6 +3,7 @@
 //! identical `serve` lifecycle contract.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -10,10 +11,10 @@ use agent_mobile_android::{AndroidAdapter, AndroidSession};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::ios;
 use agent_mobile_core::process::{BOOT_POLL, ServeChild, boot_budget, mint_token, tcp_ready_at};
-use agent_mobile_core::state::SessionEntry;
+use agent_mobile_core::state::{SessionEntry, StateStore};
 use agent_mobile_core::wire::Wire;
 
-use super::android_ops::{android_entry_fields, android_serial};
+use super::android_ops::{StateForwardJournal, android_entry_fields, android_serial};
 use super::{Platform, PlatformDevice, TRUST_MARKERS};
 
 /// An exited runtime's verdict.
@@ -39,14 +40,16 @@ pub struct PlatformRuntime {
     backend: Option<Backend>,
     platform: Platform,
     device_id: String,
+    device_name: Option<String>,
     url: String,
     token: String,
     serial: Option<String>,
     forward_port: Option<u16>,
+    device_port: Option<u16>,
     bridge_port: Option<u16>,
     apk_source: Option<PathBuf>,
     emulator_pid: Option<u32>,
-    retry_forward: Option<(String, u16)>,
+    retry_forward: Option<(String, u16, u16)>,
     stopped: bool,
 }
 
@@ -59,15 +62,36 @@ impl PlatformRuntime {
     ///
     /// # Errors
     /// [`Failure::Local`] on boot, launch, or readiness failure.
-    pub fn start(device: &PlatformDevice, log: &Path, term: &AtomicBool) -> Result<Self, Failure> {
+    pub fn start(
+        device: &PlatformDevice,
+        log: &Path,
+        term: &Arc<AtomicBool>,
+        store: &StateStore,
+    ) -> Result<Self, Failure> {
         match device.platform() {
             Platform::Ios => Self::start_ios(device, log, term),
-            Platform::Android => Self::start_android(device, log, term),
+            Platform::Android => Self::start_android(device, log, term, store),
+        }
+    }
+
+    /// Clear the Android pending-forward journal record — call only after
+    /// the session row is fully registered; the row then owns cleanup.
+    ///
+    /// # Errors
+    /// [`Failure::Local`] when the journal clear fails.
+    pub fn commit_startup(&mut self) -> Result<(), Failure> {
+        match self.backend.as_mut() {
+            Some(Backend::Android(session)) => session.commit_forward_journal(),
+            _ => Ok(()),
         }
     }
 
     /// The exact P1 iOS bring-up, unchanged in behavior.
-    fn start_ios(device: &PlatformDevice, log: &Path, term: &AtomicBool) -> Result<Self, Failure> {
+    fn start_ios(
+        device: &PlatformDevice,
+        log: &Path,
+        term: &Arc<AtomicBool>,
+    ) -> Result<Self, Failure> {
         let Some(d) = device.ios_device() else {
             return Err(Failure::local("not an iOS device", "report a bug"));
         };
@@ -87,10 +111,12 @@ impl PlatformRuntime {
             backend: Some(Backend::Ios(child)),
             platform: Platform::Ios,
             device_id: d.udid.clone(),
+            device_name: Some(device.name().to_owned()),
             url,
             token,
             serial: None,
             forward_port: None,
+            device_port: None,
             bridge_port: None,
             apk_source: None,
             emulator_pid: None,
@@ -99,11 +125,14 @@ impl PlatformRuntime {
         })
     }
 
-    /// Android bring-up: state gate → optional AVD boot → session.
+    /// Android bring-up: state gate → optional AVD boot → session; the
+    /// cancellation flag flows into `start_session_until` and is checked
+    /// again between the probe/bridge boundaries.
     fn start_android(
         device: &PlatformDevice,
         log: &Path,
-        term: &AtomicBool,
+        term: &Arc<AtomicBool>,
+        store: &StateStore,
     ) -> Result<Self, Failure> {
         let Some(target) = device.android_target() else {
             return Err(Failure::local("not an Android target", "report a bug"));
@@ -111,16 +140,33 @@ impl PlatformRuntime {
         let adapter = AndroidAdapter::from_environment()?;
         let (serial, emulator_pid) = android_serial(target, |avd| {
             eprintln!("booting AVD {avd} — log: {}", log.display());
-            adapter.boot_avd_until(avd, log, boot_budget(), term)
+            adapter.boot_avd_until(avd, log, boot_budget(), term.as_ref())
         })?;
-        let session = adapter.start_session(&serial)?;
+        if term.load(Ordering::Relaxed) {
+            return Err(Failure::local("operation interrupted", "rerun the command"));
+        }
+        let session = adapter.start_session_until_journaled(
+            &serial,
+            term.clone(),
+            Arc::new(StateForwardJournal::new(store)),
+        )?;
+        if term.load(Ordering::Relaxed) {
+            match session.close() {
+                Ok(()) => {
+                    return Err(Failure::local("operation interrupted", "rerun the command"));
+                }
+                Err(cleanup) => return Err(cleanup),
+            }
+        }
         Ok(Self {
             url: session.url().to_owned(),
             token: session.token().to_owned(),
             platform: Platform::Android,
             device_id: device.id().to_owned(),
+            device_name: Some(device.name().to_owned()),
             serial: Some(serial),
             forward_port: Some(session.forward_port()),
+            device_port: Some(session.device_port()),
             bridge_port: Some(session.local_port()),
             apk_source: Some(session.apk_source().to_path_buf()),
             emulator_pid,
@@ -150,15 +196,19 @@ impl PlatformRuntime {
         let mut e = SessionEntry::new(self.url.clone(), std::process::id(), token_file);
         e.platform = Some(self.platform.as_str().to_owned());
         e.device_id = Some(self.device_id.clone());
+        e.device_name.clone_from(&self.device_name);
         match &self.backend {
             Some(Backend::Ios(child)) => e.runner_pid = Some(child.pid()),
             Some(Backend::Android(_)) => android_entry_fields(
                 &mut e,
-                self.serial.as_deref(),
-                self.forward_port,
-                self.bridge_port,
-                self.apk_source.as_deref(),
-                self.emulator_pid,
+                crate::platform::android_ops::AndroidMeta {
+                    serial: self.serial.as_deref(),
+                    forward_port: self.forward_port,
+                    device_port: self.device_port,
+                    bridge_port: self.bridge_port,
+                    apk_source: self.apk_source.as_deref(),
+                    emulator_pid: self.emulator_pid,
+                },
                 log,
             ),
             None => {}
@@ -202,8 +252,8 @@ impl PlatformRuntime {
     /// # Errors
     /// Propagates the Android forward-removal failure.
     pub fn stop(&mut self) -> Result<(), Failure> {
-        self.stop_with(|serial, port| {
-            AndroidAdapter::from_environment()?.remove_owned_forward(serial, port)
+        self.stop_with(|serial, port, device_port| {
+            AndroidAdapter::from_environment()?.remove_owned_forward(serial, port, device_port)
         })
     }
 
@@ -212,15 +262,17 @@ impl PlatformRuntime {
     /// exact removal — is identical either way.
     pub(crate) fn stop_with(
         &mut self,
-        remove: impl FnOnce(&str, u16) -> Result<(), Failure>,
+        remove: impl FnOnce(&str, u16, u16) -> Result<(), Failure>,
     ) -> Result<(), Failure> {
         if self.stopped {
             return Ok(());
         }
         match self.backend.take() {
             Some(Backend::Ios(mut child)) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                if child.try_wait()?.is_none() {
+                    child.kill()?;
+                }
+                child.wait()?;
                 self.stopped = true;
                 Ok(())
             }
@@ -231,16 +283,21 @@ impl PlatformRuntime {
                     Ok(())
                 }
                 Err(e) => {
-                    self.retry_forward = self.serial.clone().zip(self.forward_port);
+                    self.retry_forward = self
+                        .serial
+                        .clone()
+                        .zip(self.forward_port)
+                        .zip(self.device_port)
+                        .map(|((s, l), d)| (s, l, d));
                     Err(e)
                 }
             },
             None => {
-                let Some((serial, port)) = self.retry_forward.clone() else {
+                let Some((serial, port, device_port)) = self.retry_forward.clone() else {
                     self.stopped = true;
                     return Ok(());
                 };
-                match remove(&serial, port) {
+                match remove(&serial, port, device_port) {
                     Ok(()) => {
                         self.retry_forward = None;
                         self.stopped = true;

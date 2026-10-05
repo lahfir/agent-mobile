@@ -5,6 +5,15 @@ readonly CMDTOOLS_BUILD="15859902"
 readonly API_LEVEL="37"
 readonly PLATFORM_ID="android-${API_LEVEL}.0"
 readonly BUILD_TOOLS_VERSION="36.0.0"
+# Exact published revisions: cmdline-tools build 15859902 ships
+# Pkg.Revision 22.0; the others are the required API-37 package revisions
+# on both arm64-v8a and x86_64.
+readonly CMDTOOLS_REVISION="22.0"
+readonly PLATFORM_TOOLS_REVISION="37.0.1"
+readonly PLATFORM_REVISION="2"
+readonly BUILD_TOOLS_REVISION="36.0.0"
+readonly EMULATOR_REVISION="37.2.12"
+readonly SYS_IMAGE_REVISION="6"
 readonly AVD_NAME="agent-mobile-api37"
 readonly AVD_DEVICE="pixel_7"
 readonly DOWNLOAD_BASE="https://dl.google.com/android/repository"
@@ -126,11 +135,26 @@ dir_nonempty() {
     [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]
 }
 
+run_with_deadline() {
+    local secs="$1"; shift
+    python3 "$SCRIPT_DIR/run_with_deadline.py" "$secs" "$@"
+}
+
+cmdline_tools_revision() {
+    awk -F= '/^Pkg.Revision[[:space:]]*=/ { sub(/[[:space:]]+$/, "", $2); print $2; exit }' \
+        "$1/source.properties" 2>/dev/null
+}
+
 install_cmdline_tools() {
     local sdkmanager
     sdkmanager="$(sdkmanager_bin)"
     if [ -x "$sdkmanager" ]; then
-        echo "command-line tools ${CMDTOOLS_BUILD}: already installed"
+        local rev
+        rev="$(cmdline_tools_revision "${ANDROID_HOME}/cmdline-tools/${CMDTOOLS_BUILD}")"
+        [ "$rev" = "$CMDTOOLS_REVISION" ] || fail \
+            "command-line tools revision mismatch: ${rev:-unknown} != ${CMDTOOLS_REVISION}" \
+            "remove ${ANDROID_HOME}/cmdline-tools/${CMDTOOLS_BUILD} and re-run"
+        echo "command-line tools ${CMDTOOLS_BUILD} (${rev}): already installed"
         return
     fi
     local dest="${ANDROID_HOME}/cmdline-tools/${CMDTOOLS_BUILD}"
@@ -146,7 +170,8 @@ install_cmdline_tools() {
     local zip_path="${TMP_WORK}/${CMDTOOLS_ZIP}"
     local url="${DOWNLOAD_BASE}/${CMDTOOLS_ZIP}"
     echo "downloading ${url}"
-    curl --fail --silent --show-error --location --output "$zip_path" "$url" \
+    curl --fail --silent --show-error --location \
+        --connect-timeout 20 --max-time 600 --output "$zip_path" "$url" \
         || fail "download failed: ${url}" "check network access to dl.google.com"
 
     local actual_sha
@@ -167,6 +192,11 @@ install_cmdline_tools() {
     if [ -e "$dest" ]; then
         fail "${dest} appeared while staging" "inspect ${dest} and re-run"
     fi
+    local staged_rev
+    staged_rev="$(cmdline_tools_revision "${STAGING_DIR}/cmdline-tools")"
+    [ "$staged_rev" = "$CMDTOOLS_REVISION" ] || fail \
+        "downloaded command-line tools report ${staged_rev:-unknown}, expected ${CMDTOOLS_REVISION}" \
+        "re-run; if it persists the pinned archive changed"
     mv "${STAGING_DIR}/cmdline-tools" "$dest"
     rmdir "$STAGING_DIR"
     STAGING_DIR=""
@@ -175,16 +205,26 @@ install_cmdline_tools() {
     echo "command-line tools ${CMDTOOLS_BUILD}: installed to ${dest}"
 }
 
-installed_package_ids() {
-    "$(sdkmanager_bin)" --sdk_root="$ANDROID_HOME" --list_installed 2>/dev/null \
-        | awk -F'|' '{ id = $1
-                        sub(/^[ \t]+/, "", id)
-                        sub(/[ \t]+$/, "", id)
-                        if (id ~ /[a-zA-Z]/ && id != "Path") print id }'
+# `sdkmanager --list_installed` / `--list` → exact `id<TAB>revision` rows.
+sdkmanager_package_rows() {
+    run_with_deadline 60 "$(sdkmanager_bin)" --sdk_root="$ANDROID_HOME" "$@" 2>/dev/null \
+        | awk -F'|' '{ id = $1; rev = $2
+                      sub(/^[ \t]+/, "", id); sub(/[ \t]+$/, "", id)
+                      sub(/^[ \t]+/, "", rev); sub(/[ \t]+$/, "", rev)
+                      if (id ~ /[a-zA-Z]/ && id != "Path") print id "\t" rev }'
+}
+
+installed_package_rows() { sdkmanager_package_rows --list_installed; }
+
+available_package_rows() { sdkmanager_package_rows --list; }
+
+# Exact `id` row's revision; empty when the id is absent.
+package_revision() {
+    printf '%s\n' "$1" | awk -F'\t' -v want="$2" '$1 == want { print $2; exit }'
 }
 
 install_packages() {
-    local sdkmanager installed pkg
+    local sdkmanager
     sdkmanager="$(sdkmanager_bin)"
     local required=(
         "platform-tools"
@@ -193,51 +233,88 @@ install_packages() {
         "emulator"
         "system-images;${PLATFORM_ID};google_apis;${SYS_IMAGE_ABI}"
     )
-    installed="$(installed_package_ids)"
+    local revisions=(
+        "$PLATFORM_TOOLS_REVISION"
+        "$PLATFORM_REVISION"
+        "$BUILD_TOOLS_REVISION"
+        "$EMULATOR_REVISION"
+        "$SYS_IMAGE_REVISION"
+    )
+    local installed
+    installed="$(installed_package_rows)"
     local missing=()
-    for pkg in "${required[@]}"; do
-        case "
-${installed}
-" in
-            *"
-${pkg}
-"*) ;;
-            *) missing+=("$pkg") ;;
-        esac
+    local i id rev want
+    for i in "${!required[@]}"; do
+        id="${required[$i]}"
+        want="${revisions[$i]}"
+        rev="$(package_revision "$installed" "$id")"
+        if [ -z "$rev" ]; then
+            missing+=("$id")
+        elif [ "$rev" != "$want" ]; then
+            fail "SDK package ${id} is ${rev}, required ${want}" \
+                "reconcile ${id} manually to ${want}; setup never auto-upgrades or downgrades"
+        fi
     done
     if [ "${#missing[@]}" -eq 0 ]; then
-        echo "SDK packages: all required packages already installed"
+        echo "SDK packages: all required packages installed at exact revisions"
         return
     fi
+    local available advertised
+    available="$(available_package_rows)"
+    for id in "${missing[@]}"; do
+        for i in "${!required[@]}"; do
+            [ "${required[$i]}" = "$id" ] && want="${revisions[$i]}"
+        done
+        advertised="$(package_revision "$available" "$id")"
+        [ "$advertised" = "$want" ] || fail \
+            "SDK package ${id} advertised as ${advertised:-absent}, required ${want}" \
+            "the pinned revision is unavailable; reconcile the repository or the pin explicitly"
+    done
     echo "installing missing SDK packages: ${missing[*]}"
-    printf 'y\n%.0s' $(seq 1 256) | "$sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
-    "$sdkmanager" --sdk_root="$ANDROID_HOME" "${missing[@]}"
+    printf 'y\n%.0s' $(seq 1 256) | run_with_deadline 300 "$sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+    run_with_deadline 1200 "$sdkmanager" --sdk_root="$ANDROID_HOME" "${missing[@]}"
+    installed="$(installed_package_rows)"
+    for i in "${!required[@]}"; do
+        id="${required[$i]}"
+        rev="$(package_revision "$installed" "$id")"
+        [ "$rev" = "${revisions[$i]}" ] || fail \
+            "SDK package ${id} reported ${rev:-missing} after install, required ${revisions[$i]}" \
+            "inspect the sdkmanager output and reconcile ${id} manually"
+    done
 }
 
 avd_exists() {
-    local emu out
+    local emu
     emu="$(emulator_bin)"
     [ -x "$emu" ] || return 1
-    out="$("$emu" -list-avds 2>/dev/null)" || return 1
-    case "
-${out}
-" in
-        *"
-${AVD_NAME}
-"*) return 0 ;;
-        *) return 1 ;;
-    esac
+    run_with_deadline 30 "$emu" -list-avds 2>/dev/null | grep -qxF "$AVD_NAME"
+}
+
+avd_matches_pins() {
+    local ini
+    ini="$(avd_home)/${AVD_NAME}.avd/config.ini"
+    [ -f "$ini" ] || return 1
+    grep -qxF "abi.type=${SYS_IMAGE_ABI}" "$ini" \
+        && grep -qxF "hw.device.name=${AVD_DEVICE}" "$ini" \
+        && grep -qxF "image.sysdir.1=system-images/${PLATFORM_ID}/google_apis/${SYS_IMAGE_ABI}/" "$ini" \
+        && grep -qxF "tag.id=google_apis" "$ini" \
+        && grep -qxF "target=${PLATFORM_ID}" "$ini"
 }
 
 create_avd() {
     if avd_exists; then
-        echo "AVD ${AVD_NAME}: already exists"
-        return
+        if avd_matches_pins; then
+            echo "AVD ${AVD_NAME}: already exists"
+            return
+        fi
+        fail "AVD ${AVD_NAME} exists but does not match the pinned config" \
+            "inspect $(avd_home)/${AVD_NAME}.avd/config.ini; move aside or delete only \
+             the named AVD, then re-run"
     fi
     local avdmanager
     avdmanager="$(avdmanager_bin)"
     echo "creating AVD ${AVD_NAME} (${AVD_DEVICE}, ${PLATFORM_ID}/${SYS_IMAGE_ABI})"
-    printf 'no\n' | env "ANDROID_SDK_ROOT=$ANDROID_HOME" "ANDROID_HOME=$ANDROID_HOME" \
+    printf 'no\n' | run_with_deadline 120 env "ANDROID_SDK_ROOT=$ANDROID_HOME" "ANDROID_HOME=$ANDROID_HOME" \
         "$avdmanager" create avd \
         --name "$AVD_NAME" \
         --package "system-images;${PLATFORM_ID};google_apis;${SYS_IMAGE_ABI}" \
@@ -289,7 +366,15 @@ check_environment() {
     fi
 
     if [ -x "$(sdkmanager_bin)" ]; then
-        check_ok "sdkmanager ($(sdkmanager_bin))"
+        local rev
+        rev="$(cmdline_tools_revision "${ANDROID_HOME}/cmdline-tools/${CMDTOOLS_BUILD}")"
+        if [ "$rev" = "$CMDTOOLS_REVISION" ]; then
+            check_ok "sdkmanager ($(sdkmanager_bin), ${rev})"
+        else
+            check_bad \
+                "command-line tools revision ${rev:-unknown}, expected ${CMDTOOLS_REVISION}" \
+                "reconcile ${ANDROID_HOME}/cmdline-tools/${CMDTOOLS_BUILD} to build ${CMDTOOLS_BUILD}"
+        fi
     else
         check_bad "sdkmanager missing" "run scripts/setup-android-sdk.sh"
     fi
@@ -325,6 +410,37 @@ check_environment() {
             "run scripts/setup-android-sdk.sh"
     fi
 
+    if [ -x "$(sdkmanager_bin)" ]; then
+        local rows want rev i
+        rows="$(installed_package_rows)"
+        local ids=(
+            "platform-tools"
+            "platforms;${PLATFORM_ID}"
+            "build-tools;${BUILD_TOOLS_VERSION}"
+            "emulator"
+            "system-images;${PLATFORM_ID};google_apis;${SYS_IMAGE_ABI}"
+        )
+        local pins=(
+            "$PLATFORM_TOOLS_REVISION"
+            "$PLATFORM_REVISION"
+            "$BUILD_TOOLS_REVISION"
+            "$EMULATOR_REVISION"
+            "$SYS_IMAGE_REVISION"
+        )
+        for i in "${!ids[@]}"; do
+            want="${pins[$i]}"
+            rev="$(package_revision "$rows" "${ids[$i]}")"
+            if [ "$rev" = "$want" ]; then
+                check_ok "${ids[$i]} @ ${want}"
+            elif [ -z "$rev" ]; then
+                check_bad "${ids[$i]} not installed" "run scripts/setup-android-sdk.sh"
+            else
+                check_bad "${ids[$i]} is ${rev}, expected ${want}" \
+                    "reconcile the package revision explicitly; setup never auto-upgrades"
+            fi
+        done
+    fi
+
     local home ini
     home="$(avd_home)"
     ini="${home}/${AVD_NAME}.ini"
@@ -333,19 +449,22 @@ check_environment() {
     else
         check_bad "AVD ${AVD_NAME} missing" "run scripts/setup-android-sdk.sh"
     fi
-    if [ -x "$(emulator_bin)" ]; then
-        local avds
-        avds="$("$(emulator_bin)" -list-avds 2>/dev/null || true)"
-        case "$avds" in
-            *"${AVD_NAME}"*) check_ok "emulator sees AVD ${AVD_NAME}" ;;
-            *) check_bad "emulator -list-avds does not list ${AVD_NAME}" \
-                "check ANDROID_AVD_HOME and re-run scripts/setup-android-sdk.sh" ;;
-        esac
+    if avd_matches_pins; then
+        check_ok "AVD ${AVD_NAME} pins match"
+    else
+        check_bad "AVD ${AVD_NAME} config.ini does not match the pinned image/device" \
+            "inspect $(avd_home)/${AVD_NAME}.avd/config.ini"
+    fi
+    if avd_exists; then
+        check_ok "emulator sees AVD ${AVD_NAME}"
+    else
+        check_bad "emulator -list-avds does not list ${AVD_NAME}" \
+            "check ANDROID_AVD_HOME and re-run scripts/setup-android-sdk.sh"
     fi
 
     if [ -x "$(emulator_bin)" ]; then
         local accel_out
-        if accel_out="$("$(emulator_bin)" -accel-check 2>&1)"; then
+        if accel_out="$(run_with_deadline 30 "$(emulator_bin)" -accel-check 2>&1)"; then
             case "$accel_out" in
                 *"accel: OK"* | *"Hypervisor"* | *"KVM"* | *"kvm"* | *"WHPX"* | *"HAXM"* | *"AEHD"*)
                     check_ok "emulator acceleration available" ;;
@@ -365,12 +484,17 @@ check_environment() {
         fi
     fi
 
+    local studio_found=""
     if [ "$HOST_OS" = "Darwin" ]; then
-        if [ -d "/Applications/Android Studio.app" ]; then
-            check_ok "Android Studio present but unused"
-        else
-            check_ok "Android Studio absent"
-        fi
+        for studio_dir in "/Applications/Android Studio.app" "$HOME/Applications/Android Studio.app"; do
+            [ -d "$studio_dir" ] && studio_found="$studio_dir"
+        done
+    fi
+    if [ -n "$studio_found" ]; then
+        check_bad "Android Studio found at ${studio_found}" \
+            "the headless SDK path must not share tools with Studio; uninstall it or use a different machine state"
+    else
+        check_ok "Android Studio absent"
     fi
 
     if [ -f "$(local_properties_file)" ] && \
@@ -390,6 +514,7 @@ check_environment() {
 }
 
 install_environment() {
+    command -v python3 >/dev/null 2>&1 || fail "python3 is required" "install python3"
     detect_host
     require_jdk17
     mkdir -p "$ANDROID_HOME"
@@ -403,6 +528,7 @@ install_environment() {
 }
 
 MODE="install"
+main() {
 case "${1:-}" in
     "") MODE="install" ;;
     --check) MODE="check" ;;
@@ -418,7 +544,13 @@ esac
 case "$MODE" in
     install) install_environment ;;
     check)
+        command -v python3 >/dev/null 2>&1 || fail "python3 is required" "install python3"
         detect_host
         check_environment
         ;;
 esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

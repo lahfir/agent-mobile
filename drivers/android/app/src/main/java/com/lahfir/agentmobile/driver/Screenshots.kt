@@ -70,7 +70,7 @@ internal class AndroidScreenshotBackend(
         service.onMain {
             service.takeScreenshot(
                 Display.DEFAULT_DISPLAY,
-                service.mainExecutor,
+                service.screenshotExecutor,
                 object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                         val buffer = result.hardwareBuffer

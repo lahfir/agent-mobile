@@ -3,13 +3,13 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc::channel;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
 
-use super::{read_reply, start_bridge};
+use super::{accept_retryable, read_reply, start_bridge, start_bridge_with_deadline};
 use crate::driver::SecretToken;
-use crate::testkit::{ctl, envelope, fake_upstream, post};
+use crate::testkit::{ctl, envelope, fake_upstream, post, read_http_request};
 
 #[test]
 fn relay_preserves_request_and_response_bytes() -> Result<(), Failure> {
@@ -97,4 +97,121 @@ fn reply_reads_when_terminator_splits_and_truncates_trail() -> std::io::Result<(
     let reply = read_reply(&mut reader)?;
     assert_eq!(reply, b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nDATA");
     Ok(())
+}
+
+#[test]
+fn accept_retryable_only_for_interrupted() {
+    assert!(accept_retryable(&std::io::Error::from(
+        std::io::ErrorKind::Interrupted
+    )));
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::ConnectionAborted,
+        std::io::ErrorKind::AddrInUse,
+    ] {
+        assert!(!accept_retryable(&std::io::Error::from(kind)));
+    }
+}
+
+#[test]
+fn trickle_bytes_lose_to_absolute_deadline() -> Result<(), Failure> {
+    let (up, _rx) = fake_upstream(vec![("/snapshot".into(), envelope("200 OK", "{}"))]);
+    let mut bridge = start_bridge_with_deadline(
+        up,
+        &SecretToken::new("t0k"),
+        ctl(),
+        Duration::from_millis(400),
+    )?;
+    let mut c = TcpStream::connect(("127.0.0.1", bridge.port()))?;
+    c.set_read_timeout(Some(Duration::from_secs(2)))?;
+    c.write_all(b"POST /sn").map_err(Failure::from)?;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(700) {
+        let _ = c.write_all(b"x");
+        let mark = start.elapsed() + Duration::from_millis(50);
+        while start.elapsed() < mark {
+            std::hint::spin_loop();
+        }
+    }
+    let mut buf = [0u8; 8];
+    let closed = !matches!(c.read(&mut buf), Ok(n) if n > 0);
+    assert!(closed, "deadline-surviving connection still open");
+    let env = post(
+        bridge.port(),
+        "POST /snapshot HTTP/1.1\r\nAuthorization: Bearer t0k\r\nHost: b\r\n",
+        "",
+    );
+    assert!(env.starts_with("HTTP/1.1 200"), "{env}");
+    bridge.stop();
+    Ok(())
+}
+
+#[test]
+fn second_request_while_busy_gets_503_without_reaching_upstream() {
+    use std::io::Write;
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|_| unreachable!());
+    let upstream_port = listener
+        .local_addr()
+        .unwrap_or_else(|_| unreachable!())
+        .port();
+    std::thread::spawn(move || {
+        let mut first = true;
+        while let Ok((mut sock, _)) = listener.accept() {
+            let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
+            let _req = read_http_request(&mut sock);
+            let _ = seen_tx.send(());
+            if first {
+                first = false;
+                let _ = release_rx.recv();
+            }
+            let body = "{\"version\":\"1\",\"ok\":true,\"command\":\"status\",\"elapsed_ms\":1,\"data\":{\"app\":\"x\",\"snapshot_id\":\"\",\"device\":\"d\",\"os\":\"1\"}}";
+            let reply = envelope("200 OK", body);
+            let _ = sock.write_all(reply.as_bytes());
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
+    });
+
+    let mut bridge = start_bridge(upstream_port, &SecretToken::new("t0k"), ctl())
+        .unwrap_or_else(|e| unreachable!("{}", e.render()));
+    let port = bridge.port();
+    let head =
+        "POST /status HTTP/1.1\r\nAuthorization: Bearer t0k\r\nX-Agent-Mobile-Version: 1\r\n";
+    let first = std::thread::spawn(move || post(port, head, "{}"));
+    seen_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_else(|_| unreachable!("first request never reached upstream"));
+
+    let second = post(
+        port,
+        "POST /status HTTP/1.1\r\nAuthorization: Bearer t0k\r\nX-Agent-Mobile-Version: 1\r\n",
+        "{}",
+    );
+    assert!(second.contains("503 Service Unavailable"), "{second}");
+    assert!(second.contains("DRIVER_ERROR"), "{second}");
+    assert!(
+        second.contains("another command is in progress"),
+        "{second}"
+    );
+    assert!(
+        seen_rx.try_recv().is_err(),
+        "a queued request must never reach upstream"
+    );
+
+    let _ = release_tx.send(());
+    let out = first.join().unwrap_or_default();
+    assert!(out.contains("HTTP/1.1 200"), "{out}");
+    let third = post(
+        port,
+        "POST /status HTTP/1.1\r\nAuthorization: Bearer t0k\r\nX-Agent-Mobile-Version: 1\r\n",
+        "{}",
+    );
+    assert!(third.contains("HTTP/1.1 200"), "{third}");
+    assert_eq!(
+        seen_rx.try_iter().count(),
+        1,
+        "third request reached upstream once"
+    );
+    bridge.stop();
 }

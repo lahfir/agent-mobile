@@ -23,10 +23,13 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     let key = device.key();
     reclaim_or_conflict(store, &device)?;
     let log = store.driver_log(&key);
-    let mut runtime = PlatformRuntime::start(&device, &log, &term)?;
+    let mut runtime = PlatformRuntime::start(&device, &log, &term, store)?;
     let token_file = StateStore::token_file_for(&key);
     let entry = runtime.session_entry(token_file.clone(), &log);
     if let Err(f) = register_session(store, &key, &token_file, &entry, runtime.token()) {
+        return finish_cleanup(store, &key, &token_file, &entry, Err(f), || runtime.stop());
+    }
+    if let Err(f) = runtime.commit_startup() {
         return finish_cleanup(store, &key, &token_file, &entry, Err(f), || runtime.stop());
     }
     let ready = ready_line(&runtime, &device, store, &token_file);
@@ -89,6 +92,10 @@ fn acquire_lock(store: &StateStore) -> Result<std::fs::File, Failure> {
 /// is a foreign listener (KTD7, KTD8, KTD17); Android's ephemeral forward
 /// needs no such check.
 fn reclaim_or_conflict(store: &StateStore, device: &PlatformDevice) -> Result<(), Failure> {
+    platform::sweep_pending_forwards(
+        store,
+        device.android_target().and_then(|t| t.serial.as_deref()),
+    )?;
     let mut aliases = vec![device.key()];
     if let Some(legacy) = device.legacy_key() {
         aliases.push(legacy.to_owned());
@@ -97,7 +104,10 @@ fn reclaim_or_conflict(store: &StateStore, device: &PlatformDevice) -> Result<()
         let Some(entry) = store.entry(alias) else {
             continue;
         };
-        if agent_mobile_core::process::pid_alive(entry.pid) {
+        if agent_mobile_core::process::process_matches(
+            entry.pid,
+            entry.process_started_at.as_deref(),
+        ) {
             return Err(Failure::local(
                 format!(
                     "{} already has a driver on {} (pid {})",
@@ -109,18 +119,30 @@ fn reclaim_or_conflict(store: &StateStore, device: &PlatformDevice) -> Result<()
             ));
         }
         platform::cleanup_stale(&entry)?;
-        let _ = store.remove(alias);
-        let _ = store.remove_token(&entry.token_file);
+        if let Err(e) = clear_session(store, alias, &entry.token_file) {
+            let _ = store.upsert(alias, &entry);
+            return Err(e);
+        }
     }
     let state = store.load();
     for (name, entry) in &state.devices {
-        if aliases.iter().any(|a| a == name) || agent_mobile_core::process::pid_alive(entry.pid) {
+        if aliases.iter().any(|a| a == name)
+            || agent_mobile_core::process::process_matches(
+                entry.pid,
+                entry.process_started_at.as_deref(),
+            )
+        {
             continue;
         }
         match platform::cleanup_stale(entry) {
             Ok(()) => {
-                let _ = store.remove(name);
-                let _ = store.remove_token(&entry.token_file);
+                if let Err(e) = clear_session(store, name, &entry.token_file) {
+                    let _ = store.upsert(name, entry);
+                    eprintln!(
+                        "note: stale {name} session row not cleared: {}",
+                        e.message()
+                    );
+                }
             }
             Err(e) => {
                 eprintln!("note: stale {name} session not reclaimed: {}", e.message());
@@ -154,17 +176,23 @@ fn register_session(
     entry: &SessionEntry,
     token: &str,
 ) -> Result<(), Failure> {
+    if entry.process_started_at.is_none() {
+        return Err(Failure::local(
+            "cannot identify the serve process for session ownership",
+            "retry `agent-mobile serve`; the session was not registered",
+        ));
+    }
     store.remove_token(token_file)?;
     store.write_token(token_file, token)?;
     store.upsert(key, entry)?;
-    store.remember_device(key)
+    store.remember_device_selection(key, entry.device_name.as_deref().unwrap_or(key))
 }
 
-/// Drop the session entry and its token file; both best-effort — the
-/// serve is going down either way.
-fn clear_session(store: &StateStore, key: &str, token_file: &str) {
-    let _ = store.remove(key);
-    let _ = store.remove_token(token_file);
+/// Drop the session's token file first, then its state row — the row must
+/// never outlive the token file it points at.
+fn clear_session(store: &StateStore, key: &str, token_file: &str) -> Result<(), Failure> {
+    store.remove_token(token_file)?;
+    store.remove(key)
 }
 
 /// Close every serve error path through the same ordering: `stop` first,
@@ -181,7 +209,7 @@ fn finish_cleanup(
     result: Result<i32, Failure>,
     stop: impl FnOnce() -> Result<(), Failure>,
 ) -> Result<i32, Failure> {
-    let cleanup = stop().map(|()| clear_session(store, key, token_file));
+    let cleanup = stop().and_then(|()| clear_session(store, key, token_file));
     match (result, cleanup) {
         (Ok(code), Ok(())) => Ok(code),
         (_, Err(cleanup_failure)) => {

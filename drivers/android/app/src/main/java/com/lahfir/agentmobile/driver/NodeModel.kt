@@ -3,6 +3,11 @@ package com.lahfir.agentmobile.driver
 internal data class RawBounds(val left: Int, val top: Int, val right: Int, val bottom: Int) {
     val width: Int get() = right - left
     val height: Int get() = bottom - top
+
+    /** left/top inclusive, right/bottom exclusive, finite points only. */
+    fun contains(point: RawPoint): Boolean =
+        point.x.isFinite() && point.y.isFinite() &&
+            point.x >= left && point.x < right && point.y >= top && point.y < bottom
 }
 
 internal data class LogicalBounds(val x: Double, val y: Double, val width: Double, val height: Double)
@@ -16,6 +21,9 @@ internal data class NodeIdentity(
     val text: String,
     val contentDescription: String,
     val rawBounds: RawBounds,
+    val packageName: String = "",
+    val visibleToUser: Boolean = true,
+    val windowId: Int = 0,
 )
 
 internal data class NodeModel(

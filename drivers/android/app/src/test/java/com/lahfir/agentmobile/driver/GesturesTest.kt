@@ -104,7 +104,7 @@ class GesturesTest {
         val b0 = stroke(zoomIn, 1).points
         val startGap = abs(a0.first().x - b0.first().x)
         val endGap = abs(a0.last().x - b0.last().x)
-        assertTrue("scale>1 must spread apart", endGap > startGap)
+        assertTrue("scale>1 must spread", endGap > startGap)
         zoomIn.strokes.flatMap { it.points }.forEach { p ->
             assertTrue("x $p inside", p.x > bounds.left && p.x < bounds.right)
             assertTrue("y $p inside", p.y > bounds.top && p.y < bounds.bottom)

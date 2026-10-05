@@ -29,7 +29,9 @@ COMMANDS
   type [<ref>] <text...>         append text; a leading ref writes that field
                                  directly (the field may not keep focus), else
                                  keys go to the focused field. A newline
-                                 presses Return.
+                                 requests IME Return when the field exposes
+                                 it (Android); otherwise a literal newline
+                                 is appended. Judge the returned snapshot.
                                  Text starting with `-` needs `--`:
                                  type -- -flag
   swipe <up|down|left|right> [<ref>]
@@ -109,8 +111,8 @@ SYSTEM UI
   Permission alerts and other system UI live outside the app under test.
   On iOS that is com.apple.springboard; on Android it is the active
   launcher/system package shown in a snapshot's app field. Act on those
-  refs, then return with `snapshot --app <bundle>` on iOS or
-  `launch <package>` on Android — refs die across apps.
+  refs, then return with `snapshot --app <bundle>` on iOS or `back` on
+  Android — refs die across apps.
 
 THE LOOP
   snapshot -> pick a ref -> act -> repeat. Every action replies with the next
@@ -125,20 +127,25 @@ REFS AND ERRORS
   BAD_REQUEST        -> fix the request; do not retry unchanged
   UNKNOWN_COMMAND    -> fix the client; do not retry
   UNAUTHORIZED       -> fix AGENT_MOBILE_TOKEN; do not retry unchanged
-  DRIVER_ERROR       -> retry once; escalate if it recurs
+  DRIVER_ERROR       -> take a fresh snapshot to verify the current
+                        state before retrying; escalate if it recurs
   (client-side codes: USAGE exits 2 before any call; LOCAL/DRIVER_ERROR
    mark failures that never reached the driver)
 
 OUTPUT CONTRACT
   stdout carries parseable data; stderr carries hints and errors.
   settled=false means the settle loop hit its cap; the tree is still usable.
-  complete=false means --max-depth trimmed nodes below the printed depth.
+  complete=false means the tree is incomplete — --max-depth trimming or
+  driver-side traversal caps, cycles, or unavailable children. Ref actions
+  on an incomplete tree fail closed because uniqueness can't be proven.
   Exit codes: 0 ok, 1 driver or transport failure, 2 usage error.
 
 LAUNCH
   launch terminates the process then starts it from the launcher; app
   data is kept. On Android, terminate refuses the driver, System UI, and
-  the current launcher.
+  the current launcher. If System UI wedges the foreground, `back` first —
+  judge the returned snapshot; `launch` is only a cold-restart fallback
+  and loses transient app state.
 ";
 
 /// Run `skills`; prints the guide, no wire involved.

@@ -28,11 +28,14 @@ class ProvisionProvider : ContentProvider() {
         if (method != METHOD_PROVISION) {
             throw IllegalArgumentException("unsupported method")
         }
-        val context = context ?: throw IllegalStateException("provider not attached")
+        val service = AgentMobileAccessibilityService.activeInstance
+            ?: throw IllegalStateException("accessibility service not bound")
         val token = TokenStore.generateToken()
-        TokenStore(context).replace(token)
-        AgentMobileAccessibilityService.activeInstance?.onTokenRotated()
-        return Bundle().apply { putString(RESULT_TOKEN, token) }
+        val port = service.rotateSession(token)
+        return Bundle().apply {
+            putString(RESULT_TOKEN, token)
+            putInt(RESULT_PORT, port)
+        }
     }
 
     override fun getType(uri: Uri): String = throw UnsupportedOperationException()
@@ -60,5 +63,6 @@ class ProvisionProvider : ContentProvider() {
     companion object {
         const val METHOD_PROVISION = "provision"
         const val RESULT_TOKEN = "token"
+        const val RESULT_PORT = "port"
     }
 }

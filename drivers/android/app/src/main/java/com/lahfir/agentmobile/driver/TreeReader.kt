@@ -6,6 +6,50 @@ import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import java.security.MessageDigest
 
+internal fun appendWithReturn(
+    text: String,
+    currentValue: () -> String,
+    setText: (String) -> Boolean,
+    imeEnter: (() -> Boolean)?,
+    afterImeValue: (() -> String?)? = null,
+    check: () -> Unit = {},
+): Boolean {
+    check()
+    var current = currentValue()
+    var index = 0
+    while (index < text.length) {
+        check()
+        val newline = text.indexOf('\n', index)
+        val span = if (newline < 0) text.substring(index) else text.substring(index, newline)
+        if (span.isNotEmpty()) {
+            check()
+            if (!setText(current + span)) return false
+            current += span
+            check()
+        }
+        if (newline < 0) return true
+        val nextIndex = newline + 1
+        if (imeEnter != null) {
+            check()
+            if (!imeEnter()) return false
+            check()
+            if (nextIndex >= text.length) return true
+            if (afterImeValue != null) {
+                current = afterImeValue() ?: return false
+                check()
+            }
+        } else {
+            val next = current + "\n"
+            check()
+            if (!setText(next)) return false
+            current = next
+            check()
+        }
+        index = nextIndex
+    }
+    return true
+}
+
 internal interface NodeSource {
     val className: String
     val packageName: String?
@@ -30,15 +74,18 @@ internal interface NodeSource {
     val childCount: Int
     fun child(index: Int): NodeSource?
     fun sameNode(other: NodeSource): Boolean
+    val identityHash: Int
+    val isVisibleToUser: Boolean get() = true
+    val windowId: Int get() = 0
     fun performClick(): Boolean = false
-    fun appendText(text: String): Boolean = false
+    fun appendText(text: String, cancellation: RequestCancellation): Boolean = false
     fun performScroll(direction: String): Boolean = false
     fun close()
 }
 
 internal class LiveNode(val model: NodeModel, private val source: NodeSource) {
     fun click(): Boolean = source.performClick()
-    fun appendText(text: String): Boolean = source.appendText(text)
+    fun appendText(text: String, cancellation: RequestCancellation): Boolean = source.appendText(text, cancellation)
     fun scroll(direction: String): Boolean = source.performScroll(direction)
 }
 
@@ -75,21 +122,44 @@ private class AndroidNodeSource(private val node: AccessibilityNodeInfo) : NodeS
     override fun child(index: Int): NodeSource? = node.getChild(index)?.let { AndroidNodeSource(it) }
     override fun sameNode(other: NodeSource): Boolean =
         (other as? AndroidNodeSource)?.let { node == it.node } ?: false
+    override val identityHash: Int get() = node.hashCode()
+    override val isVisibleToUser: Boolean get() = node.isVisibleToUser
+    override val windowId: Int get() = node.windowId
 
     override fun performClick(): Boolean =
         (node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }) &&
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
 
-    override fun appendText(text: String): Boolean {
+    override fun appendText(text: String, cancellation: RequestCancellation): Boolean {
         if (!node.isEditable || node.actionList.none { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }) {
             return false
         }
-        val args = Bundle()
-        args.putCharSequence(
-            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-            (node.text?.toString() ?: "") + text,
+        val imeEnter = if (
+            node.actionList.any {
+                it.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+            }
+        ) {
+            ({ node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id) })
+        } else {
+            null
+        }
+        return appendWithReturn(
+            text,
+            currentValue = { node.text?.toString() ?: "" },
+            setText = { value ->
+                val args = Bundle()
+                args.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    value,
+                )
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            },
+            imeEnter = imeEnter,
+            afterImeValue = {
+                if (node.refresh()) node.text?.toString() ?: "" else null
+            },
+            check = cancellation::check,
         )
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
 
     override fun performScroll(direction: String): Boolean {
@@ -193,10 +263,11 @@ internal class TreeReader(
         obtained: MutableList<NodeSource>,
     ): Pair<TreeRead, List<LiveNode>> {
         var complete = true
-        val visited = mutableListOf<NodeSource>()
+        val visited = mutableMapOf<Int, MutableList<NodeSource>>()
         val entries = mutableListOf<Triple<NodeSource, Int, Int>>()
         val stack = ArrayDeque<Triple<NodeSource, Int, Int>>()
         stack.addLast(Triple(rootSource, 0, -1))
+        var remainingNodeReads = (maxNodes - 1).coerceAtLeast(0)
 
         while (stack.isNotEmpty()) {
             val (source, depth, parent) = stack.removeLast()
@@ -204,11 +275,12 @@ internal class TreeReader(
                 complete = false
                 break
             }
-            if (visited.any { it.sameNode(source) }) {
+            val bucket = visited.getOrPut(source.identityHash) { mutableListOf() }
+            if (bucket.any { it.sameNode(source) }) {
                 complete = false
                 continue
             }
-            visited += source
+            bucket += source
             val index = entries.size
             entries += Triple(source, depth, parent)
             val count = source.childCount
@@ -218,7 +290,10 @@ internal class TreeReader(
                 }
                 continue
             }
-            for (i in count - 1 downTo 0) {
+            val take = minOf(count, remainingNodeReads)
+            if (count > take) complete = false
+            for (i in take - 1 downTo 0) {
+                remainingNodeReads -= 1
                 val child = source.child(i)
                 if (child == null) {
                     complete = false
@@ -271,11 +346,11 @@ internal class TreeReader(
         val password = source.isPassword
         val editable = source.isEditable || className.endsWith("EditText")
         val role = roleFor(className, editable, password)
-        val contentDescription = source.contentDescription?.toString() ?: ""
+        val contentDescription = if (password) "" else (source.contentDescription?.toString() ?: "")
         val text = if (password) "" else (source.text?.toString() ?: "")
-        val identityDescription = if (password) "" else contentDescription
-        val hint = source.hintText?.toString() ?: ""
+        val hint = if (password) "" else (source.hintText?.toString() ?: "")
         val name = when {
+            password -> ""
             contentDescription.isNotEmpty() -> contentDescription
             !editable -> text
             hint.isNotEmpty() -> hint
@@ -319,8 +394,11 @@ internal class TreeReader(
                 role = role,
                 resourceId = resourceId,
                 text = text,
-                contentDescription = identityDescription,
+                contentDescription = contentDescription,
                 rawBounds = raw,
+                packageName = source.packageName?.toString() ?: "",
+                visibleToUser = source.isVisibleToUser,
+                windowId = source.windowId,
             ),
         )
     }
@@ -367,6 +445,9 @@ internal class TreeReader(
         fun walk(node: NodeModel) {
             putString(node.identity.className)
             putString(node.role)
+            putString(node.identity.packageName)
+            digest.update(if (node.identity.visibleToUser) 1.toByte() else 0.toByte())
+            putInt(node.identity.windowId)
             putInt(node.identity.rawBounds.left)
             putInt(node.identity.rawBounds.top)
             putInt(node.identity.rawBounds.right)

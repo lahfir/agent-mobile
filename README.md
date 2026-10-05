@@ -188,7 +188,10 @@ Accessibility approval is the second consent boundary:
 - Exit codes: `0` ok, `1` driver or transport failure, `2` usage error.
 - Snapshot header: `app=... device="..." os=... snapshot=@... refs=N settled=true complete=true
   reads=N elapsed_ms=N`. `settled=false` means the settle loop hit its cap — the tree is still
-  usable. `complete=false` means `--max-depth` trimmed nodes below the printed depth.
+  usable. `complete=false` means the tree is
+  incomplete — `--max-depth` trimmed nodes client-side, or the driver hit a traversal cap, a
+  cycle, or an unavailable child. Ref actions on an incomplete tree fail closed because ref
+  uniqueness can't be proven.
 - Refs look like `@<snapshot>:e<N>` and die with their snapshot; every action replies with the
   next snapshot, so a fresh ref set is always one call old at most.
 - Errors name the next action: `STALE_REF` -> re-snapshot and retry; `AMBIGUOUS_TARGET` -> pick a
@@ -240,6 +243,8 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
   already foreground rather than retargeting — `launch` changes apps. On Android `launch`/
   `terminate` run through the host bridge with serial-scoped `cmd package`/`am force-stop`/
   `am start`; `terminate` refuses the driver itself, System UI, and the current launcher.
+  If System UI wedges the foreground, `back` is the first recovery move — judge the returned
+  snapshot; `launch` is only a cold-restart fallback and loses transient app state.
 - Response envelope: `{version, ok, command, elapsed_ms, data}` or
   `{version, ok:false, command, elapsed_ms, error:{code, message}}`. Error codes: STALE_REF,
   AMBIGUOUS_TARGET, BAD_REQUEST, UNKNOWN_COMMAND, UNAUTHORIZED, DRIVER_ERROR.

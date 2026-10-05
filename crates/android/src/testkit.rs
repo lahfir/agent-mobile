@@ -22,11 +22,13 @@ pub fn output(success: bool, stdout: &str, stderr: &str) -> CommandOutput {
     }
 }
 
-/// Runner that replays `replies` in order (success-empty when exhausted)
-/// while recording every `(program, argv)` it was asked to run.
+/// Runner that replays `replies` in order — an exhausted script fails
+/// instead of inventing a success — while recording every `(program,
+/// argv)` it was asked to run.
 pub(crate) struct FakeRunner {
     calls: Mutex<Vec<(PathBuf, Vec<String>)>>,
     replies: Mutex<VecDeque<CommandOutput>>,
+    bound_port: Mutex<Option<String>>,
 }
 
 impl FakeRunner {
@@ -36,6 +38,7 @@ impl FakeRunner {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
             replies: Mutex::new(replies.into()),
+            bound_port: Mutex::new(None),
         })
     }
 
@@ -61,11 +64,31 @@ impl CommandRunner for FakeRunner {
                 args.iter().map(ToString::to_string).collect(),
             ));
         }
+        if let Some(i) = args.iter().position(|a| *a == "--no-rebind")
+            && let Some(tcp) = args.get(i + 1).and_then(|a| a.strip_prefix("tcp:"))
+            && let Ok(mut bound) = self.bound_port.lock()
+        {
+            *bound = Some(tcp.to_owned());
+        }
+        let bound = self
+            .bound_port
+            .lock()
+            .map(|b| b.clone())
+            .unwrap_or_default();
         let mut replies = self
             .replies
             .lock()
             .map_err(|_| Failure::local("fake runner lock poisoned", "rerun the test"))?;
-        Ok(replies.pop_front().unwrap_or_else(|| output(true, "", "")))
+        let mut reply = replies.pop_front().ok_or_else(|| {
+            Failure::local(
+                "unexpected command after scripted replies were exhausted",
+                "add an explicit scripted reply",
+            )
+        })?;
+        if let Some(bound) = bound {
+            reply.stdout = reply.stdout.replace("{LOCAL}", &bound);
+        }
+        Ok(reply)
     }
 }
 
@@ -215,4 +238,21 @@ pub(crate) fn post(port: u16, head: &str, body: &str) -> String {
     let mut out = Vec::new();
     let _ = sock.read_to_end(&mut out);
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_script_fails_instead_of_faking_success() {
+        let runner = FakeRunner::scripted(vec![]);
+        let err = runner
+            .run(Path::new("adb"), &["devices"], Duration::from_secs(1))
+            .err()
+            .map(|e| e.render())
+            .unwrap_or_default();
+        assert!(err.contains("scripted replies were exhausted"), "{err}");
+        assert_eq!(1, runner.calls().len(), "the stray call is still recorded");
+    }
 }

@@ -44,8 +44,8 @@ class HttpServerTest {
         return exchange(port, sb.toString())
     }
 
-    private fun statusHandler(app: String = "com.launcher"): (String, JSONObject) -> JSONObject =
-        { command, _ ->
+    private fun statusHandler(app: String = "com.launcher"): (String, JSONObject, RequestCancellation) -> JSONObject =
+        { command, _, _ ->
             if (command != "status") {
                 throw DriverException("UNKNOWN_COMMAND", "unknown command: $command")
             }
@@ -58,8 +58,10 @@ class HttpServerTest {
 
     private fun server(
         token: String = "tok",
-        handler: (String, JSONObject) -> JSONObject = statusHandler(),
+        handler: (String, JSONObject, RequestCancellation) -> JSONObject = statusHandler(),
         socketTimeoutMs: Int = 5_000,
+        requestDeadlineMs: Int = 30_000,
+        clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
         maxHeaderBytes: Int = 1_048_576,
         maxBodyBytes: Int = 16_777_216,
     ): HttpServer = HttpServer(
@@ -67,6 +69,8 @@ class HttpServerTest {
         token = token,
         handler = handler,
         socketTimeoutMs = socketTimeoutMs,
+        requestDeadlineMs = requestDeadlineMs,
+        clockMs = clockMs,
         maxHeaderBytes = maxHeaderBytes,
         maxBodyBytes = maxBodyBytes,
     )
@@ -271,7 +275,7 @@ class HttpServerTest {
 
     @Test
     fun driverExceptionMapsTo409WithCode() {
-        server(handler = { _, _ -> throw DriverException("STALE_REF", "gone") }).use { srv ->
+        server(handler = { _, _, _ -> throw DriverException("STALE_REF", "gone") }).use { srv ->
             srv.start()
             val resp = post(srv.localPort, "/tap")
             assertEquals(409, resp!!.status)
@@ -281,7 +285,7 @@ class HttpServerTest {
 
     @Test
     fun unexpectedHandlerExceptionMapsTo500DriverError() {
-        server(handler = { _, _ -> throw IllegalStateException("boom") }).use { srv ->
+        server(handler = { _, _, _ -> throw IllegalStateException("boom") }).use { srv ->
             srv.start()
             val resp = post(srv.localPort, "/status")
             assertEquals(500, resp!!.status)
@@ -305,7 +309,7 @@ class HttpServerTest {
 
     @Test
     fun textPlainAcceptRendersSnapshotHeaderAndText() {
-        val handler: (String, JSONObject) -> JSONObject = { _, _ ->
+        val handler: (String, JSONObject, RequestCancellation) -> JSONObject = { _, _, _ ->
             JSONObject()
                 .put("app", "com.x")
                 .put("snapshot_id", "snap-9")
@@ -321,6 +325,193 @@ class HttpServerTest {
             assertEquals("text/plain", resp.headers["content-type"])
             assertTrue(resp.body.startsWith("app=com.x snapshot=@snap-9 refs=0 settled= reads= elapsed_ms="))
             assertTrue(resp.body.contains("line one\nline two\n"))
+            assertFalse("no marker for a missing/complete snapshot", resp.body.contains("complete"))
+        }
+    }
+
+    @Test
+    fun textPlainAcceptMarksIncompleteSnapshot() {
+        val handler: (String, JSONObject, RequestCancellation) -> JSONObject = { _, _, _ ->
+            JSONObject()
+                .put("app", "com.x")
+                .put("snapshot_id", "snap-9")
+                .put("complete", false)
+                .put("text", "partial")
+        }
+        server(handler = handler).use { srv ->
+            srv.start()
+            val resp = exchange(
+                srv.localPort,
+                "POST /snapshot HTTP/1.1\r\nAuthorization: Bearer tok\r\nX-Agent-Mobile-Version: 1\r\nAccept: text/plain\r\nContent-Length: 0\r\n\r\n",
+            )
+            assertEquals(200, resp!!.status)
+            assertTrue(resp.body, resp.body.contains(" complete=false\n"))
+            assertTrue(resp.body.endsWith("partial\n"))
+        }
+    }
+
+    @Test
+    fun blockedResponseWriteClearsWithinDeadline() {
+        val big = "x".repeat(9 * 1024 * 1024)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val handler: (String, JSONObject, RequestCancellation) -> JSONObject = { command, _, _ ->
+            if (command == "snapshot") {
+                entered.countDown()
+                JSONObject().put("app", "com.x").put("snapshot_id", "s").put("text", big)
+            } else {
+                statusHandler()(command, JSONObject(), RequestCancellation())
+            }
+        }
+        val srv = server(requestDeadlineMs = 300, handler = handler)
+        srv.start()
+        try {
+            val socket = Socket("127.0.0.1", srv.localPort)
+            socket.receiveBufferSize = 1024
+            socket.sendBufferSize = 1024
+            val request = "POST /snapshot HTTP/1.1\r\n" +
+                "Authorization: Bearer tok\r\n" +
+                "X-Agent-Mobile-Version: 1\r\n" +
+                "Accept: text/plain\r\n" +
+                "Content-Length: 0\r\n\r\n"
+            socket.getOutputStream().write(request.toByteArray(Charsets.ISO_8859_1))
+            socket.getOutputStream().flush()
+            assertTrue("handler never ran", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertTrue("first request must be active", srv.hasActiveClient())
+            val limit = System.nanoTime() + 5_000_000_000L
+            while (srv.hasActiveClient() && System.nanoTime() < limit) {
+                Thread.sleep(50)
+            }
+            assertFalse("active request must clear once the deadline fires", srv.hasActiveClient())
+            socket.close()
+            val follow = post(srv.localPort, "/status")
+            assertNotNull("a later request still succeeds", follow)
+            assertEquals(200, follow!!.status)
+        } finally {
+            srv.close()
+        }
+    }
+
+    @Test
+    fun cancelledHandlerWritesNoResponseAfterDeadline() {
+        val handler: (String, JSONObject, RequestCancellation) -> JSONObject = { _, _, _ ->
+            Thread.sleep(2_000)
+            JSONObject()
+        }
+        val srv = server(requestDeadlineMs = 300, handler = handler)
+        srv.start()
+        try {
+            val socket = Socket("127.0.0.1", srv.localPort)
+            socket.soTimeout = 3_000
+            val request = "POST /status HTTP/1.1\r\n" +
+                "Authorization: Bearer tok\r\n" +
+                "X-Agent-Mobile-Version: 1\r\n" +
+                "Content-Length: 0\r\n\r\n"
+            socket.getOutputStream().write(request.toByteArray(Charsets.ISO_8859_1))
+            socket.getOutputStream().flush()
+            val first = try {
+                socket.getInputStream().read()
+            } catch (_: Exception) {
+                -1
+            }
+            assertEquals(-1, first)
+            socket.close()
+            val limit = System.nanoTime() + 5_000_000_000L
+            while (srv.hasActiveClient() && System.nanoTime() < limit) {
+                Thread.sleep(50)
+            }
+            assertFalse(srv.hasActiveClient())
+        } finally {
+            srv.close()
+        }
+    }
+
+    @Test
+    fun elapsedIncludesHandlerWork() {
+        var now = 1_000L
+        val srv = server(
+            clockMs = { now },
+            handler = { _, _, _ ->
+                now += 42
+                JSONObject()
+            },
+        )
+        srv.start()
+        try {
+            val response = post(srv.localPort, "/status")
+            assertNotNull(response)
+            val elapsed = JSONObject(response!!.body).getLong("elapsed_ms")
+            assertTrue("elapsed $elapsed must include handler work", elapsed >= 42)
+        } finally {
+            srv.close()
+        }
+    }
+
+    @Test
+    fun driverErrorMapsTo500() {
+        val srv = server(
+            handler = { _, _, _ -> throw DriverException("DRIVER_ERROR", "boom") },
+        )
+        srv.start()
+        try {
+            val response = post(srv.localPort, "/status")
+            assertNotNull(response)
+            assertEquals(500, response!!.status)
+            val error = JSONObject(response.body).getJSONObject("error")
+            assertEquals("DRIVER_ERROR", error.getString("code"))
+        } finally {
+            srv.close()
+        }
+    }
+
+    @Test
+    fun staleRefStays409() {
+        val srv = server(
+            handler = { _, _, _ -> throw DriverException("STALE_REF", "gone") },
+        )
+        srv.start()
+        try {
+            val response = post(srv.localPort, "/tap", body = "{}")
+            assertNotNull(response)
+            assertEquals(409, response!!.status)
+        } finally {
+            srv.close()
+        }
+    }
+
+    @Test
+    fun trickleBytesLoseToAbsoluteDeadline() {
+        val srv = server(socketTimeoutMs = 30_000, requestDeadlineMs = 300)
+        srv.start()
+        try {
+            Socket("127.0.0.1", srv.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                val out = socket.getOutputStream()
+                val start = System.nanoTime()
+                var wrote = 0
+                var killed = false
+                while ((System.nanoTime() - start) / 1_000_000 < 3_000) {
+                    try {
+                        out.write("X".toByteArray())
+                        out.flush()
+                        wrote += 1
+                    } catch (_: Exception) {
+                        killed = true
+                        break
+                    }
+                    Thread.sleep(10)
+                }
+                val dropped = try {
+                    socket.getInputStream().read() < 0 || killed
+                } catch (_: Exception) {
+                    true
+                }
+                assertTrue("trickle must die by absolute deadline (wrote $wrote)", dropped)
+            }
+            val response = post(srv.localPort, "/status")
+            assertNotNull("next request must still be served", response)
+            assertEquals(200, response!!.status)
+        } finally {
+            srv.close()
         }
     }
 
@@ -332,5 +523,40 @@ class HttpServerTest {
         srv.close()
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
         assertTrue("close took ${elapsedMs}ms", elapsedMs < 5_000)
+    }
+
+    @Test
+    fun closeCancelsActiveHandlerAndWaitsForExit() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val exited = java.util.concurrent.CountDownLatch(1)
+        val clientResponded = java.util.concurrent.CountDownLatch(1)
+        val srv = server(handler = { _, _, cancellation ->
+            entered.countDown()
+            try {
+                while (!cancellation.isCancelled) {
+                    Thread.sleep(5)
+                }
+                JSONObject()
+            } finally {
+                exited.countDown()
+            }
+        })
+        srv.start()
+        val requester = Thread {
+            try {
+                post(srv.localPort, "/status")?.let { clientResponded.countDown() }
+            } catch (_: Exception) {
+            }
+        }
+        requester.isDaemon = true
+        requester.start()
+        assertTrue("handler must start", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val started = System.nanoTime()
+        srv.close()
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue("handler must observe cancellation and exit", exited.await(1, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue("close must stay bounded", elapsedMs < 10_000)
+        assertFalse("cancelled request must get no response", clientResponded.await(200, java.util.concurrent.TimeUnit.MILLISECONDS))
+        assertFalse("listener worker must not survive close", srv.workerAlive())
     }
 }

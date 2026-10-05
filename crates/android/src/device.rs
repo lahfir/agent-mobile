@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use agent_mobile_core::error::Failure;
 
-use crate::adb::Adb;
+use crate::adb::{Adb, diagnostic_output};
 
 /// How a discovered target is attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +160,7 @@ pub(crate) fn list_avds(adb: &Adb, emulator: &Path) -> Result<Vec<String>, Failu
     let out = adb.tool(emulator, &["-list-avds"])?;
     if !out.success {
         return Err(Failure::local(
-            format!("emulator -list-avds failed: {}", out.stderr),
+            format!("emulator -list-avds failed: {}", diagnostic_output(&out)),
             "check the Android SDK emulator package",
         ));
     }
@@ -182,7 +182,7 @@ pub(crate) fn discover(adb: &Adb, emulator: &Path) -> Result<AndroidScan, Failur
     let out = adb.unscoped(&["devices", "-l"])?;
     if !out.success {
         return Err(Failure::local(
-            format!("adb devices failed: {}", out.stderr),
+            format!("adb devices failed: {}", diagnostic_output(&out)),
             "restart the adb server and retry",
         ));
     }
@@ -257,7 +257,7 @@ fn target_for(
 /// or empty reply is `None` and never fails the scan.
 fn probe_os(adb: &Adb, serial: &str) -> Option<String> {
     let out = adb
-        .scoped(serial, &["shell", "getprop", "ro.build.version.release"])
+        .remote_shell(serial, &["getprop", "ro.build.version.release"])
         .ok()?;
     if !out.success {
         return None;

@@ -217,7 +217,7 @@ fn malformed_body_is_driver_error() -> Result<(), Failure> {
 }
 
 #[test]
-fn driver_returned_driver_error_retries_once() -> Result<(), Failure> {
+fn driver_returned_driver_error_requires_fresh_snapshot() -> Result<(), Failure> {
     let body = r#"{"version":"1","ok":false,"command":"tap","elapsed_ms":1,"error":{"code":"DRIVER_ERROR","message":"boom"}}"#;
     let (base, join) = stub_once(500, body)?;
     let wire = Wire::new(&base, "tok");
@@ -225,7 +225,7 @@ fn driver_returned_driver_error_retries_once() -> Result<(), Failure> {
     let _ = join.join();
     let err = reply.error.ok_or_else(|| fail("missing error body"))?;
     let rendered = Failure::from_error_body(&err).render();
-    assert!(rendered.contains("retry once"));
+    assert!(rendered.contains("fresh snapshot"));
     assert!(
         !rendered.contains("unreachable"),
         "driver-returned errors must not print the transport stanza"

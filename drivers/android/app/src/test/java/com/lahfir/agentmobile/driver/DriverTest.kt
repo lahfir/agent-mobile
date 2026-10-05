@@ -19,7 +19,7 @@ private fun fixtureNode(
     role = role, name = name, value = "", states = states,
     availableActions = actions, bounds = LogicalBounds(0.0, 0.0, bounds.width.toDouble(), bounds.height.toDouble()),
     nativeId = null, children = children,
-    identity = NodeIdentity(className, role, "", text, "", bounds),
+    identity = NodeIdentity(className, role, "", text, "", bounds, packageName = "com.fake"),
 )
 
 private fun fixtureRead(
@@ -58,7 +58,14 @@ class DriverTest {
             readCalls += 1
             return tree.copy(readAtNanos = now())
         }
-        override fun performNodeAction(identity: NodeIdentity, action: NodeAction): NodeActionResult {
+        var lastActionCancellation: RequestCancellation? = null
+        var focusedCancellation: RequestCancellation? = null
+        override fun performNodeAction(
+            target: RefTarget,
+            action: NodeAction,
+            cancellation: RequestCancellation,
+        ): NodeActionResult {
+            lastActionCancellation = cancellation
             nodeActions += action
             val tree = trees.firstOrNull() ?: fixtureRead().copy(readAtNanos = now())
             return NodeActionResult(
@@ -67,7 +74,8 @@ class DriverTest {
                 accepted = actionAccepted,
             )
         }
-        override fun appendToFocused(text: String): NodeActionResult {
+        override fun appendToFocused(text: String, cancellation: RequestCancellation): NodeActionResult {
+            focusedCancellation = cancellation
             focusedCalls += 1
             return NodeActionResult(trees.first(), trees.first().root, focusedAccepted)
         }
@@ -362,11 +370,30 @@ class DriverTest {
     }
 
     @Test
+    fun statusRejectsBlankForegroundApp() {
+        val platform = FakePlatform(trees = listOf(read()))
+        platform.statusData = PlatformStatus("", "emu", "16")
+        val driver = Driver(platform)
+        try {
+            driver.handle("status", JSONObject())
+            fail("expected DRIVER_ERROR")
+        } catch (e: DriverException) {
+            assertEquals("DRIVER_ERROR", e.code)
+            assertTrue("must name the missing window", e.message!!.contains("active accessibility window"))
+        }
+    }
+
+    @Test
     fun typeUsesRefAppendOrFocusedFallback() {
         val platform = FakePlatform(trees = listOf(read()))
         val (driver, id) = mintedDriver(platform)
-        driver.handle("type", JSONObject().put("ref", "@$id:e1").put("text", "hello"))
+        val cancel = RequestCancellation()
+        driver.handle("type", JSONObject().put("ref", "@$id:e1").put("text", "hello"), cancel)
         assertTrue(platform.nodeActions.single() is NodeAction.AppendText)
+        assertTrue(
+            "request cancellation reaches the AppendText platform call",
+            platform.lastActionCancellation === cancel,
+        )
         platform.actionAccepted = false
         val (_, id2) = Unit to driver.handle("snapshot", JSONObject()).getString("snapshot_id")
         try {
@@ -375,8 +402,13 @@ class DriverTest {
         } catch (e: DriverException) {
             assertEquals("DRIVER_ERROR", e.code)
         }
-        driver.handle("type", JSONObject().put("text", "focused text"))
+        val focusedCancel = RequestCancellation()
+        driver.handle("type", JSONObject().put("text", "focused text"), focusedCancel)
         assertEquals(1, platform.focusedCalls)
+        assertTrue(
+            "focused type forwards the same cancellation",
+            platform.focusedCancellation === focusedCancel,
+        )
         try {
             driver.handle("type", JSONObject().put("text", ""))
             fail("expected BAD_REQUEST")
@@ -476,5 +508,160 @@ class DriverTest {
         }
         driver.handle("tap", JSONObject().put("x", 0).put("y", 0))
         assertEquals(1, platform.gestures.size)
+    }
+
+    @Test
+    fun statusClearsSnapshotIdAfterAppSwitch() {
+        val platform = FakePlatform(trees = listOf(read(app = "com.fake")))
+        val driver = Driver(platform)
+        val snap = driver.handle("snapshot", JSONObject())
+        assertTrue(snap.getString("snapshot_id").isNotEmpty())
+        platform.statusData = PlatformStatus("com.other", "emu64a", "17")
+        val status = driver.handle("status", JSONObject())
+        assertEquals("com.other", status.getString("app"))
+        assertEquals("", status.getString("snapshot_id"))
+    }
+
+    private fun readWithRoot(root: NodeModel, origin: RawBounds = RawBounds(0, 0, 400, 800), density: Double = 1.0): TreeRead =
+        TreeRead("com.fake", root, true, "sig", origin, density, 0L)
+
+    private fun staleRefGestureTestRoot(identity: NodeIdentity): NodeModel =
+        fixtureNode().copy(identity = identity)
+
+    @Test
+    fun refGestureFailsWhenTargetNotInActiveWindow() {
+        for ((label, ident) in listOf(
+            "hidden" to NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(10, 10, 90, 50), packageName = "com.fake", visibleToUser = false),
+            "foreign-package" to NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(10, 10, 90, 50), packageName = "com.other"),
+            "other-window" to NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(10, 10, 90, 50), packageName = "com.fake", windowId = 99),
+        )) {
+            val root = fixtureNode().copy(
+                identity = fixtureNode().identity.copy(packageName = "com.fake"),
+                children = listOf(staleRefGestureTestRoot(ident)),
+            )
+            val platform = FakePlatform(trees = listOf(readWithRoot(root)))
+            val (driver, id) = mintedDriver(platform)
+            try {
+                driver.handle("doubletap", JSONObject().put("ref", "@$id:e2"))
+                fail("$label: expected STALE_REF")
+            } catch (e: DriverException) {
+                assertEquals("$label", "STALE_REF", e.code)
+            }
+            assertEquals("$label must dispatch nothing", 0, platform.gestures.size)
+        }
+    }
+
+    @Test
+    fun refGestureFailsWhenStrokeLeavesWindow() {
+        val offscreen = staleRefGestureTestRoot(
+            NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(390, 790, 430, 830), packageName = "com.fake"),
+        )
+        val root = fixtureNode().copy(
+            identity = fixtureNode().identity.copy(packageName = "com.fake"),
+            children = listOf(offscreen),
+        )
+        val platform = FakePlatform(trees = listOf(readWithRoot(root)))
+        val (driver, id) = mintedDriver(platform)
+        try {
+            driver.handle("doubletap", JSONObject().put("ref", "@$id:e2"))
+            fail("expected STALE_REF")
+        } catch (e: DriverException) {
+            assertEquals("STALE_REF", e.code)
+        }
+        assertEquals(0, platform.gestures.size)
+    }
+
+    @Test
+    fun refusedSemanticFallbackOffWindowDispatchesNothing() {
+        val offscreen = staleRefGestureTestRoot(
+            NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(390, 790, 430, 830), packageName = "com.fake"),
+        )
+        val root = fixtureNode().copy(
+            identity = fixtureNode().identity.copy(packageName = "com.fake"),
+            children = listOf(offscreen),
+        )
+        val read = readWithRoot(root)
+        val platform = FakePlatform(trees = listOf(read), actionAccepted = false, actionResultNode = offscreen)
+        val (driver, id) = mintedDriver(platform)
+        try {
+            driver.handle("tap", JSONObject().put("ref", "@$id:e2"))
+            fail("expected STALE_REF")
+        } catch (e: DriverException) {
+            assertEquals("STALE_REF", e.code)
+        }
+        assertEquals(0, platform.gestures.size)
+    }
+
+    @Test
+    fun visibleSameWindowRefStillDispatches() {
+        val visible = staleRefGestureTestRoot(
+            NodeIdentity("android.widget.Button", "button", "", "", "", RawBounds(100, 100, 200, 160), packageName = "com.fake"),
+        )
+        val root = fixtureNode().copy(
+            identity = fixtureNode().identity.copy(packageName = "com.fake"),
+            children = listOf(visible),
+        )
+        val platform = FakePlatform(trees = listOf(readWithRoot(root)))
+        val (driver, id) = mintedDriver(platform)
+        driver.handle("doubletap", JSONObject().put("ref", "@$id:e2"))
+        assertEquals(1, platform.gestures.size)
+    }
+
+    @Test
+    fun coordinateContainmentUsesOriginAndDensity() {
+        val read = readWithRoot(
+            fixtureNode().copy(identity = fixtureNode().identity.copy(packageName = "com.fake")),
+            origin = RawBounds(100, 200, 500, 1000),
+            density = 2.0,
+        )
+        val platform = FakePlatform(trees = listOf(read))
+        val driver = Driver(platform)
+        driver.handle("tap", JSONObject().put("x", 10).put("y", 20))
+        assertEquals(1, platform.gestures.size)
+        val p = platform.gestures[0].strokes[0].points[0]
+        assertEquals(120f, p.x, 0.01f)
+        assertEquals(240f, p.y, 0.01f)
+        try {
+            driver.handle("tap", JSONObject().put("x", 500).put("y", 20))
+            fail("expected BAD_REQUEST")
+        } catch (e: DriverException) {
+            assertEquals("BAD_REQUEST", e.code)
+        }
+    }
+
+    @Test
+    fun preCancelledRequestTouchesNoPlatformOps() {
+        val platform = FakePlatform(trees = listOf(read()))
+        val driver = Driver(platform)
+        val cancelled = RequestCancellation()
+        cancelled.cancel()
+        for (command in listOf("status", "snapshot", "tap", "swipe", "screenshot")) {
+            try {
+                driver.handle(command, JSONObject().put("ref", "@aa:e1"), cancelled)
+                fail("$command: expected DRIVER_ERROR")
+            } catch (e: DriverException) {
+                assertEquals("$command", "DRIVER_ERROR", e.code)
+            }
+        }
+        assertEquals(0, platform.readCalls)
+        assertTrue(platform.nodeActions.isEmpty())
+        assertTrue(platform.gestures.isEmpty())
+        assertTrue(platform.globals.isEmpty())
+        assertEquals(0, platform.focusedCalls)
+    }
+
+    @Test
+    fun doubletapAndHoldPreferCoordinatesOverStaleRef() {
+        val platform = FakePlatform(trees = listOf(read()))
+        val driver = Driver(platform)
+        driver.handle("doubletap", JSONObject().put("x", 10).put("y", 20).put("ref", "@deadbeef:e1"))
+        driver.handle("hold", JSONObject().put("x", 10).put("y", 20).put("ref", "@deadbeef:e1").put("duration", 0.2))
+        assertEquals(2, platform.gestures.size)
+        val p0 = platform.gestures[0].strokes[0].points[0]
+        assertEquals(10f, p0.x, 0.01f)
+        assertEquals(20f, p0.y, 0.01f)
+        val p1 = platform.gestures[1].strokes[0].points[0]
+        assertEquals(10f, p1.x, 0.01f)
+        assertEquals(20f, p1.y, 0.01f)
     }
 }

@@ -157,16 +157,34 @@ fn canonical_device(cli: &Cli, store: &StateStore) -> Result<Option<String>, Fai
     let Some(raw) = cli.device.as_deref().filter(|_| flag_counts) else {
         return Ok(None);
     };
-    let live = store
-        .entry(raw)
-        .is_some_and(|e| agent_mobile_core::process::pid_alive(e.pid));
-    let canonical = if live {
-        raw.to_owned()
-    } else {
-        crate::platform::resolve(raw)?.key()
-    };
-    store.remember_device(&canonical)?;
-    Ok(Some(canonical))
+    Ok(Some(canonical_with_alias(
+        raw,
+        store,
+        crate::platform::resolve,
+    )?))
+}
+
+/// `raw` -> canonical key, live state aliases before any platform
+/// discovery (the injected resolver must not run for a live row).
+fn canonical_with_alias(
+    raw: &str,
+    store: &StateStore,
+    discover: impl Fn(&str) -> Result<crate::platform::PlatformDevice, Failure>,
+) -> Result<String, Failure> {
+    let state = store.load();
+    if let Some(key) = state.resolve_live_device_key(raw)? {
+        let display = state
+            .devices
+            .get(&key)
+            .and_then(|e| e.device_name.clone())
+            .unwrap_or_else(|| raw.to_owned());
+        store.remember_device_selection(&key, &display)?;
+        return Ok(key);
+    }
+    let device = discover(raw)?;
+    let canonical = device.key();
+    store.remember_device_selection(&canonical, device.name())?;
+    Ok(canonical)
 }
 
 /// Note when a global flag lands on a verb that ignores it — a flag that
@@ -304,3 +322,6 @@ pub fn round_trip_within(
     let env = session.call_within(verb, body, timeout)?;
     Ok(ctx.finish(env))
 }
+
+#[cfg(test)]
+mod tests;
