@@ -8,6 +8,10 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
+mod entry;
+
+pub use entry::{ResolvedEndpoint, SessionEntry};
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::Failure;
@@ -24,45 +28,16 @@ pub const URL_ENV: &str = "AGENT_MOBILE_URL";
 /// Env var overriding the driver token for one invocation.
 pub const TOKEN_ENV: &str = "AGENT_MOBILE_TOKEN";
 
-/// One device's live session: where the driver listens, which process owns
-/// it, and which token file holds the bearer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionEntry {
-    /// Base URL of the driver, e.g. `http://127.0.0.1:8770`.
-    pub url: String,
-    /// Pid of the process that owns the session.
-    pub pid: u32,
-    /// Token file name inside `tokens/`; the token never appears here.
-    pub token_file: String,
-    /// Pid of the `xcodebuild` runner `serve` spawned — the owned child to
-    /// reap when the serve pid dies without cleanup (KTD17).
-    #[serde(default)]
-    pub runner_pid: Option<u32>,
-}
-
-impl SessionEntry {
-    /// Record a session.
-    #[must_use]
-    pub fn new(url: String, pid: u32, token_file: String) -> Self {
-        Self {
-            url,
-            pid,
-            token_file,
-            runner_pid: None,
-        }
-    }
-}
-
 /// On-disk state: the remembered default device plus one entry per live
 /// driver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     /// Schema version; must equal [`STATE_VERSION`] to load.
     pub version: u32,
-    /// Device name `--device` last selected, reused when omitted.
+    /// `--device`-selected key (legacy name or `platform:id`), reused when omitted.
     #[serde(default)]
     pub default_device: Option<String>,
-    /// Live sessions keyed by device name.
+    /// Live sessions keyed by the legacy name or collision-free `platform:id` key.
     #[serde(default)]
     pub devices: BTreeMap<String, SessionEntry>,
 }
@@ -74,35 +49,6 @@ impl Default for State {
             default_device: None,
             devices: BTreeMap::new(),
         }
-    }
-}
-
-/// The endpoint one invocation should talk to: URL plus bearer token.
-/// `Debug` redacts the token.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ResolvedEndpoint {
-    /// Driver base URL.
-    pub url: String,
-    /// Device name the endpoint resolved through, when one was selected.
-    pub device: Option<String>,
-    token: String,
-}
-
-impl ResolvedEndpoint {
-    /// The bearer token for the `Authorization` header.
-    #[must_use]
-    pub fn token(&self) -> &str {
-        &self.token
-    }
-}
-
-impl std::fmt::Debug for ResolvedEndpoint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvedEndpoint")
-            .field("url", &self.url)
-            .field("device", &self.device)
-            .field("token", &"<redacted>")
-            .finish()
     }
 }
 
@@ -358,11 +304,7 @@ impl StateStore {
         let url = env_url.or_else(|| entry.as_ref().map(|e| e.url.clone()));
         let token = env_token.or_else(|| entry.as_ref().and_then(|e| self.read_token(e).ok()));
         match (url, token) {
-            (Some(url), Some(token)) => Ok(Some(ResolvedEndpoint {
-                url,
-                device: name,
-                token,
-            })),
+            (Some(url), Some(token)) => Ok(Some(ResolvedEndpoint::new(url, name, token))),
             (None, _) if token_set => Err(Failure::usage(
                 "AGENT_MOBILE_TOKEN has no driver URL to pair with; set AGENT_MOBILE_URL or run `agent-mobile serve`",
             )),

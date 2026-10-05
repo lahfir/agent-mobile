@@ -20,6 +20,18 @@ execution: code
 - **Execution profile:** Deep, cross-platform work spanning machine bootstrap, a new Gradle/Kotlin app, a Rust host-adapter crate, the CLI's platform seam, process/session lifecycle, emulator CI, docs, and live device proof.
 - **Tail ownership:** `ce-work` or an equivalent executor owns the dependency order below, including running the repository bootstrap against the current Mac. Production APK signing and release distribution remain outside P2.
 
+## Execution Progress
+
+- [x] U1. Headless Android toolchain and Gradle scaffold (`08dc7e3`)
+- [x] U2. Authenticated Android service and protocol endpoint (`22fafd6`)
+- [x] U3. Android tree, refs, and settle engine (`348f3b9`)
+- [x] U4. Android actions, gestures, screenshots, and system verbs (`9b91abb`)
+- [x] U5. Rust ADB adapter and lifecycle bridge (`334105c`)
+- [x] U6. Cross-platform discovery and session integration
+- [ ] U7. Cross-platform contract fixtures and operator documentation
+- [ ] U8. Android emulator CI and live integration gate
+- [ ] U9. Experiment 10 and P2 completion
+
 ---
 
 ## Product Contract

@@ -78,3 +78,12 @@ fn stop_closes_listener_and_stalled_client() -> Result<(), Failure> {
     assert!(TcpStream::connect(("127.0.0.1", bridge.port())).is_err());
     Ok(())
 }
+
+#[test]
+fn bridge_reports_running_then_stopped() -> Result<(), Failure> {
+    let mut bridge = start_bridge(1, &SecretToken::new("t0k"), ctl())?;
+    assert!(bridge.is_running());
+    bridge.stop();
+    assert!(!bridge.is_running());
+    Ok(())
+}

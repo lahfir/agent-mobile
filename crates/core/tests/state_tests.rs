@@ -29,12 +29,7 @@ impl Drop for TempDir {
 }
 
 fn entry(url: &str) -> SessionEntry {
-    SessionEntry {
-        url: url.to_owned(),
-        pid: std::process::id(),
-        token_file: "dev".to_owned(),
-        runner_pid: None,
-    }
+    SessionEntry::new(url.to_owned(), std::process::id(), "dev".to_owned())
 }
 
 mod common;
@@ -223,5 +218,67 @@ fn upsert_remove_and_default_device_round_trip() -> Result<(), Failure> {
         None => {}
         Some(_) => return Err(fail("removed entry must not resolve")),
     }
+    Ok(())
+}
+
+#[test]
+fn legacy_v1_row_loads_and_resolves_unchanged() -> Result<(), Failure> {
+    let tmp = TempDir::new("legacy-v1");
+    let home = tmp.0.clone();
+    let store = StateStore::at(&home);
+    let json = format!(
+        "{{\"version\":1,\"default_device\":\"iPhone 15\",\"devices\":{{\"iPhone 15\":{{\"url\":\"http://127.0.0.1:8770\",\"pid\":{},\"token_file\":\"dev\",\"runner_pid\":null}}}}}}",
+        std::process::id()
+    );
+    std::fs::create_dir_all(home.join("tokens")).map_err(Failure::from)?;
+    std::fs::write(store.state_file(), json).map_err(Failure::from)?;
+    agent_mobile_core::secret::write_secret(&store.token_path("dev"), "tok")?;
+    let state = store.load();
+    let entry = state
+        .devices
+        .get("iPhone 15")
+        .ok_or_else(|| fail("legacy row missing"))?;
+    assert_eq!(entry.platform, None);
+    assert_eq!(entry.serial, None);
+    assert_eq!(entry.forward_port, None);
+    let resolved = store.resolve_with(None, None, None)?;
+    let ep = resolved.ok_or_else(|| fail("no endpoint"))?;
+    assert_eq!(ep.url, "http://127.0.0.1:8770");
+    assert_eq!(ep.device.as_deref(), Some("iPhone 15"));
+    assert_eq!(ep.token(), "tok");
+    Ok(())
+}
+
+#[test]
+fn android_metadata_roundtrips_without_token() -> Result<(), Failure> {
+    let tmp = TempDir::new("android-meta");
+    let home = tmp.0.clone();
+    let store = StateStore::at(&home);
+    let mut entry = SessionEntry::new(
+        "http://127.0.0.1:60001".to_owned(),
+        std::process::id(),
+        "dev".to_owned(),
+    );
+    entry.platform = Some("android".to_owned());
+    entry.device_id = Some("avd:agent-mobile-api37".to_owned());
+    entry.serial = Some("emulator-5554".to_owned());
+    entry.forward_port = Some(59890);
+    entry.bridge_port = Some(59894);
+    entry.apk_source = Some("/repo/app-debug.apk".to_owned());
+    entry.emulator_pid = Some(50564);
+    entry.log_file = Some("/tmp/avd.log".to_owned());
+    store.write_token("dev", "canary-android-token")?;
+    store.upsert("android:avd:agent-mobile-api37", &entry)?;
+    let raw = std::fs::read_to_string(store.state_file()).map_err(Failure::from)?;
+    assert!(raw.contains("\"platform\": \"android\""), "{raw}");
+    assert!(raw.contains("\"serial\": \"emulator-5554\""), "{raw}");
+    assert!(raw.contains("\"forward_port\": 59890"), "{raw}");
+    assert!(!raw.contains("canary"), "token must never land in state");
+    let loaded = store.load();
+    let back = loaded
+        .devices
+        .get("android:avd:agent-mobile-api37")
+        .ok_or_else(|| fail("row missing"))?;
+    assert_eq!(back, &entry);
     Ok(())
 }

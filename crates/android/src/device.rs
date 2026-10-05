@@ -51,6 +51,8 @@ pub struct AndroidTarget {
     pub model: Option<String>,
     /// `product:` descriptor when reported.
     pub product: Option<String>,
+    /// `ro.build.version.release` for live targets; `None` otherwise.
+    pub os: Option<String>,
     /// Configured AVD name this target represents.
     pub avd: Option<String>,
 }
@@ -202,6 +204,13 @@ pub(crate) fn discover(adb: &Adb, emulator: &Path) -> Result<AndroidScan, Failur
             targets.push(cold_avd(&name));
         }
     }
+    for t in &mut targets {
+        if t.state == AndroidDeviceState::Device
+            && let Some(serial) = t.serial.as_deref()
+        {
+            t.os = probe_os(adb, serial);
+        }
+    }
     Ok(AndroidScan { targets, notes })
 }
 
@@ -239,7 +248,25 @@ fn target_for(
         state,
         model: row.fields.get("model").cloned(),
         product: row.fields.get("product").cloned(),
+        os: None,
         avd,
+    }
+}
+
+/// `shell getprop ro.build.version.release` for a live serial; a nonzero
+/// or empty reply is `None` and never fails the scan.
+fn probe_os(adb: &Adb, serial: &str) -> Option<String> {
+    let out = adb
+        .scoped(serial, &["shell", "getprop", "ro.build.version.release"])
+        .ok()?;
+    if !out.success {
+        return None;
+    }
+    let v = out.stdout.trim();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v.to_owned())
     }
 }
 
@@ -253,6 +280,7 @@ fn cold_avd(name: &str) -> AndroidTarget {
         state: AndroidDeviceState::Other("shutdown".to_owned()),
         model: None,
         product: None,
+        os: None,
         avd: Some(name.to_owned()),
     }
 }

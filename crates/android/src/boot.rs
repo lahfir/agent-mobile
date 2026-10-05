@@ -5,6 +5,7 @@
 use std::fs::File;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
@@ -98,9 +99,16 @@ fn await_avd_ready(
     name: &str,
     deadline: Instant,
     first: Option<DeviceRow>,
+    cancelled: &AtomicBool,
 ) -> Result<String, Failure> {
     let mut pending = first;
     loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(Failure::local(
+                format!("cancelled while waiting for AVD {name:?} to boot"),
+                "the emulator keeps running; rerun `serve` to reuse it",
+            ));
+        }
         let found = match pending.take() {
             Some(row) => Some(row),
             None => find_avd_row(adb, name)?,
@@ -147,6 +155,34 @@ pub(crate) fn boot_avd(
     log: &Path,
     budget: Duration,
 ) -> Result<BootedAvd, Failure> {
+    let cancelled = AtomicBool::new(false);
+    boot_avd_until(adb, emulator, name, log, budget, &cancelled)
+}
+
+/// [`boot_avd`] honoring a cancellation flag — checked before the probes
+/// and again immediately before spawn, so a pre-cancelled call never
+/// issues `-avd`; once an emulator IS running, a later cancel still
+/// leaves it up for a subsequent `serve` to reuse.
+///
+/// # Errors
+/// Same as [`boot_avd`], plus a cancelled-boot [`Failure::Local`].
+pub(crate) fn boot_avd_until(
+    adb: &Adb,
+    emulator: &Path,
+    name: &str,
+    log: &Path,
+    budget: Duration,
+    cancelled: &AtomicBool,
+) -> Result<BootedAvd, Failure> {
+    let cancel_err = || {
+        Failure::local(
+            format!("cancelled before booting AVD {name:?}"),
+            "rerun `serve` to boot it",
+        )
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(cancel_err());
+    }
     if !valid_avd_name(name) {
         return Err(Failure::usage(format!("invalid AVD name {name:?}")));
     }
@@ -161,6 +197,9 @@ pub(crate) fn boot_avd(
     let first = find_avd_row(adb, name)?;
     let mut pid = 0;
     if first.is_none() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(cancel_err());
+        }
         pid = spawn_detached(
             emulator,
             &[
@@ -175,7 +214,7 @@ pub(crate) fn boot_avd(
             log,
         )?;
     }
-    let serial = await_avd_ready(adb, name, deadline, first)?;
+    let serial = await_avd_ready(adb, name, deadline, first, cancelled)?;
     Ok(BootedAvd {
         serial,
         pid,

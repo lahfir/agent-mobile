@@ -7,14 +7,17 @@ use crate::adb::Adb;
 use crate::driver::DEVICE_PORT;
 
 /// One parsed `forward --list` row.
-struct ForwardRow {
-    serial: String,
-    local: String,
-    remote: String,
+pub(crate) struct ForwardRow {
+    /// Owning serial.
+    pub(crate) serial: String,
+    /// `tcp:<port>` on the host.
+    pub(crate) local: String,
+    /// `tcp:<port>` on the device.
+    pub(crate) remote: String,
 }
 
 /// Scoped `forward --list` parsed into rows.
-fn list_forwards(adb: &Adb, serial: &str) -> Result<Vec<ForwardRow>, Failure> {
+pub(crate) fn list_forwards(adb: &Adb, serial: &str) -> Result<Vec<ForwardRow>, Failure> {
     let out = adb.scoped_ok(serial, "forward list", &["forward", "--list"])?;
     Ok(out
         .stdout

@@ -27,7 +27,6 @@ use serde_json::Value;
 use agent_mobile_core::contract::{Data, Envelope, Ref, trim_snapshot};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::format;
-use agent_mobile_core::ios;
 use agent_mobile_core::state::StateStore;
 use agent_mobile_core::wire::Wire;
 
@@ -164,13 +163,7 @@ fn canonical_device(cli: &Cli, store: &StateStore) -> Result<Option<String>, Fai
     let canonical = if live {
         raw.to_owned()
     } else {
-        ios::find_device(raw)?
-            .ok_or_else(|| {
-                Failure::usage(format!(
-                    "no device {raw:?}; `agent-mobile devices` lists reachable devices"
-                ))
-            })?
-            .name
+        crate::platform::resolve(raw)?.key()
     };
     store.remember_device(&canonical)?;
     Ok(Some(canonical))

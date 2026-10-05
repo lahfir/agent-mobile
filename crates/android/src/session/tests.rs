@@ -182,3 +182,43 @@ fn close_failure_leaves_drop_retry() -> Result<(), Failure> {
     assert_eq!(removes, 2);
     Ok(())
 }
+
+#[test]
+fn remove_owned_forward_tolerates_already_gone_row() {
+    let runner = FakeRunner::scripted(vec![
+        output(false, "", "remove failed"),
+        output(true, "s1 tcp:1 tcp:9999", ""),
+    ]);
+    let adapter = AndroidAdapter::for_test(
+        Adb::with_runner(PathBuf::from("adb"), runner.clone()),
+        PathBuf::from("emulator"),
+        None,
+    );
+    assert!(adapter.remove_owned_forward("s1", 5000).is_ok());
+    let calls = runner.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0][4], "tcp:5000");
+}
+
+#[test]
+fn remove_owned_forward_errors_when_row_persists() {
+    let runner = FakeRunner::scripted(vec![
+        output(false, "", "remove failed"),
+        output(true, "s1 tcp:5000 tcp:8770", ""),
+    ]);
+    let adapter = AndroidAdapter::for_test(
+        Adb::with_runner(PathBuf::from("adb"), runner.clone()),
+        PathBuf::from("emulator"),
+        None,
+    );
+    assert!(adapter.remove_owned_forward("s1", 5000).is_err());
+}
+
+#[test]
+fn session_reports_running_state() -> Result<(), Failure> {
+    let (adapter, _r) = adapter_with(upstream_status())?;
+    let session = adapter.start_session("s1")?;
+    assert!(session.is_running());
+    session.close()?;
+    Ok(())
+}

@@ -7,7 +7,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
-use agent_mobile_core::ios;
 use agent_mobile_core::process::{BOOT_POLL, BootLock, boot_budget};
 
 use super::{Ctx, Session, ensure_state_dir};
@@ -83,7 +82,10 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
                     f.read_to_string(&mut s).map(|_| s)
                 })
                 .unwrap_or_default();
-            let failure = if super::serve::TRUST_MARKERS.iter().any(|m| text.contains(m)) {
+            let failure = if crate::platform::TRUST_MARKERS
+                .iter()
+                .any(|m| text.contains(m))
+            {
                 "the development certificate is not trusted on the device".to_owned()
             } else {
                 last_error_line(&text)
@@ -111,35 +113,29 @@ fn last_error_line(log_text: &str) -> String {
 }
 
 /// Which device a lazy boot serves: `--device` wins, then the remembered
-/// default, then the first iPhone-shaped simulator, then any simulator,
-/// then a physical device — `devicectl` only runs when no simulator exists.
-/// A remembered UDID or stale name is healed to the canonical name here —
-/// `serve` keys the session under it and the waiter polls `resolve` through
-/// the same `default_device`, so the two must agree.
+/// default healed to a collision-free key, then the platform default —
+/// iPhone-named simulator, any iOS simulator, iOS physical, ready Android
+/// target, any Android target. `serve` keys the session under the same
+/// key the waiter polls through `default_device`, so the two must agree.
 fn pick_device(ctx: &Ctx) -> Result<String, Failure> {
     if let Some(d) = &ctx.device {
         return Ok(d.clone());
     }
     if let Some(d) = ctx.store.load().default_device {
-        if let Ok(Some(found)) = ios::find_device(&d) {
-            if found.name != d {
-                let _ = ctx.store.remember_device(&found.name);
+        if let Ok(found) = crate::platform::resolve(&d) {
+            let key = found.key();
+            if key != d {
+                let _ = ctx.store.remember_device(&key);
             }
-            return Ok(found.name);
+            return Ok(key);
         }
         return Ok(d);
     }
-    let sims = ios::simulators()?;
-    let pick = sims
-        .iter()
-        .find(|d| d.name.contains("iPhone"))
-        .or_else(|| sims.first())
-        .cloned()
-        .or_else(|| ios::physical().into_iter().next());
-    pick.map(|d| d.name).ok_or_else(|| {
+    let scan = crate::platform::discover()?;
+    crate::platform::default_device(&scan).map(|d| d.key()).ok_or_else(|| {
         Failure::local(
             "no devices found",
-            "create a simulator with `xcrun simctl create <name> <type>` or pair a device",
+            "create a simulator with `xcrun simctl create <name> <type>`, pair a device, or create an Android AVD",
         )
     })
 }

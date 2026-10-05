@@ -37,32 +37,6 @@ fn budget_from(raw: Option<&str>) -> Duration {
         .map_or(BOOT_BUDGET_DEFAULT, Duration::from_secs)
 }
 
-#[cfg(test)]
-mod budget_tests {
-    use super::{BOOT_BUDGET_DEFAULT, budget_from};
-    use std::time::Duration;
-
-    #[test]
-    fn unset_or_junk_keeps_the_default() {
-        for raw in [
-            None,
-            Some(
-                "
-",
-            ),
-            Some("soon"),
-            Some("0"),
-            Some("-5"),
-        ] {
-            assert_eq!(budget_from(raw), BOOT_BUDGET_DEFAULT);
-        }
-    }
-
-    #[test]
-    fn a_whole_number_of_seconds_wins() {
-        assert_eq!(budget_from(Some(" 600 ")), Duration::from_secs(600));
-    }
-}
 /// Poll interval for boot waits in `serve` and lazy start.
 pub const BOOT_POLL: Duration = Duration::from_millis(500);
 
@@ -343,5 +317,32 @@ impl BootLock {
 impl Drop for BootLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::{BOOT_BUDGET_DEFAULT, budget_from};
+    use std::time::Duration;
+
+    #[test]
+    fn unset_or_junk_keeps_the_default() {
+        for raw in [
+            None,
+            Some(
+                "
+",
+            ),
+            Some("soon"),
+            Some("0"),
+            Some("-5"),
+        ] {
+            assert_eq!(budget_from(raw), BOOT_BUDGET_DEFAULT);
+        }
+    }
+
+    #[test]
+    fn a_whole_number_of_seconds_wins() {
+        assert_eq!(budget_from(Some(" 600 ")), Duration::from_secs(600));
     }
 }

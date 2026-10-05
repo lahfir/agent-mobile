@@ -3,7 +3,7 @@
 
 use clap::{Parser, Subcommand};
 
-/// Drive iOS apps through a snapshot -> act loop.
+/// Drive iOS and Android apps through a snapshot -> act loop.
 #[derive(Debug, Parser)]
 #[command(name = "agent-mobile", version, about)]
 pub struct Cli {
@@ -16,8 +16,8 @@ pub struct Cli {
     /// Drop tree nodes deeper than N levels; marks the snapshot incomplete.
     #[arg(long, global = true, value_name = "N")]
     pub max_depth: Option<u32>,
-    /// Device to target; remembered for later invocations.
-    #[arg(long, global = true, value_name = "NAME")]
+    /// Device to target — name, id, or `platform:id` key; remembered for later invocations.
+    #[arg(long, global = true, value_name = "DEVICE")]
     pub device: Option<String>,
     /// The verb to run.
     #[command(subcommand)]
@@ -27,11 +27,11 @@ pub struct Cli {
 /// One CLI verb per variant; `devices` is CLI-side only.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List reachable simulators and paired devices.
+    /// List reachable simulators, devices, and AVDs.
     Devices,
     /// Start a driver for one device in the foreground; prints the token once.
     Serve {
-        /// Device name or UDID from `agent-mobile devices`.
+        /// Device name, id, or stable key from `agent-mobile devices`.
         device: String,
     },
     /// Show the active app and session identity.

@@ -237,6 +237,11 @@ impl Bridge {
         self.port
     }
 
+    /// Whether the accept thread is alive and no stop was requested.
+    pub(crate) fn is_running(&self) -> bool {
+        !self.stop.load(Ordering::SeqCst) && self.handle.as_ref().is_some_and(|h| !h.is_finished())
+    }
+
     /// Test hook: signal each accepted client after it is installed in
     /// `active`, so shutdown tests can synchronize without sleeps.
     #[cfg(test)]

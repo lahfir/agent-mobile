@@ -1,29 +1,17 @@
-//! `serve`: foreground driver for one device — takes the single-instance
-//! lock, spawns the xcodebuild runner behind the drop guard, prints the
-//! token and URL once, and supervises until the runner dies (KTD7, KTD8).
+//! `serve`: foreground driver for one device on either platform — takes
+//! the single-instance lock, reclaims stale state, starts a
+//! `PlatformRuntime`, prints the token and URL once, and supervises until
+//! the runtime dies (KTD7, KTD8).
 
 use std::fs::OpenOptions;
 use std::io::IsTerminal as _;
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use agent_mobile_core::error::Failure;
-use agent_mobile_core::ios;
-use agent_mobile_core::process::{BOOT_POLL, ServeChild, boot_budget, mint_token, tcp_ready};
 use agent_mobile_core::state::{SessionEntry, StateStore};
-use agent_mobile_core::wire::Wire;
 
 use super::{Ctx, Session};
-
-/// Verbatim fragments of the certificate trust refusal and the locked-device
-/// refusal (Experiments 7-9); `lazy` scans the same log for them.
-pub(crate) const TRUST_MARKERS: &[&str] = &[
-    "not been explicitly trusted",
-    "certificate is not trusted",
-    "Developer App Certificate",
-    "com.apple.dt.deviceprep",
-    "to Continue",
-];
+use crate::platform::{self, PlatformDevice, PlatformRuntime};
 
 /// Run `serve <device>`; blocks for the life of the driver.
 pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
@@ -31,61 +19,40 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     crate::cmd::ensure_state_dir(store)?;
     let lock = acquire_lock(store)?;
     let term = term_flag()?;
-    let device = ios::find_device(device_name)?.ok_or_else(|| {
-        Failure::usage(format!(
-            "unknown device {device_name:?}; run `agent-mobile devices`"
-        ))
-    })?;
+    let device = platform::resolve(device_name)?;
+    let key = device.key();
     reclaim_or_conflict(store, &device)?;
-    if device.kind == "simulator" {
-        eprintln!("booting {} ({})…", device.name, device.udid);
-        ios::boot_simulator(&device.udid)?;
+    let log = store.driver_log(&key);
+    let mut runtime = PlatformRuntime::start(&device, &log, &term)?;
+    let token_file = StateStore::token_file_for(&key);
+    let entry = runtime.session_entry(token_file.clone(), &log);
+    if let Err(f) = register_session(store, &key, &token_file, &entry, runtime.token()) {
+        return finish_cleanup(store, &key, &token_file, &entry, Err(f), || runtime.stop());
     }
-    let token = mint_token()?;
-    let token_file = StateStore::token_file_for(&device.name);
-    store.remove_token(&token_file)?;
-    store.write_token(&token_file, &token)?;
-    let source = ios::driver_source()?;
-    let log = store.driver_log(&device.name);
-    let mut cmd = ios::serve_command(&device, ios::DEFAULT_PORT, &token, &source)?;
-    let mut child = ServeChild::spawn_logged(&mut cmd, &log)?;
-    eprintln!(
-        "starting driver for {} — log: {}",
-        device.name,
-        log.display()
-    );
-    let url = ios::driver_url(&device, ios::DEFAULT_PORT);
-    let addr = ios::driver_addr(&device, ios::DEFAULT_PORT);
-    if let Err(failure) = await_driver(&mut child, &addr, &url, &token, &log, &term) {
-        let _ = store.remove_token(&token_file);
-        return Err(failure);
-    }
-    let mut entry = SessionEntry::new(url.clone(), std::process::id(), token_file.clone());
-    entry.runner_pid = Some(child.pid());
-    store.upsert(&device.name, &entry)?;
-    store.remember_device(&device.name)?;
-    let ready = ready_line(&url, &token, &device.name, store, &token_file);
+    let ready = ready_line(&runtime, &device, store, &token_file);
     super::emit(&ready);
-    eprintln!("driver ready on {url}");
+    eprintln!("driver ready on {}", runtime.url());
     if let Some(app) = &ctx.app {
-        let session = Session::new(url.clone(), token);
-        let code = super::round_trip_within(
+        let session = Session::new(runtime.url().to_owned(), runtime.token().to_owned());
+        let launch = super::round_trip_within(
             ctx,
             &session,
             "launch",
             &serde_json::json!({ "bundle_id": app }),
             agent_mobile_core::wire::LONG_TIMEOUT,
-        )?;
-        if code != 0 {
-            clear_session(store, &device.name, &token_file);
-            return Ok(code);
+        );
+        match launch {
+            Ok(0) => {}
+            other => {
+                return finish_cleanup(store, &key, &token_file, &entry, other, || runtime.stop());
+            }
         }
     }
-    supervise(store, &device, &mut child, lock, &token_file, &term)
+    supervise(store, &key, &mut runtime, lock, &token_file, &term, &entry)
 }
 
-/// The single-instance lock; a held lock reports the live session, the port,
-/// and the remedy — never kill-by-port (KTD17).
+/// The single-instance lock; a held lock reports the live session, the
+/// port, and the remedy — never kill-by-port (KTD17).
 fn acquire_lock(store: &StateStore) -> Result<std::fs::File, Failure> {
     let file = OpenOptions::new()
         .create(true)
@@ -112,191 +79,184 @@ fn acquire_lock(store: &StateStore) -> Result<std::fs::File, Failure> {
     }
 }
 
-/// A live entry for this device means a foreign runner owns the port; a dead
-/// one is reclaimed — a serve that died without cleanup (SIGKILL, panic) may
-/// have left its runner holding the port, so the recorded owned pid gets a
-/// TERM first. A bound port with no live entry can still be ours: another
-/// device's dead serve may have orphaned a runner holding it, so dead
-/// entries across every device are swept before the port is called foreign.
-/// A foreign listener is named with the port, the device, and the remedy
-/// (KTD7, KTD8, KTD17).
-fn reclaim_or_conflict(store: &StateStore, device: &ios::Device) -> Result<(), Failure> {
-    let addr = ios::driver_addr(device, ios::DEFAULT_PORT);
-    if let Some(entry) = store.entry(&device.name) {
+/// Reclaim state for the selected device and sweep every dead row. A live
+/// entry under either the collision-free key or the iOS legacy name is a
+/// conflict. A dead selected row gets `cleanup_stale` — its failure
+/// propagates verbatim so the named remedy stays executable. Other
+/// devices' dead rows are swept best-effort: a failed unrelated Android
+/// cleanup stays recorded and is only a note. Finally, iOS's fixed driver
+/// port must be free once stale runners are reaped — a still-bound port
+/// is a foreign listener (KTD7, KTD8, KTD17); Android's ephemeral forward
+/// needs no such check.
+fn reclaim_or_conflict(store: &StateStore, device: &PlatformDevice) -> Result<(), Failure> {
+    let mut aliases = vec![device.key()];
+    if let Some(legacy) = device.legacy_key() {
+        aliases.push(legacy.to_owned());
+    }
+    for alias in &aliases {
+        let Some(entry) = store.entry(alias) else {
+            continue;
+        };
         if agent_mobile_core::process::pid_alive(entry.pid) {
             return Err(Failure::local(
                 format!(
                     "{} already has a driver on {} (pid {})",
-                    device.name, entry.url, entry.pid
+                    device.name(),
+                    entry.url,
+                    entry.pid
                 ),
                 "use the live session, or `kill` its pid to stop it",
             ));
         }
-        reap_entry(store, &device.name, &entry);
-    }
-    if !tcp_ready(&addr) {
-        return Ok(());
+        platform::cleanup_stale(&entry)?;
+        let _ = store.remove(alias);
+        let _ = store.remove_token(&entry.token_file);
     }
     let state = store.load();
     for (name, entry) in &state.devices {
-        if name != &device.name && !agent_mobile_core::process::pid_alive(entry.pid) {
-            reap_entry(store, name, entry);
+        if aliases.iter().any(|a| a == name) || agent_mobile_core::process::pid_alive(entry.pid) {
+            continue;
+        }
+        match platform::cleanup_stale(entry) {
+            Ok(()) => {
+                let _ = store.remove(name);
+                let _ = store.remove_token(&entry.token_file);
+            }
+            Err(e) => {
+                eprintln!("note: stale {name} session not reclaimed: {}", e.message());
+            }
         }
     }
-    if tcp_ready(&addr) {
+    if let Some(addr) = device.fixed_addr()
+        && agent_mobile_core::process::tcp_ready(&addr)
+    {
         return Err(Failure::local(
             format!(
-                "port {} for {} is already bound by another process",
-                ios::DEFAULT_PORT,
-                device.name
+                "{addr} for {} is already bound by another process",
+                device.name()
             ),
             format!(
                 "find the owner with `lsof -i :{}` and stop it, then retry `serve`",
-                ios::DEFAULT_PORT
+                addr.rsplit(':').next().unwrap_or("8770")
             ),
         ));
     }
     Ok(())
 }
 
-/// The one-time ready line. The bearer token only prints to a real terminal —
-/// under lazy boot stdout is the append-mode driver log, and secrets do not
-/// land there; a piped run points at the token file instead.
-fn ready_line(
-    url: &str,
+/// Persist the session rows that make this runtime claimable: fresh
+/// token file (0600), the precomputed state entry, then the remembered
+/// device. Any failure after the runtime started routes through cleanup.
+fn register_session(
+    store: &StateStore,
+    key: &str,
+    token_file: &str,
+    entry: &SessionEntry,
     token: &str,
-    device: &str,
+) -> Result<(), Failure> {
+    store.remove_token(token_file)?;
+    store.write_token(token_file, token)?;
+    store.upsert(key, entry)?;
+    store.remember_device(key)
+}
+
+/// Drop the session entry and its token file; both best-effort — the
+/// serve is going down either way.
+fn clear_session(store: &StateStore, key: &str, token_file: &str) {
+    let _ = store.remove(key);
+    let _ = store.remove_token(token_file);
+}
+
+/// Close every serve error path through the same ordering: `stop` first,
+/// state/token removal only after a successful stop. When the stop itself
+/// fails, the already-computed `entry` is re-upserted best-effort — it is
+/// the only exact serial/forward record, so the next `serve` can reclaim
+/// rather than leak. Cleanup failure takes precedence over the original
+/// error.
+fn finish_cleanup(
+    store: &StateStore,
+    key: &str,
+    token_file: &str,
+    entry: &SessionEntry,
+    result: Result<i32, Failure>,
+    stop: impl FnOnce() -> Result<(), Failure>,
+) -> Result<i32, Failure> {
+    let cleanup = stop().map(|()| clear_session(store, key, token_file));
+    match (result, cleanup) {
+        (Ok(code), Ok(())) => Ok(code),
+        (_, Err(cleanup_failure)) => {
+            let _ = store.upsert(key, entry);
+            Err(cleanup_failure)
+        }
+        (Err(original), Ok(())) => Err(original),
+    }
+}
+
+/// The one-time ready line. The bearer token only prints to a real
+/// terminal — under lazy boot stdout is the append-mode driver log, and
+/// secrets do not land there; a piped run points at the token file
+/// instead.
+fn ready_line(
+    runtime: &PlatformRuntime,
+    device: &PlatformDevice,
     store: &StateStore,
     token_file: &str,
 ) -> String {
+    let base = format!(
+        "url={} device=\"{}\" platform={} id={}",
+        runtime.url(),
+        device.name(),
+        device.platform().as_str(),
+        device.id()
+    );
     if std::io::stdout().is_terminal() {
-        format!("url={url} token={token} device=\"{device}\"")
+        format!("{base} token={}", runtime.token())
     } else {
         format!(
-            "url={url} device=\"{device}\" token_file={}",
+            "{base} token_file={}",
             store.token_path(token_file).display()
         )
     }
 }
 
-/// Reap a dead session's orphaned runner, then drop the entry and token.
-fn reap_entry(store: &StateStore, device: &str, entry: &SessionEntry) {
-    if let Some(rpid) = entry.runner_pid
-        && agent_mobile_core::process::pid_alive(rpid)
-        && agent_mobile_core::process::terminate_runner(rpid)
-    {
-        let _ = agent_mobile_core::process::await_exit(rpid, Duration::from_secs(5));
-    }
-    let _ = store.remove(device);
-    let _ = store.remove_token(&entry.token_file);
-}
-
-/// Poll the port, the log tail, and the child until one settles; `Ok` means
-/// the freshly minted token got a `status` reply — a bare TCP accept is not
-/// enough, since a foreign listener could hold the port instead. A listener
-/// that answers the protocol but rejects our token, or answers with HTTP we
-/// cannot parse, is a squatter and fails fast; only transport-level silence
-/// keeps polling. `addr` resolves once — mDNS lookups are the expensive part
-/// of every poll — and retries only while resolution itself is failing.
-fn await_driver(
-    child: &mut ServeChild,
-    addr: &str,
-    url: &str,
-    token: &str,
-    log: &Path,
-    term: &std::sync::atomic::AtomicBool,
-) -> Result<(), Failure> {
-    use std::net::{SocketAddr, ToSocketAddrs};
-    use std::sync::atomic::Ordering;
-    let deadline = Instant::now() + boot_budget();
-    let probe = Wire::with_timeout(url, token, Duration::from_secs(3));
-    let mut addrs: Option<Vec<SocketAddr>> = addr.to_socket_addrs().ok().map(Iterator::collect);
-    while Instant::now() < deadline {
-        if term.load(Ordering::Relaxed) {
-            return Err(Failure::local(
-                "interrupted during driver boot",
-                "rerun `serve` to start the driver again",
-            ));
-        }
-        if let Some(list) = &addrs
-            && agent_mobile_core::process::tcp_ready_at(list)
-        {
-            match probe.call("status", &serde_json::json!({})) {
-                Ok(env) if env.ok => return Ok(()),
-                Ok(_) | Err(Failure::Local { .. } | Failure::Driver { .. }) => {
-                    return Err(Failure::local(
-                        format!("{addr} is held by a service that is not this driver"),
-                        format!(
-                            "find the owner with `lsof -i :{}` and stop it, then retry `serve`",
-                            ios::DEFAULT_PORT
-                        ),
-                    ));
-                }
-                Err(_) => {}
-            }
-        }
-        if addrs.is_none() {
-            addrs = addr.to_socket_addrs().ok().map(Iterator::collect);
-        }
-        let out = child.new_output();
-        if TRUST_MARKERS.iter().any(|m| out.contains(m)) {
-            return Err(Failure::local(
-                "the device refused the runner: certificate untrusted or device locked",
-                "unlock the device and trust the Developer App certificate under \
-                 Settings > General > VPN & Device Management, then rerun `serve`",
-            ));
-        }
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return Err(Failure::local(
-                format!("the driver exited before binding; see {}", log.display()),
-                "check the log for the failing step and retry `serve`",
-            ));
-        }
-        std::thread::sleep(BOOT_POLL);
-    }
-    Err(Failure::local(
-        format!(
-            "the driver did not answer {addr} within {}s",
-            boot_budget().as_secs()
-        ),
-        format!("check the log at {} and retry `serve`", log.display()),
-    ))
-}
-
-/// Block on the runner; whatever ends it, the state entry goes with it.
-/// SIGINT/SIGTERM forward to the child — the drop guard alone cannot run
-/// under a signal, so the flag poll does the forwarding (KTD8).
+/// Block on the runtime; whatever ends it, the state entry goes with it
+/// once owned cleanup succeeds. SIGINT/SIGTERM forwards through `stop` —
+/// the drop guard alone cannot run under a signal (KTD8). A `poll_exit`
+/// failure takes the same cleanup path before the error surfaces.
 fn supervise(
     store: &StateStore,
-    device: &ios::Device,
-    child: &mut ServeChild,
+    key: &str,
+    runtime: &mut PlatformRuntime,
     _lock: std::fs::File,
     token_file: &str,
     term: &std::sync::atomic::AtomicBool,
+    entry: &SessionEntry,
 ) -> Result<i32, Failure> {
-    let status = loop {
+    loop {
         if term.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            clear_session(store, &device.name, token_file);
+            finish_cleanup(store, key, token_file, entry, Ok(130), || runtime.stop())?;
             eprintln!("interrupted; driver stopped");
             return Ok(130);
         }
-        if let Some(status) = child.try_wait()? {
-            break status;
+        match runtime.poll_exit() {
+            Ok(Some(crate::platform::RuntimeExit { success, detail })) => {
+                finish_cleanup(
+                    store,
+                    key,
+                    token_file,
+                    entry,
+                    Ok(i32::from(!success)),
+                    || runtime.stop(),
+                )?;
+                eprintln!("driver exited ({detail})");
+                return Ok(i32::from(!success));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+            Err(f) => {
+                return finish_cleanup(store, key, token_file, entry, Err(f), || runtime.stop());
+            }
         }
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    clear_session(store, &device.name, token_file);
-    eprintln!("driver exited ({status})");
-    Ok(i32::from(!status.success()))
-}
-
-/// Drop the session entry and its token file; both best-effort — the serve
-/// is going down either way.
-fn clear_session(store: &StateStore, device: &str, token_file: &str) {
-    let _ = store.remove(device);
-    let _ = store.remove_token(token_file);
+    }
 }
 
 /// Shared flag set by SIGINT/SIGTERM so `supervise` can forward the signal.
@@ -308,3 +268,6 @@ fn term_flag() -> Result<std::sync::Arc<std::sync::atomic::AtomicBool>, Failure>
         .map_err(Failure::from)?;
     Ok(flag)
 }
+
+#[cfg(test)]
+mod tests;

@@ -85,6 +85,44 @@ impl AndroidAdapter {
         boot_avd(&self.adb, &self.emulator, name, log, budget)
     }
 
+    /// [`AndroidAdapter::boot_avd`] honoring a cancellation flag; a
+    /// cancelled boot leaves the emulator running for a later `serve`.
+    ///
+    /// # Errors
+    /// Same contract as [`AndroidAdapter::boot_avd`] plus cancel.
+    pub fn boot_avd_until(
+        &self,
+        name: &str,
+        log: &Path,
+        budget: Duration,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<BootedAvd, Failure> {
+        crate::boot::boot_avd_until(&self.adb, &self.emulator, name, log, budget, cancelled)
+    }
+
+    /// Remove exactly `adb -s <serial> forward --remove tcp:<port>`. When
+    /// the removal itself fails, the row is re-listed and the call still
+    /// succeeds if the exact row is already absent — stale-state cleanup
+    /// must never remove a foreign row.
+    ///
+    /// # Errors
+    /// [`Failure::Local`] when removal fails and the row still exists.
+    pub fn remove_owned_forward(&self, serial: &str, port: u16) -> Result<(), Failure> {
+        match crate::forward::remove_forward(&self.adb, serial, port) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let gone = crate::forward::list_forwards(&self.adb, serial)
+                    .map(|rows| {
+                        !rows
+                            .iter()
+                            .any(|r| r.serial == serial && r.local == format!("tcp:{port}"))
+                    })
+                    .unwrap_or(false);
+                if gone { Ok(()) } else { Err(e) }
+            }
+        }
+    }
+
     /// Ordered session bring-up for `serial`: state check → APK → install
     /// → provision → enable → forward → status probe → bridge. Each later
     /// step's failure unwinds what this call created.
@@ -232,6 +270,13 @@ impl AndroidSession {
     #[must_use]
     pub fn apk_source(&self) -> &Path {
         &self.apk_source
+    }
+
+    /// Whether the bridge is still serving — `false` once stopped or the
+    /// accept thread ended.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        !self.closed && self.bridge.as_ref().is_some_and(Bridge::is_running)
     }
 
     /// Stop the bridge, then remove only this session's
