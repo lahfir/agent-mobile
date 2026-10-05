@@ -48,8 +48,11 @@ class AgentMobileAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun handleRequest(command: String, params: JSONObject): JSONObject {
-        val task = FutureTask { driver.handle(command, params) }
+    internal fun <T> onMain(block: () -> T): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return block()
+        }
+        val task = FutureTask(java.util.concurrent.Callable { block() })
         if (!mainHandler.post(task)) {
             throw RuntimeException("driver main thread unavailable")
         }
@@ -70,6 +73,9 @@ class AgentMobileAccessibilityService : AccessibilityService() {
             throw RuntimeException("driver operation interrupted")
         }
     }
+
+    private fun handleRequest(command: String, params: JSONObject): JSONObject =
+        driver.handle(command, params)
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 

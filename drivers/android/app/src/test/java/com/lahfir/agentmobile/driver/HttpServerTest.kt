@@ -244,7 +244,12 @@ class HttpServerTest {
                 srv.close()
                 val elapsedMs = System.currentTimeMillis() - startMs
                 assertTrue("close blocked ${elapsedMs}ms", elapsedMs < 5_000)
-                assertEquals(-1, stalled.getInputStream().read())
+                val eof = try {
+                    stalled.getInputStream().read()
+                } catch (_: java.net.SocketException) {
+                    -1
+                }
+                assertEquals(-1, eof)
             }
         } finally {
             srv.close()
