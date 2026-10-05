@@ -10,15 +10,16 @@ so any tunnel can forward it. Sibling of agent-browser (web) and agent-desktop (
   lazy-starts a driver when none runs; `serve` runs one in the foreground. The npm package
   bundles a prebuilt simulator runner, so the iOS simulator path builds nothing on the user's
   Mac.
-- P2 Android implemented on this branch: a Kotlin `AccessibilityService` driver plus a Rust
-  ADB adapter serve the same protocol — cross-platform `devices`/`serve`, normalized
-  `platform:id` device keys, a loopback bridge with one owned `adb forward`, and exact
-  owned-resource cleanup. The emulator-CI unit and Experiment 10 (emulator proof plus a
-  conditional physical-phone leg) are still pending, so treat Android support as
-  implemented-but-not-yet-CI-proven.
-- Probe evidence stands (`docs/experiments/RESULTS.md`, Experiments 1–9): agent-driven Calendar
-  events on the iOS 26 simulator and on a physical iPhone 14 Pro over Wi-Fi, settled snapshots,
-  STALE_REF refusing a mistap, one boot from a clean state.
+- P2 Android is implemented and emulator-proven on this branch: a Kotlin
+  `AccessibilityService` driver plus a Rust ADB adapter serve the same protocol —
+  cross-platform `devices`/`serve`, normalized `platform:id` device keys, a loopback
+  bridge with one owned `adb forward`, and exact owned-resource cleanup. A headless
+  Ubuntu emulator job gates the rail; the local live gate passed, and Experiment 10
+  created a real Clock alarm.
+- Probe evidence stands (`docs/experiments/RESULTS.md`, Experiments 1–10): agent-driven Calendar
+  events on the iOS 26 simulator and on a physical iPhone 14 Pro over Wi-Fi, plus the Android
+  17 emulator alarm. Experiment 10's physical Android leg is explicitly not run because no
+  authorized phone was available; its manual procedure remains in the experiment record.
 - Not built (later phases): the reliability benchmark for Android (P3), the MCP wrapper (P4),
   the iOS in-app SDK, end-to-end encryption on the LAN hop.
 
@@ -155,7 +156,8 @@ Physical Android: enable Developer options and USB debugging, authorize the comp
 device prompt, then `adb devices` should list the serial. For official wireless debugging
 (Android 11+): `adb pair <ip>:<pair-port>` then `adb connect <ip>:<connect-port>` — the ports
 differ and rotate; the pairing persists until revoked. Authorized adb is one consent boundary;
-nothing touches Play distribution — sideload/debug only.
+nothing touches Play distribution — sideload/debug only. The adapter supports these serials,
+but the Experiment 10 physical-phone leg awaits an available authorized device.
 
 Accessibility approval is the second consent boundary:
 
@@ -280,9 +282,10 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
 - `drivers/ios/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
   server (`Driver/AgentMobileServer.swift`); `Host/` is the minimal app the runner attaches to.
   `am.sh` is a curl helper and `tunnel-cloudflared.sh` is the reference tunnel adapter.
-- `scripts/` — `setup-android-sdk.sh` (headless SDK install/check), `record-fixtures.sh`
-  (fixture capture), `check-*.sh` source gates, `bench.py`.
+- `scripts/` — `setup-android-sdk.sh` (headless SDK install/check),
+  `ci-boot-android-emulator.sh` (bounded CI lifecycle), `record-fixtures.sh` (fixture capture),
+  `check-*.sh` source gates, `bench.py`.
 - `docs/PRD.md` — the product requirements: contract, phases P1–P4 with experiment exit
   criteria, engineering practices, risks, and the reliability gate.
 - `docs/research/` and `docs/experiments/` — the 13 research tracks with their synthesis, and
-  the experiment record with verbatim output (Experiments 1–9) plus logs and screenshots.
+  the experiment record with verbatim output (Experiments 1–10) plus logs and screenshots.

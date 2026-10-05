@@ -28,9 +28,9 @@ execution: code
 - [x] U4. Android actions, gestures, screenshots, and system verbs (`9b91abb`)
 - [x] U5. Rust ADB adapter and lifecycle bridge (`334105c`)
 - [x] U6. Cross-platform discovery and session integration (`abf3877`)
-- [x] U7. Cross-platform contract fixtures and operator documentation
-- [x] U8. Android emulator CI and live integration gate
-- [ ] U9. Experiment 10 and P2 completion
+- [x] U7. Cross-platform contract fixtures and operator documentation (`4068aa0`, `7613a37`)
+- [x] U8. Android emulator CI and live integration gate (`391c110`)
+- [x] U9. Experiment 10 and P2 completion
 
 ---
 
