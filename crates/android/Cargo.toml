@@ -1,0 +1,16 @@
+[package]
+name                   = "agent-mobile-android"
+description            = "Android ADB adapter, driver lifecycle bridge, and device session management for agent-mobile"
+publish                = false
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+version.workspace      = true
+
+[dependencies]
+agent-mobile-core = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+
+[lints]
+workspace = true
