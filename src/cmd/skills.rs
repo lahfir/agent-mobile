@@ -4,18 +4,25 @@
 /// The guide text; every command named here exists in `--help`, and the test
 /// proves it in both directions.
 const GUIDE: &str = "\
-agent-mobile — drive an iOS app through a snapshot -> act loop
+agent-mobile — drive an iOS or Android app through a snapshot -> act loop
 
 COMMANDS
-  devices                        list reachable simulators and paired devices
-  serve <device> [--app <id>]    start a driver in the foreground; --app
-                                 launches the bundle once the driver binds.
-                                 Prints url/device/token to a terminal; when
-                                 piped the token lives only in
-                                 ~/.agent-mobile/tokens/<device>
+  devices                        list iOS simulators/phones and Android
+                                 AVD/USB/wireless targets
+  serve <device> [--app <id>]    start a driver in the foreground; <device>
+                                 is a name, id, or collision-free
+                                 platform:id key (`ios:<udid>`,
+                                 `android:avd:<name>`, `android:<serial>`).
+                                 --app launches the app once the driver
+                                 binds. Prints url/device/token to a
+                                 terminal; when piped the token lives only
+                                 in ~/.agent-mobile/tokens/<device>
   status                         active app, device, os, current snapshot id
   snapshot [--app <id>]          mint refs and print the accessibility tree;
-                                 --app retargets a different bundle
+                                 --app carries an app selector: iOS targets
+                                 the bundle, Android only validates the
+                                 foreground package — use launch to change
+                                 apps
   tap <ref> | <x> <y>            tap an element ref, or a point in the app
                                  frame's top-left space (at=x,y is the node's
                                  origin — tap its center x+w/2, y+h/2)
@@ -27,7 +34,7 @@ COMMANDS
                                  type -- -flag
   swipe <up|down|left|right> [<ref>]
                                  swipe the app, or one element
-  home                           press Home; returns the springboard tree
+  home                           go to the launcher/home; returns that tree
   doubletap <ref> | <x> <y>      tap twice on a ref, or a point in the app
                                  frame's top-left space
   pinch <ref> <scale> [--velocity <v>]
@@ -39,14 +46,14 @@ COMMANDS
                                  press and hold 0 < d <= 10 s, default 1.0;
                                  native context menus surface in the
                                  snapshot (web long-press is unproven)
-  back                           system edge swipe back; no target. Judge
-                                 from the returned tree: web-history
-                                 back is unproven
+  back                           navigate back; no target. Judge from the
+                                 returned tree: web-history back is unproven
   twofinger <ref>                two-finger tap on a ref
-  center notification            open Notification Center (SpringBoard
-                                 session). Earlier refs die; snapshot or
-                                 --app to return to your app
-  launch <bundle_id>             cold-start the app; kills saved state
+  center notification            open notifications (system UI session).
+                                 Earlier refs die; snapshot or --app to
+                                 return to your app
+  launch <app_id>                cold-start or restart an app (iOS bundle id
+                                 or Android package); app data is kept
   screenshot [path]              PNG to a file, or base64 to stdout
                                  (--json stays base64; path+--json is an error)
   stop                           terminate the active app; the driver stays
@@ -56,11 +63,13 @@ COMMANDS
 FLAGS (global)
   --json                         emit the raw JSON envelope; failures then
                                  print the envelope shape on stdout too
-  --app <bundle>                 retarget `snapshot`/`serve`
+  --app <app_id>                 app selector for `snapshot`/`serve`; on
+                                 Android `snapshot --app` only checks the
+                                 already-foreground package
   --max-depth <n>                trim the tree client-side; header then shows
                                  complete=false
-  --device <name>                pick a device by name or UDID; remembered
-                                 for later calls
+  --device <device>              pick a device by name, id, or platform:id;
+                                 remembered for later calls
 
 ENVIRONMENT
   AGENT_MOBILE_URL, AGENT_MOBILE_TOKEN   override the saved session per call;
@@ -70,15 +79,38 @@ ENVIRONMENT
 
 SESSIONS
   Any verb starts the driver on demand when none runs — the first call can
-  take a minute while the runner builds and the simulator boots. `serve`
-  runs the driver in the foreground instead and prints the token once.
-  One driver serves one device on port 8770; serving a second device means
-  stopping the first serve.
+  take a minute while a runner builds or a device boots. `serve` runs one
+  long-lived driver in the foreground and prints the token once. iOS owns a
+  runner process on fixed port 8770; Android owns a localhost bridge plus
+  one ephemeral `adb forward`. Stopping an Android serve removes only its
+  bridge/forward/state/token — the emulator stays up, the APK stays
+  installed, the accessibility service stays enabled.
 
-SYSTEM DIALOGS
-  Permission alerts and other system UI live in com.apple.springboard, not
-  the app under test: `snapshot --app com.apple.springboard`, act on its
-  refs, then `snapshot --app <your-bundle>` to return.
+ANDROID SETUP / RECOVERY
+  scripts/setup-android-sdk.sh --check
+                                 verifies the SDK without installing; the
+                                 bare command installs only missing pinned
+                                 components (idempotent). Does not install
+                                 or require Android Studio
+  AGENT_MOBILE_ANDROID_APK       path override for the driver APK; otherwise
+                                 the checked-in Gradle wrapper builds it
+  unauthorized device            accept the USB debugging prompt, then retry
+  Restricted Settings            the \"Agent Mobile Driver\" toggle in
+                                 Settings > Accessibility; Android 13+
+                                 also needs App Info > ⋮ >
+                                 \"Allow restricted settings\"
+  duplicate device names         select by platform:id key, not the name
+  boot timeout                   inspect ~/.agent-mobile/driver-*.log
+  physical Android               user-authorized USB/wireless adb plus
+                                 Accessibility consent; sideload/debug only
+                                 — no Play distribution, no bypass
+
+SYSTEM UI
+  Permission alerts and other system UI live outside the app under test.
+  On iOS that is com.apple.springboard; on Android it is the active
+  launcher/system package shown in a snapshot's app field. Act on those
+  refs, then return with `snapshot --app <bundle>` on iOS or
+  `launch <package>` on Android — refs die across apps.
 
 THE LOOP
   snapshot -> pick a ref -> act -> repeat. Every action replies with the next
@@ -104,7 +136,9 @@ OUTPUT CONTRACT
   Exit codes: 0 ok, 1 driver or transport failure, 2 usage error.
 
 LAUNCH
-  launch cold-starts and destroys saved state; use it for a clean start.
+  launch terminates the process then starts it from the launcher; app
+  data is kept. On Android, terminate refuses the driver, System UI, and
+  the current launcher.
 ";
 
 /// Run `skills`; prints the guide, no wire involved.

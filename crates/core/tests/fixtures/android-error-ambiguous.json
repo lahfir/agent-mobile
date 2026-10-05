@@ -1,0 +1,1 @@
+{"version":"1","ok":false,"command":"tap","elapsed_ms":44,"error":{"code":"AMBIGUOUS_TARGET","message":"ref matches 2 live elements; re-snapshot"}}

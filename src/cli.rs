@@ -10,8 +10,8 @@ pub struct Cli {
     /// Emit the raw JSON envelope instead of text.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Target bundle id; `serve` launches it once the driver binds.
-    #[arg(long, global = true, value_name = "BUNDLE")]
+    /// Target app id (iOS bundle / Android package); `serve` launches it once the driver binds.
+    #[arg(long, global = true, value_name = "APP_ID")]
     pub app: Option<String>,
     /// Drop tree nodes deeper than N levels; marks the snapshot incomplete.
     #[arg(long, global = true, value_name = "N")]
@@ -59,7 +59,7 @@ pub enum Command {
         /// Optional `@<snapshot>:e<N>` ref to swipe on.
         target: Option<String>,
     },
-    /// Press the Home button; returns the springboard tree.
+    /// Go to the launcher/home; returns that tree.
     Home,
     /// Double-tap a ref, or an x y point from the app frame's top-left.
     Doubletap {
@@ -95,22 +95,22 @@ pub enum Command {
         )]
         duration: f64,
     },
-    /// System edge swipe back; no target.
+    /// Navigate back; no target.
     Back,
     /// Two-finger tap on a ref.
     Twofinger {
         /// `@<snapshot>:e<N>` ref to tap with two fingers.
         target: String,
     },
-    /// Open Notification Center from the `SpringBoard` session.
+    /// Open notifications from the system UI session.
     Center {
         /// Which sheet to open; only `notification` is supported.
         #[arg(value_parser = ["notification"])]
         which: String,
     },
-    /// Cold-start a bundle id; kills any saved app state.
+    /// Cold-start or restart an app; app data is kept.
     Launch {
-        /// Bundle id to launch, e.g. `com.apple.mobilecal`.
+        /// iOS bundle id or Android package, e.g. `com.apple.mobilecal`.
         bundle_id: String,
     },
     /// Write a PNG screenshot to a path, or base64 to stdout.

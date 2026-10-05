@@ -240,7 +240,7 @@ fn verify_service(adb: &Adb, serial: &str, budget: Duration) -> Result<(), Failu
 fn bind_failure(why: &str) -> Failure {
     Failure::local(
         format!("accessibility service {why}"),
-        "enable it in Settings > Accessibility > Agent Mobile; on Android 13+ \
+        "enable it in Settings > Accessibility > Agent Mobile Driver; on Android 13+ \
          first allow App Info > Allow restricted settings",
     )
 }

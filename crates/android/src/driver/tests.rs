@@ -306,6 +306,7 @@ fn put_refusal_names_restricted_settings() {
         .unwrap_or_default();
     assert!(err.contains("Allow restricted settings"), "{err}");
     assert!(err.contains("Accessibility"), "{err}");
+    assert!(err.contains("Agent Mobile Driver"), "{err}");
 }
 
 #[test]

@@ -229,3 +229,29 @@ fn malformed_refs_are_usage_errors() -> Result<(), Failure> {
     }
     Ok(())
 }
+
+#[test]
+fn android_render_matches_driver_text_byte_for_byte() -> Result<(), Failure> {
+    let env = fixture("android-snapshot")?;
+    let snap = expect_snapshot(&env)?;
+    let expected = format!("{}\n{}\n", driver_header(&env, snap), snap.text);
+    assert_eq!(
+        render(&env),
+        expected,
+        "formatter must reproduce the Android driver's text mode"
+    );
+    Ok(())
+}
+
+#[test]
+fn android_status_render_shape() -> Result<(), Failure> {
+    let env = fixture("android-status")?;
+    let text = render(&env).into_owned();
+    assert!(text.contains("app="), "status render must carry the header");
+    assert!(
+        text.contains("device="),
+        "status render must name the device"
+    );
+    snap!("android_status_render", text);
+    Ok(())
+}
