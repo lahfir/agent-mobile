@@ -1,0 +1,29 @@
+plugins {
+    id("com.android.application")
+}
+
+android {
+    namespace = "com.lahfir.agentmobile.driver"
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = "com.lahfir.agentmobile.driver"
+        minSdk = 30
+        targetSdk = 37
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}

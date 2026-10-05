@@ -21,3 +21,8 @@ npm/*.tgz
 
 # benchmark output (scripts/bench.py)
 bench-results/
+
+drivers/android/.gradle/
+drivers/android/**/build/
+drivers/android/local.properties
+drivers/android/.idea/
