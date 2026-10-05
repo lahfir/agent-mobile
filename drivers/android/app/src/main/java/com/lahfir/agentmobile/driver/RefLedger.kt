@@ -7,6 +7,41 @@ import kotlin.math.abs
 
 internal data class ResolvedNode(val node: NodeModel, val baseline: TreeRead)
 
+internal object RefResolver {
+
+    fun resolve(identity: NodeIdentity, live: TreeRead, ref: String): NodeModel {
+        if (!live.complete) {
+            throw DriverException("DRIVER_ERROR", "live tree incomplete; cannot prove ref uniqueness")
+        }
+        val matches = mutableListOf<NodeModel>()
+        fun walk(node: NodeModel) {
+            if (matches(identity, node.identity)) {
+                matches += node
+            }
+            node.children.forEach(::walk)
+        }
+        walk(live.root)
+        if (matches.isEmpty()) {
+            throw DriverException("STALE_REF", "ref $ref no longer matches a live element; re-snapshot")
+        }
+        if (matches.size > 1) {
+            throw DriverException("AMBIGUOUS_TARGET", "ref $ref matches ${matches.size} live elements; re-snapshot")
+        }
+        return matches[0]
+    }
+
+    fun matches(a: NodeIdentity, b: NodeIdentity): Boolean =
+        a.className == b.className &&
+            a.role == b.role &&
+            a.resourceId == b.resourceId &&
+            a.text == b.text &&
+            a.contentDescription == b.contentDescription &&
+            abs(a.rawBounds.left - b.rawBounds.left) <= 1 &&
+            abs(a.rawBounds.top - b.rawBounds.top) <= 1 &&
+            abs(a.rawBounds.right - b.rawBounds.right) <= 1 &&
+            abs(a.rawBounds.bottom - b.rawBounds.bottom) <= 1
+}
+
 internal class RefLedger(
     private val newSnapshotId: () -> String = { generateSnapshotId() },
 ) {
@@ -104,37 +139,9 @@ internal class RefLedger(
     }
 
     fun resolve(any: Any?, live: TreeRead): ResolvedNode {
-        if (!live.complete) {
-            throw DriverException("DRIVER_ERROR", "live tree incomplete; cannot prove ref uniqueness")
-        }
         val identity = lookup(any)
-        val matches = mutableListOf<NodeModel>()
-        fun walk(node: NodeModel) {
-            if (identityMatches(identity, node.identity)) {
-                matches += node
-            }
-            node.children.forEach(::walk)
-        }
-        walk(live.root)
-        if (matches.isEmpty()) {
-            throw DriverException("STALE_REF", "ref $any no longer matches a live element; re-snapshot")
-        }
-        if (matches.size > 1) {
-            throw DriverException("AMBIGUOUS_TARGET", "ref $any matches ${matches.size} live elements; re-snapshot")
-        }
-        return ResolvedNode(matches[0], live)
+        return ResolvedNode(RefResolver.resolve(identity, live, any.toString()), live)
     }
-
-    private fun identityMatches(a: NodeIdentity, b: NodeIdentity): Boolean =
-        a.className == b.className &&
-            a.role == b.role &&
-            a.resourceId == b.resourceId &&
-            a.text == b.text &&
-            a.contentDescription == b.contentDescription &&
-            abs(a.rawBounds.left - b.rawBounds.left) <= 1 &&
-            abs(a.rawBounds.top - b.rawBounds.top) <= 1 &&
-            abs(a.rawBounds.right - b.rawBounds.right) <= 1 &&
-            abs(a.rawBounds.bottom - b.rawBounds.bottom) <= 1
 
     private fun parseRef(ref: String): Pair<String, Int>? {
         val rest = ref.removePrefix("@")

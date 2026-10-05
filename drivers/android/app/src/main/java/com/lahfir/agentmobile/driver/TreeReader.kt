@@ -2,6 +2,7 @@ package com.lahfir.agentmobile.driver
 
 import android.graphics.Rect
 import android.os.Build
+import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import java.security.MessageDigest
 
@@ -29,7 +30,16 @@ internal interface NodeSource {
     val childCount: Int
     fun child(index: Int): NodeSource?
     fun sameNode(other: NodeSource): Boolean
+    fun performClick(): Boolean = false
+    fun appendText(text: String): Boolean = false
+    fun performScroll(direction: String): Boolean = false
     fun close()
+}
+
+internal class LiveNode(val model: NodeModel, private val source: NodeSource) {
+    fun click(): Boolean = source.performClick()
+    fun appendText(text: String): Boolean = source.appendText(text)
+    fun scroll(direction: String): Boolean = source.performScroll(direction)
 }
 
 private class AndroidNodeSource(private val node: AccessibilityNodeInfo) : NodeSource {
@@ -66,6 +76,52 @@ private class AndroidNodeSource(private val node: AccessibilityNodeInfo) : NodeS
     override fun sameNode(other: NodeSource): Boolean =
         (other as? AndroidNodeSource)?.let { node == it.node } ?: false
 
+    override fun performClick(): Boolean =
+        (node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }) &&
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+
+    override fun appendText(text: String): Boolean {
+        if (!node.isEditable || node.actionList.none { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }) {
+            return false
+        }
+        val args = Bundle()
+        args.putCharSequence(
+            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+            (node.text?.toString() ?: "") + text,
+        )
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    override fun performScroll(direction: String): Boolean {
+        val candidates = when (direction) {
+            "up" -> listOf(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_PAGE_UP,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD,
+            )
+            "down" -> listOf(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_PAGE_DOWN,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD,
+            )
+            "left" -> listOf(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_PAGE_LEFT,
+            )
+            "right" -> listOf(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_PAGE_RIGHT,
+            )
+            else -> return false
+        }
+        for (action in candidates) {
+            if (node.actionList.any { it.id == action.id } && node.performAction(action.id)) {
+                return true
+            }
+        }
+        return false
+    }
+
     @Suppress("DEPRECATION")
     override fun close() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -95,20 +151,37 @@ internal class TreeReader(
     private val maxDepth: Int = 128,
 ) {
 
-    fun read(rootSource: NodeSource, readAtNanos: Long, density: Double): TreeRead {
+    fun read(rootSource: NodeSource, readAtNanos: Long, density: Double): TreeRead =
+        useTree(rootSource, readAtNanos, density) { read, _ -> read }
+
+    fun <T> useTree(
+        rootSource: NodeSource,
+        readAtNanos: Long,
+        density: Double,
+        block: (TreeRead, List<LiveNode>) -> T,
+    ): T {
         val obtained = mutableListOf(rootSource)
-        try {
-            return readTree(rootSource, readAtNanos, density, obtained)
+        val (read, liveNodes) = try {
+            readTree(rootSource, readAtNanos, density, obtained)
         } catch (e: DriverException) {
+            closeAll(obtained)
             throw e
         } catch (e: Exception) {
+            closeAll(obtained)
             throw DriverException("DRIVER_ERROR", "tree read failed: ${e.javaClass.simpleName}")
+        }
+        try {
+            return block(read, liveNodes)
         } finally {
-            obtained.forEach { source ->
-                try {
-                    source.close()
-                } catch (_: Exception) {
-                }
+            closeAll(obtained)
+        }
+    }
+
+    private fun closeAll(obtained: List<NodeSource>) {
+        obtained.forEach { source ->
+            try {
+                source.close()
+            } catch (_: Exception) {
             }
         }
     }
@@ -118,7 +191,7 @@ internal class TreeReader(
         readAtNanos: Long,
         density: Double,
         obtained: MutableList<NodeSource>,
-    ): TreeRead {
+    ): Pair<TreeRead, List<LiveNode>> {
         var complete = true
         val visited = mutableListOf<NodeSource>()
         val entries = mutableListOf<Triple<NodeSource, Int, Int>>()
@@ -175,7 +248,7 @@ internal class TreeReader(
             }
         }
         val root = models[0]!!
-        return TreeRead(
+        val read = TreeRead(
             app = entries[0].first.packageName?.toString() ?: "",
             root = root,
             complete = complete,
@@ -184,6 +257,8 @@ internal class TreeReader(
             density = effectiveDensity,
             readAtNanos = readAtNanos,
         )
+        val liveNodes = entries.mapIndexed { i, entry -> LiveNode(models[i]!!, entry.first) }
+        return read to liveNodes
     }
 
     private fun modelNode(
