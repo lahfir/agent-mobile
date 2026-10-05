@@ -128,8 +128,7 @@ pid_is_our_emulator() {
 unique_avd_serial() {
     local row cand state name found=0 serial=""
     while IFS= read -r row; do
-        cand=$(echo "$row" | awk '{print $1}')
-        state=$(echo "$row" | awk '{print $2}')
+        read -r cand state _ <<< "$row"
         case "$cand" in
             emulator-*) ;;
             *) continue ;;
@@ -153,8 +152,7 @@ reject_existing_avd() {
     adb_t devices >/dev/null 2>&1 ||         fail "adb devices failed before spawn" "check the adb server health"
     local row cand state name
     while IFS= read -r row; do
-        cand=$(echo "$row" | awk '{print $1}')
-        state=$(echo "$row" | awk '{print $2}')
+        read -r cand state _ <<< "$row"
         case "$cand" in
             emulator-*) ;;
             *) continue ;;
@@ -176,8 +174,7 @@ wait_for_boot() {
     while [ "$SECONDS" -lt "$deadline" ]; do
         matches=""
         while IFS= read -r row; do
-            cand=$(echo "$row" | awk '{print $1}')
-            state=$(echo "$row" | awk '{print $2}')
+            read -r cand state _ <<< "$row"
             case "$cand" in
                 emulator-*) ;;
                 *) continue ;;

@@ -236,7 +236,7 @@ internal class TreeReader(
         }
 
         val models = arrayOfNulls<NodeModel>(entries.size)
-        val childrenLists = Array<MutableList<NodeModel>>(entries.size) { mutableListOf() }
+        val childrenLists = Array(entries.size) { ArrayDeque<NodeModel>() }
         val originBounds = entries[0].first.boundsInScreen
         val effectiveDensity = if (density.isFinite() && density > 0) density else 1.0
         for (i in entries.indices.reversed()) {
@@ -244,7 +244,7 @@ internal class TreeReader(
             val model = modelNode(source, childrenLists[i].toList(), originBounds, effectiveDensity)
             models[i] = model
             if (parent >= 0) {
-                childrenLists[parent].add(0, model)
+                childrenLists[parent].addFirst(model)
             }
         }
         val root = models[0]!!

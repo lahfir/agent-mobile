@@ -7,7 +7,8 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent_mobile_core::contract::Data;
+use agent_mobile_core::contract::{Data, PROTOCOL_VERSION};
+use agent_mobile_core::error::ErrorCode;
 use agent_mobile_core::wire::Wire;
 use serde_json::json;
 
@@ -19,15 +20,13 @@ fn upstream(upstream_port: u16) -> String {
     format!("http://127.0.0.1:{upstream_port}")
 }
 
-/// HTTP status for a wire error code: contract errors stay 409, everything
-/// else becomes a 500 transport/driver failure.
+/// HTTP status for a wire error code: auth stays 401, registered
+/// post-dispatch errors stay 409, and unknown codes become 500.
 fn status_for_code(code: &str) -> &'static str {
-    match code {
-        "UNAUTHORIZED" => "401 Unauthorized",
-        "BAD_REQUEST" | "STALE_REF" | "AMBIGUOUS_TARGET" | "UNKNOWN_COMMAND" | "DRIVER_ERROR" => {
-            "409 Conflict"
-        }
-        _ => "500 Internal Server Error",
+    match ErrorCode::from_code(code) {
+        Some(ErrorCode::Unauthorized) => "401 Unauthorized",
+        Some(_) => "409 Conflict",
+        None => "500 Internal Server Error",
     }
 }
 
@@ -74,7 +73,7 @@ fn gate(
         );
         return None;
     }
-    if req.header("x-agent-mobile-version").as_deref() != Some("1") {
+    if req.header("x-agent-mobile-version").as_deref() != Some(PROTOCOL_VERSION) {
         respond(
             sock,
             "409 Conflict",
@@ -117,8 +116,7 @@ pub(crate) fn lifecycle_route(
     lifecycle: &Arc<dyn LifecycleControl>,
     started: Instant,
 ) {
-    let verb = verb.to_owned();
-    let Some(body) = gate(sock, req, &verb, token, started) else {
+    let Some(body) = gate(sock, req, verb, token, started) else {
         return;
     };
     let wire = Wire::with_timeout(&upstream(upstream_port), token.as_str(), IO_TIMEOUT);

@@ -15,7 +15,8 @@ use agent_mobile_core::error::Failure;
 use crate::driver::SecretToken;
 use crate::lifecycle::LifecycleControl;
 use crate::proxy::{
-    IO_TIMEOUT, REPLY_CAP, Request, elapsed_ms, error_envelope, http_response, read_request,
+    IO_TIMEOUT, REPLY_CAP, Request, elapsed_ms, error_envelope, find_head_end, http_response,
+    read_request,
 };
 use crate::routes::lifecycle_route;
 
@@ -176,49 +177,67 @@ fn relay_once(raw: &[u8], upstream_port: u16) -> std::io::Result<Vec<u8>> {
     read_reply(&mut up)
 }
 
+/// Validate a reply head ending at `pos` and return the total byte count
+/// the full reply must occupy: `HTTP/` status line, no transfer-encoding,
+/// exactly one numeric content-length, and the whole reply within
+/// [`REPLY_CAP`].
+fn parse_reply_head(raw: &[u8], pos: usize) -> std::io::Result<usize> {
+    let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_owned());
+    let head = String::from_utf8_lossy(&raw[..pos]);
+    if !head.lines().next().is_some_and(|l| l.starts_with("HTTP/")) {
+        return Err(bad("malformed reply head"));
+    }
+    if head
+        .lines()
+        .any(|l| l.to_ascii_lowercase().starts_with("transfer-encoding:"))
+    {
+        return Err(bad("reply must not use transfer-encoding"));
+    }
+    let cls: Vec<&str> = head
+        .lines()
+        .filter(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+        .collect();
+    if cls.len() != 1 {
+        return Err(bad("reply needs exactly one content-length"));
+    }
+    let len = cls[0]
+        .split_once(':')
+        .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+        .ok_or_else(|| bad("reply content-length is not numeric"))?;
+    let total = pos + 4 + len;
+    if total > REPLY_CAP {
+        return Err(bad("reply exceeds cap"));
+    }
+    Ok(total)
+}
+
 /// Read one upstream reply strictly: `HTTP/` status line, exactly one
 /// numeric `Content-Length` not exceeding [`REPLY_CAP`], then precisely
 /// that many body bytes — EOF, truncation, and malformation are all errors.
-fn read_reply(sock: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+fn read_reply(reader: &mut impl Read) -> std::io::Result<Vec<u8>> {
     let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_owned());
     let mut raw = Vec::new();
     let mut buf = [0u8; 8192];
+    let mut scan_from = 0;
+    let mut need: Option<usize> = None;
     loop {
         if raw.len() > REPLY_CAP {
             return Err(bad("reply too large"));
         }
-        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-            let head = String::from_utf8_lossy(&raw[..pos]);
-            if !head.lines().next().is_some_and(|l| l.starts_with("HTTP/")) {
-                return Err(bad("malformed reply head"));
-            }
-            let cls: Vec<&str> = head
-                .lines()
-                .filter(|l| l.to_ascii_lowercase().starts_with("content-length:"))
-                .collect();
-            if head
-                .lines()
-                .any(|l| l.to_ascii_lowercase().starts_with("transfer-encoding:"))
-            {
-                return Err(bad("reply must not use transfer-encoding"));
-            }
-            if cls.len() != 1 {
-                return Err(bad("reply needs exactly one content-length"));
-            }
-            let len = cls[0]
-                .split_once(':')
-                .and_then(|(_, v)| v.trim().parse::<usize>().ok())
-                .ok_or_else(|| bad("reply content-length is not numeric"))?;
-            let need = pos + 4 + len;
-            if need > REPLY_CAP {
-                return Err(bad("reply exceeds cap"));
-            }
-            if raw.len() >= need {
-                raw.truncate(need);
-                return Ok(raw);
+        if need.is_none() {
+            if let Some(pos) = find_head_end(&raw, scan_from) {
+                need = Some(parse_reply_head(&raw, pos)?);
+            } else {
+                scan_from = raw.len().saturating_sub(3);
             }
         }
-        match sock.read(&mut buf) {
+        if let Some(total) = need
+            && raw.len() >= total
+        {
+            raw.truncate(total);
+            return Ok(raw);
+        }
+        match reader.read(&mut buf) {
             Ok(0) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,

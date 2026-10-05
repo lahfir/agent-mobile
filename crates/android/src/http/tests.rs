@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use agent_mobile_core::error::Failure;
 
-use super::start_bridge;
+use super::{read_reply, start_bridge};
 use crate::driver::SecretToken;
 use crate::testkit::{ctl, envelope, fake_upstream, post};
 
@@ -85,5 +85,16 @@ fn bridge_reports_running_then_stopped() -> Result<(), Failure> {
     assert!(bridge.is_running());
     bridge.stop();
     assert!(!bridge.is_running());
+    Ok(())
+}
+
+#[test]
+fn reply_reads_when_terminator_splits_and_truncates_trail() -> std::io::Result<()> {
+    use std::io::Read as _;
+    let head_a: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r";
+    let head_b: &[u8] = b"\nDATAPADDED-EXTRA";
+    let mut reader = head_a.chain(head_b);
+    let reply = read_reply(&mut reader)?;
+    assert_eq!(reply, b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nDATA");
     Ok(())
 }

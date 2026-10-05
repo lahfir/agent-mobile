@@ -170,7 +170,7 @@ impl LifecycleControl for AdbLifecycle {
                 "invalid package name {package:?}"
             )));
         }
-        for protected in ["", "android", PACKAGE, "com.android.systemui"] {
+        for protected in ["android", PACKAGE, "com.android.systemui"] {
             if package == protected {
                 return Err(LifecycleError::BadRequest(format!(
                     "refusing to terminate protected package {package}"

@@ -132,3 +132,20 @@ fn head_cap_counts_the_terminator() {
     raw.extend_from_slice(b"\r\n\r\n");
     assert!(read_request(&mut std::io::Cursor::new(raw)).is_err());
 }
+
+#[test]
+fn request_reads_when_terminator_splits_across_reads() -> std::io::Result<()> {
+    use std::io::Read as _;
+    let head_a: &[u8] = b"POST /status HTTP/1.1\r\nContent-Length: 4\r\n\r";
+    let head_b: &[u8] = b"\nBODYtrailing-ignored";
+    let mut reader = head_a.chain(head_b);
+    let req = read_request(&mut reader)?;
+    assert_eq!(req.method, "POST");
+    assert_eq!(req.path, "/status");
+    assert_eq!(req.body, b"BODY");
+    assert_eq!(
+        req.raw,
+        b"POST /status HTTP/1.1\r\nContent-Length: 4\r\n\r\nBODY"
+    );
+    Ok(())
+}

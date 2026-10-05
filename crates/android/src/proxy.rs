@@ -5,6 +5,7 @@
 
 use std::io::{self, Read};
 
+use agent_mobile_core::contract::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 
 /// Request head cap: 1 MiB.
@@ -85,20 +86,34 @@ pub(crate) fn read_request(reader: &mut impl Read) -> io::Result<Request> {
         }
     }
     raw.truncate(head_end + 4 + want);
+    let body = raw[head_end + 4..].to_vec();
     Ok(Request {
         method,
         path,
-        raw: raw.clone(),
-        body: raw[head_end + 4..].to_vec(),
+        raw,
+        body,
         headers,
     })
 }
 
+/// Offset of the `\r\n\r\n` terminator, scanning only bytes at or after
+/// `scan_from` — shared by the request and reply readers so the window
+/// search never re-covers already-scanned bytes.
+#[must_use]
+pub(crate) fn find_head_end(raw: &[u8], scan_from: usize) -> Option<usize> {
+    raw.get(scan_from..)?
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| scan_from + position)
+}
+
 /// Read until the `\r\n\r\n` terminator or [`HEAD_CAP`]; returns the head
-/// end offset.
+/// end offset. `scan_from` resumes the search 3 bytes back from the last
+/// tip — a split terminator's first half could sit right at the boundary.
 fn read_head(reader: &mut impl Read, raw: &mut Vec<u8>, buf: &mut [u8]) -> io::Result<usize> {
+    let mut scan_from = 0;
     loop {
-        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        if let Some(pos) = find_head_end(raw, scan_from) {
             if pos + 4 > HEAD_CAP {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "head too large"));
             }
@@ -107,6 +122,7 @@ fn read_head(reader: &mut impl Read, raw: &mut Vec<u8>, buf: &mut [u8]) -> io::R
         if raw.len() >= HEAD_CAP {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "head too large"));
         }
+        scan_from = raw.len().saturating_sub(3);
         let n = reader.read(buf)?;
         if n == 0 {
             return Err(io::Error::new(
@@ -187,7 +203,7 @@ pub(crate) fn error_envelope(
     code: &str,
     message: &str,
 ) -> String {
-    let mut env = json!({"version": "1", "ok": false});
+    let mut env = json!({"version": PROTOCOL_VERSION, "ok": false});
     if let Some(c) = command {
         env["command"] = json!(c);
     }
@@ -203,7 +219,7 @@ pub(crate) fn error_envelope(
 #[must_use]
 pub(crate) fn success_envelope(command: &str, elapsed_ms: u64, data: &Value) -> String {
     json!({
-        "version": "1",
+        "version": PROTOCOL_VERSION,
         "ok": true,
         "command": command,
         "elapsed_ms": elapsed_ms,
