@@ -133,7 +133,7 @@ for refs in groups.values():
 PY
 }
 AMBIGUOUS=0
-for round in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
     post snapshot '{}'
     CANDIDATES=$(detect_dups | awk '{print $1}')
     [ -z "$CANDIDATES" ] && break

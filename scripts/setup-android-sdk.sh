@@ -10,7 +10,18 @@ readonly AVD_DEVICE="pixel_7"
 readonly DOWNLOAD_BASE="https://dl.google.com/android/repository"
 readonly REQUIRED_JDK_MAJOR="17"
 
-ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+# Host default SDK root: Darwin uses ~/Library/Android/sdk and Linux uses
+# ~/Android/Sdk; the `*` arm only exists because detect_host immediately
+# rejects unsupported hosts anyway.
+default_sdk_dir() {
+    case "$(uname -s)" in
+        Darwin) echo "$HOME/Library/Android/sdk" ;;
+        Linux) echo "$HOME/Android/Sdk" ;;
+        *) echo "$HOME/Android/Sdk" ;;
+    esac
+}
+
+ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$(default_sdk_dir)}}"
 readonly ANDROID_HOME
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

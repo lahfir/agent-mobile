@@ -48,6 +48,20 @@ project is built and tested with its checked-in Gradle wrapper:
 drivers/android/gradlew -p drivers/android :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
 ```
 
+## Live Android integration
+
+The ignored live gate needs an authorized, booted emulator and a built driver APK:
+
+```
+ANDROID_SDK_ROOT=/path/to/android-sdk ANDROID_AVD_HOME=/path/to/android-avd \
+    AGENT_MOBILE_ANDROID_APK=drivers/android/app/build/outputs/apk/debug/app-debug.apk \
+    cargo test --test integration_android --locked -- --ignored --nocapture
+```
+
+The AVD must already be booted and authorized; the gate serves and cleans two
+sessions through the public CLI and preserves any pre-existing `adb forward`
+rows, the emulator, the installed APK, and the enabled service.
+
 ## Recording fixtures
 
 Golden fixtures are captured from a real driver, never hand-written:

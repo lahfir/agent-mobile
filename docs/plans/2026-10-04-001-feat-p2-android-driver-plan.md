@@ -29,7 +29,7 @@ execution: code
 - [x] U5. Rust ADB adapter and lifecycle bridge (`334105c`)
 - [x] U6. Cross-platform discovery and session integration (`abf3877`)
 - [x] U7. Cross-platform contract fixtures and operator documentation
-- [ ] U8. Android emulator CI and live integration gate
+- [x] U8. Android emulator CI and live integration gate
 - [ ] U9. Experiment 10 and P2 completion
 
 ---
