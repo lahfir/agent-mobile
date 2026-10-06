@@ -2,7 +2,9 @@ package com.lahfir.agentmobile.driver
 
 import org.json.JSONObject
 
-internal class DriverException(val code: String, message: String) : RuntimeException(message)
+internal open class DriverException(val code: String, message: String) : RuntimeException(message)
+
+internal class DriverBusyException : DriverException("DRIVER_ERROR", "another command is in progress")
 
 internal object Protocol {
     const val VERSION = "1"

@@ -2,6 +2,9 @@ package com.lahfir.agentmobile.driver
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -45,6 +48,8 @@ class DriverTest {
         var globalResult: Boolean = true,
         var png: ByteArray = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47),
         var focusedAccepted: Boolean = true,
+        var readGate: java.util.concurrent.CountDownLatch? = null,
+        var readEntered: java.util.concurrent.CountDownLatch? = null,
     ) : DriverPlatform {
         var readCalls = 0
         val nodeActions = mutableListOf<NodeAction>()
@@ -53,6 +58,14 @@ class DriverTest {
         var focusedCalls = 0
         override fun status(): PlatformStatus = statusData
         override fun readTree(): TreeRead {
+            readEntered?.countDown()
+            readGate?.let { gate ->
+                try {
+                    gate.await()
+                } catch (_: InterruptedException) {
+                    throw java.util.concurrent.CancellationException("read interrupted")
+                }
+            }
             fail?.let { throw it }
             val tree = trees.getOrElse(readCalls) { trees.last() }
             readCalls += 1
@@ -663,5 +676,132 @@ class DriverTest {
         val p1 = platform.gestures[1].strokes[0].points[0]
         assertEquals(10f, p1.x, 0.01f)
         assertEquals(20f, p1.y, 0.01f)
+    }
+
+    @Test
+    fun competingCallsGetDriverBusyUntilGateReleased() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val platform = FakePlatform(
+            trees = listOf(read(signature = "first"), read(signature = "second")),
+        )
+        val driver = Driver(platform)
+        val primedRef = driver.handle("snapshot", JSONObject())
+            .getJSONObject("tree").getString("ref_id")
+        platform.readGate = release
+        platform.readEntered = entered
+        val done = java.util.concurrent.CountDownLatch(1)
+        var blockedSnapshotId: String? = null
+        val workerFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val worker = Thread {
+            try {
+                blockedSnapshotId = driver
+                    .handle("snapshot", JSONObject())
+                    .getString("snapshot_id")
+            } catch (t: Throwable) {
+                workerFailure.set(t)
+            } finally {
+                done.countDown()
+            }
+        }
+        worker.isDaemon = true
+        worker.start()
+        try {
+            assertTrue("first call must enter handle", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            try {
+                driver.handle("status", JSONObject())
+                fail("competing status must be rejected")
+            } catch (e: DriverBusyException) {
+                assertEquals("DRIVER_ERROR", e.code)
+            }
+            try {
+                driver.handle("tap", JSONObject().put("ref", primedRef))
+                fail("competing action must be rejected")
+            } catch (e: DriverBusyException) {
+                assertEquals("DRIVER_ERROR", e.code)
+            }
+            try {
+                driver.handle("status", JSONObject())
+                fail("third competing call must be rejected")
+            } catch (e: DriverBusyException) {
+                assertEquals("DRIVER_ERROR", e.code)
+            }
+            assertEquals("rejected calls must not hit the platform", 0, platform.nodeActions.size)
+            release.countDown()
+            assertTrue("first call must finish", done.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val status = driver.handle("status", JSONObject())
+            assertEquals(blockedSnapshotId, status.getString("snapshot_id"))
+        } finally {
+            release.countDown()
+            worker.join(5_000)
+            assertFalse("worker must be dead", worker.isAlive)
+        }
+        assertNull("worker must not throw", workerFailure.get())
+    }
+
+    @Test
+    fun exceptionAndCancellationReleaseTheGateWithoutTouchingSnapshot() {
+        val platform = FakePlatform(trees = listOf(read()))
+        val driver = Driver(platform)
+        val primed = driver.handle("snapshot", JSONObject()).getString("snapshot_id")
+        val readsBeforeCancel = platform.readCalls
+        try {
+            driver.handle("fizzle", JSONObject())
+            fail("expected DriverException")
+        } catch (e: DriverException) {
+            assertEquals("UNKNOWN_COMMAND", e.code)
+        }
+        val cancelled = RequestCancellation()
+        cancelled.cancel()
+        try {
+            driver.handle("snapshot", JSONObject(), cancelled)
+            fail("cancelled read must throw")
+        } catch (e: DriverException) {
+            assertEquals("request cancelled", e.message)
+        }
+        val status = driver.handle("status", JSONObject())
+        assertEquals("cancelled read must not mint a snapshot", primed, status.getString("snapshot_id"))
+        assertEquals(readsBeforeCancel, platform.readCalls)
+    }
+
+    @Test
+    fun midReadCancellationReleasesGateWithoutMintingSnapshot() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val platform = FakePlatform(
+            trees = listOf(read(signature = "first"), read(signature = "second")),
+        )
+        val driver = Driver(platform)
+        val primed = driver.handle("snapshot", JSONObject()).getString("snapshot_id")
+        platform.readGate = release
+        platform.readEntered = entered
+        val cancellation = RequestCancellation()
+        val done = java.util.concurrent.CountDownLatch(1)
+        var failure: DriverException? = null
+        val worker = Thread {
+            try {
+                driver.handle("snapshot", JSONObject(), cancellation)
+            } catch (e: DriverException) {
+                failure = e
+            } finally {
+                done.countDown()
+            }
+        }
+        worker.isDaemon = true
+        worker.start()
+        try {
+            assertTrue("read must enter the gate", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            cancellation.cancel()
+            release.countDown()
+            assertTrue("cancelled read must exit", done.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertNotNull(failure)
+            assertEquals("request cancelled", failure!!.message)
+            val status = driver.handle("status", JSONObject())
+            assertEquals("cancelled read must not mint over the primed snapshot", primed, status.getString("snapshot_id"))
+        } finally {
+            release.countDown()
+            worker.join(5_000)
+            assertFalse("worker must be dead", worker.isAlive)
+        }
     }
 }

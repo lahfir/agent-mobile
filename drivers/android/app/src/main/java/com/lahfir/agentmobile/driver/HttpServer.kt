@@ -10,6 +10,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 
 internal class HttpServer(
@@ -19,65 +20,121 @@ internal class HttpServer(
     private val socketTimeoutMs: Int = 10_000,
     private val requestDeadlineMs: Int = 30_000,
     private val clockMs: () -> Long = { SystemClock.elapsedRealtime() },
-    private val maxHeaderBytes: Int = 1_048_576,
-    private val maxBodyBytes: Int = 16_777_216,
+    private val maxHeaderBytes: Int = HEAD_CAP,
+    private val maxBodyBytes: Int = BODY_CAP,
 ) : AutoCloseable {
 
     private val lock = Any()
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
+    private var requestThread: Thread? = null
     private var activeClient: Socket? = null
     private var activeCancellation: RequestCancellation? = null
+    private var busyClient: Socket? = null
+    private var busyCancellation: RequestCancellation? = null
     private var closed = false
 
     val localPort: Int
-        get() = serverSocket?.localPort ?: -1
+        get() = synchronized(lock) { serverSocket?.localPort ?: -1 }
 
-    internal fun hasActiveClient(): Boolean = synchronized(lock) { activeClient != null }
+    internal fun hasActiveClient(): Boolean = synchronized(lock) {
+        activeClient != null || requestThread?.isAlive == true
+    }
 
-    internal fun workerAlive(): Boolean = synchronized(lock) { acceptThread?.isAlive == true }
+    internal fun workerAlive(): Boolean = synchronized(lock) {
+        acceptThread?.isAlive == true || requestThread?.isAlive == true
+    }
 
     fun start() {
-        check(serverSocket == null) { "server already started" }
-        val socket = ServerSocket()
-        socket.reuseAddress = true
-        socket.bind(InetSocketAddress(InetAddress.getByName(BIND_ADDRESS), port), BACKLOG)
-        serverSocket = socket
-        acceptThread = Thread({ acceptLoop(socket) }, THREAD_NAME).apply {
-            isDaemon = true
-            start()
+        synchronized(lock) {
+            check(!closed) { "closed server cannot be restarted" }
+            check(serverSocket == null) { "server already started" }
+            val socket = ServerSocket()
+            socket.reuseAddress = true
+            try {
+                socket.bind(InetSocketAddress(InetAddress.getByName(BIND_ADDRESS), port), BACKLOG)
+            } catch (e: Exception) {
+                try {
+                    socket.close()
+                } catch (_: IOException) {
+                }
+                throw e
+            }
+            val worker = Thread({ acceptLoop(socket) }, THREAD_NAME)
+            worker.isDaemon = true
+            try {
+                serverSocket = socket
+                acceptThread = worker
+                worker.start()
+            } catch (e: Exception) {
+                acceptThread = null
+                serverSocket = null
+                try {
+                    socket.close()
+                } catch (_: IOException) {
+                }
+                throw e
+            }
         }
     }
 
     override fun close() {
-        val client: Socket?
+        // Real monotonic time only — injected clockMs is a test seam that
+        // may stand still and must not stretch the join budget.
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
+            socketTimeoutMs.toLong() + JOIN_MARGIN_MS,
+        )
+        val listener: ServerSocket?
+        val clients: List<Socket>
+        val threads: List<Thread>
         synchronized(lock) {
             closed = true
-            client = activeClient
             activeCancellation?.cancel()
+            busyCancellation?.cancel()
+            listener = serverSocket
+            clients = listOfNotNull(activeClient, busyClient)
+            threads = listOfNotNull(acceptThread, requestThread)
+                .filter { it !== Thread.currentThread() }
         }
-        serverSocket?.let {
+        listener?.let {
             try {
                 it.close()
             } catch (_: IOException) {
             }
         }
-        if (client != null) {
+        clients.forEach {
             try {
-                client.close()
+                it.close()
             } catch (_: IOException) {
             }
         }
-        val worker = acceptThread
-        worker?.interrupt()
-        worker?.join(socketTimeoutMs.toLong() + JOIN_MARGIN_MS)
-        if (worker == null || !worker.isAlive) {
-            synchronized(lock) {
+        threads.forEach { it.interrupt() }
+        val wasInterrupted = Thread.interrupted()
+        var interruptCaught = false
+        for (t in threads) {
+            var remaining = deadlineNanos - System.nanoTime()
+            while (remaining > 0 && t.isAlive) {
+                try {
+                    TimeUnit.NANOSECONDS.timedJoin(t, remaining)
+                } catch (_: InterruptedException) {
+                    interruptCaught = true
+                }
+                remaining = deadlineNanos - System.nanoTime()
+            }
+        }
+        if (wasInterrupted || interruptCaught) {
+            Thread.currentThread().interrupt()
+        }
+        synchronized(lock) {
+            if (acceptThread?.isAlive != true && requestThread?.isAlive != true) {
                 serverSocket = null
+                acceptThread = null
+                requestThread = null
                 activeClient = null
                 activeCancellation = null
+                busyClient = null
+                busyCancellation = null
             }
-            acceptThread = null
         }
     }
 
@@ -88,43 +145,77 @@ internal class HttpServer(
             } catch (_: IOException) {
                 break
             }
-            val cancellation = RequestCancellation()
-            val refuse = synchronized(lock) {
-                if (closed) true else {
-                    activeClient = client
-                    activeCancellation = cancellation
-                    false
-                }
-            }
-            if (refuse) {
-                try {
-                    client.close()
-                } catch (_: IOException) {
-                }
-                break
-            }
-            try {
-                serve(client, cancellation)
-            } catch (_: Exception) {
-            } finally {
-                synchronized(lock) {
-                    if (activeClient === client) {
-                        activeClient = null
-                        activeCancellation = null
+            var busyCancel: RequestCancellation? = null
+            synchronized(lock) {
+                when {
+                    closed -> {
+                        try {
+                            client.close()
+                        } catch (_: IOException) {
+                        }
+                    }
+                    requestThread?.isAlive == true -> {
+                        val cancellation = RequestCancellation()
+                        busyClient = client
+                        busyCancellation = cancellation
+                        busyCancel = cancellation
+                    }
+                    else -> {
+                        val cancellation = RequestCancellation()
+                        activeClient = client
+                        activeCancellation = cancellation
+                        val worker = Thread({
+                            try {
+                                serve(client, cancellation, busy = false)
+                            } catch (_: Exception) {
+                            } finally {
+                                try {
+                                    client.close()
+                                } catch (_: IOException) {
+                                }
+                                synchronized(lock) {
+                                    if (activeClient === client) {
+                                        activeClient = null
+                                        activeCancellation = null
+                                    }
+                                }
+                            }
+                        }, REQUEST_THREAD_NAME)
+                        worker.isDaemon = true
+                        requestThread = worker
+                        worker.start()
                     }
                 }
+            }
+            busyCancel?.let { cancellation ->
                 try {
-                    client.close()
-                } catch (_: IOException) {
+                    serve(client, cancellation, busy = true)
+                } catch (_: Exception) {
+                } finally {
+                    try {
+                        client.close()
+                    } catch (_: IOException) {
+                    }
+                    synchronized(lock) {
+                        if (busyClient === client) {
+                            busyClient = null
+                            busyCancellation = null
+                        }
+                    }
                 }
             }
         }
+        try {
+            socket.close()
+        } catch (_: IOException) {
+        }
     }
 
-    private fun serve(client: Socket, cancellation: RequestCancellation) {
+    private fun serve(client: Socket, cancellation: RequestCancellation, busy: Boolean) {
         val startMs = clockMs()
         val deadlineMs = startMs + requestDeadlineMs
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val owner = Thread.currentThread()
         val watchdog = Thread {
             while (!finished.get()) {
                 val remaining = deadlineMs - clockMs()
@@ -133,6 +224,9 @@ internal class HttpServer(
                     try {
                         client.close()
                     } catch (_: IOException) {
+                    }
+                    if (!busy) {
+                        owner.interrupt()
                     }
                     break
                 }
@@ -147,7 +241,11 @@ internal class HttpServer(
         watchdog.name = "agent-mobile-http-deadline"
         watchdog.start()
         try {
-            serveWithinDeadline(client, cancellation, startMs, deadlineMs)
+            if (busy) {
+                serveBusyWithinDeadline(client, cancellation)
+            } else {
+                serveWithinDeadline(client, cancellation, startMs, deadlineMs)
+            }
         } finally {
             finished.set(true)
             val wasInterrupted = Thread.interrupted()
@@ -189,23 +287,21 @@ internal class HttpServer(
         applyReadTimeout()
         val input = BufferedInputStream(client.getInputStream())
 
-        val headBytes = readHead(input, ::applyReadTimeout) ?: return
-        val head = String(headBytes, Charsets.ISO_8859_1)
-        val lines = head.split("\r\n")
-        val requestParts = lines[0].split(" ")
-        if (requestParts.size < 2) return
-        val method = requestParts[0]
-        val path = requestParts[1]
-        val headers = HashMap<String, String>()
-        for (i in 1 until lines.size) {
-            val line = lines[i]
-            if (line.isEmpty()) continue
-            val sep = line.indexOf(':')
-            if (sep < 0) continue
-            headers[line.substring(0, sep).trim().lowercase()] = line.substring(sep + 1).trim()
+        val headBytes = try {
+            readHead(input, ::applyReadTimeout) ?: return
+        } catch (_: HttpFramingException) {
+            writeResponse(client, 409, Protocol.failure(null, null, "BAD_REQUEST", FRAMING_MESSAGE), emptyMap())
+            return
         }
+        val head = try {
+            HttpRequestHead.parse(headBytes, maxBodyBytes)
+        } catch (_: HttpFramingException) {
+            writeResponse(client, 409, Protocol.failure(null, null, "BAD_REQUEST", FRAMING_MESSAGE), emptyMap())
+            return
+        }
+        val headers = head.headers
 
-        val command = path.substringBefore('?').trim('/')
+        val command = head.path.substringBefore('?').trim('/')
         val authorization = headers["authorization"]
         val authorized = token.isNotEmpty() && authorization != null &&
             MessageDigest.isEqual(
@@ -217,7 +313,7 @@ internal class HttpServer(
             writeResponse(client, 401, Protocol.failure(null, null, "UNAUTHORIZED", AUTH_MESSAGE), headers)
             return
         }
-        if (method != "POST") {
+        if (head.method != "POST") {
             writeResponse(client, 405, failure(command, startMs, "BAD_REQUEST", "verbs are POST only"), headers)
             return
         }
@@ -226,27 +322,19 @@ internal class HttpServer(
             return
         }
 
-        val contentLengthHeader = headers["content-length"]
-        val contentLength = if (contentLengthHeader != null) {
-            contentLengthHeader.toIntOrNull() ?: -1
-        } else {
-            0
-        }
-        if (contentLength < 0 || contentLength > maxBodyBytes) {
-            writeResponse(client, 409, failure(command, startMs, "BAD_REQUEST", "invalid Content-Length"), headers)
-            return
-        }
-
-        val body = ByteArray(contentLength)
+        val body = ByteArray(head.contentLength)
         var offset = 0
-        while (offset < contentLength) {
+        while (offset < head.contentLength) {
             applyReadTimeout()
             val n = try {
-                input.read(body, offset, contentLength - offset)
+                input.read(body, offset, head.contentLength - offset)
             } catch (_: IOException) {
                 return
             }
-            if (n < 0) return
+            if (n < 0) {
+                writeResponse(client, 409, Protocol.failure(null, null, "BAD_REQUEST", FRAMING_MESSAGE), headers)
+                return
+            }
             offset += n
         }
 
@@ -265,6 +353,9 @@ internal class HttpServer(
             val data = handler(command, params, cancellation)
             cancellation.check()
             200 to Protocol.success(command, elapsedSince(startMs), data)
+        } catch (e: DriverBusyException) {
+            if (cancellation.isCancelled) null
+            else 503 to failure(command, startMs, e.code, e.message ?: e.code)
         } catch (e: DriverException) {
             if (cancellation.isCancelled) null
             else Protocol.statusForCode(e.code) to failure(command, startMs, e.code, e.message ?: e.code)
@@ -281,7 +372,6 @@ internal class HttpServer(
         val buf = ByteArrayOutputStream()
         var window = 0
         while (true) {
-            if (buf.size() >= maxHeaderBytes) return null
             applyReadTimeout()
             val b = try {
                 input.read()
@@ -292,8 +382,37 @@ internal class HttpServer(
             buf.write(b)
             window = (window shl 8) or b
             if (window == HEADER_END_MARKER) break
+            if (buf.size() >= maxHeaderBytes) {
+                throw HttpFramingException("request head too large")
+            }
         }
         return buf.toByteArray()
+    }
+
+    private fun serveBusyWithinDeadline(client: Socket, cancellation: RequestCancellation) {
+        try {
+            writeResponse(
+                client,
+                503,
+                Protocol.failure(null, null, "DRIVER_ERROR", BUSY_MESSAGE),
+                emptyMap(),
+            )
+            // Snapshot the already-arrived backlog once — draining is only
+            // about avoiding a TCP reset eating the reply, never about
+            // reading the rejected request, and must never wait for more
+            // bytes (a flooding peer would monopolize the acceptor).
+            val input = client.getInputStream()
+            var quota = input.available().coerceAtMost(BUSY_DRAIN_CAP)
+            val chunk = ByteArray(minOf(quota, 8192).coerceAtLeast(1))
+            while (quota > 0) {
+                cancellation.check()
+                val n = input.read(chunk, 0, minOf(quota, chunk.size))
+                if (n <= 0) break
+                quota -= n
+            }
+        } catch (_: IOException) {
+        } catch (_: DriverException) {
+        }
     }
 
     private fun failure(command: String, startMs: Long, code: String, message: String): JSONObject =
@@ -332,8 +451,14 @@ internal class HttpServer(
 
     companion object {
         private const val BIND_ADDRESS = "127.0.0.1"
+        internal const val HEAD_CAP = 1_048_576
+        internal const val BODY_CAP = 16_777_216
+        internal const val BUSY_DRAIN_CAP = HEAD_CAP + BODY_CAP
         private const val BACKLOG = 8
         private const val THREAD_NAME = "agent-mobile-http"
+        private const val REQUEST_THREAD_NAME = "agent-mobile-http-request"
+        private const val FRAMING_MESSAGE = "malformed request"
+        private const val BUSY_MESSAGE = "another command is in progress"
         private const val JOIN_MARGIN_MS = 1_000L
         private const val HEADER_END_MARKER = 0x0D0A0D0A
         private const val AUTH_MESSAGE = "Authorization: Bearer <token> required"

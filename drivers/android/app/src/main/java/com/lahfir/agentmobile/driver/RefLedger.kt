@@ -71,6 +71,8 @@ internal object RefResolver {
             abs(a.rawBounds.bottom - b.rawBounds.bottom) <= 1
 }
 
+// Owned solely by Driver; every mutation happens inside Driver.handle's
+// admission gate, so the ledger itself needs no internal locking.
 internal class RefLedger(
     private val newSnapshotId: () -> String = { generateSnapshotId() },
 ) {

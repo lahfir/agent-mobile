@@ -142,8 +142,10 @@ conflict.
 ## Android bring-up and cleanup
 
 The first Android `serve` boots the AVD if shutdown (or reuses a running/physical target),
-builds the debug APK via the checked-in Gradle wrapper when `AGENT_MOBILE_ANDROID_APK`/a prior
-artifact is absent, installs with `-r`, enables `Agent Mobile Driver` in Settings > Accessibility
+uses `AGENT_MOBILE_ANDROID_APK` as supplied when set, otherwise invokes the checked-in Gradle
+wrapper — which incrementally validates source/build inputs and skips unchanged tasks even when
+a prior APK artifact exists — then installs with `-r`, enables `Agent Mobile Driver` in
+Settings > Accessibility
 (preserving every other enabled service), provisions a fresh bearer through the app's
 `ContentProvider`, creates one owned `adb forward`, and exposes a loopback bridge. It never
 installs SDK packages at session startup — run `scripts/setup-android-sdk.sh` first.
@@ -243,6 +245,9 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
   already foreground rather than retargeting — `launch` changes apps. On Android `launch`/
   `terminate` run through the host bridge with serial-scoped `cmd package`/`am force-stop`/
   `am start`; `terminate` refuses the driver itself, System UI, and the current launcher.
+  `terminate` targets the package seen by its authenticated status preflight; foreground
+  observation and force-stop are not atomic, and a later foreground change does not retarget
+  the request.
   If System UI wedges the foreground, `back` is the first recovery move — judge the returned
   snapshot; `launch` is only a cold-restart fallback and loses transient app state.
 - Response envelope: `{version, ok, command, elapsed_ms, data}` or

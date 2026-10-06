@@ -64,6 +64,9 @@ fn stop_closes_listener_and_stalled_client() -> Result<(), Failure> {
     let (tx, rx) = channel();
     bridge.notify_on_accept(tx);
     let mut stalled = TcpStream::connect(("127.0.0.1", bridge.port())).map_err(Failure::from)?;
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(Failure::from)?;
     rx.recv_timeout(Duration::from_secs(5))
         .map_err(|_| Failure::local("client never became active", "fail"))?;
     stalled
@@ -75,7 +78,24 @@ fn stop_closes_listener_and_stalled_client() -> Result<(), Failure> {
         t.elapsed() < Duration::from_secs(5),
         "stop waited on stalled client"
     );
-    assert!(TcpStream::connect(("127.0.0.1", bridge.port())).is_err());
+    assert!(!bridge.is_running(), "listener still reported running");
+    let mut byte = [0u8; 1];
+    match std::io::Read::read(&mut stalled, &mut byte) {
+        Ok(0) => {}
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+            ) => {}
+        other => {
+            return Err(Failure::local(
+                format!("stalled client still usable after stop: {other:?}"),
+                "fail",
+            ));
+        }
+    }
     Ok(())
 }
 

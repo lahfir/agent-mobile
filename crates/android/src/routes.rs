@@ -347,4 +347,6 @@ fn terminate_route(
 }
 
 #[cfg(test)]
+mod spec_tests;
+#[cfg(test)]
 mod tests;

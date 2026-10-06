@@ -27,6 +27,7 @@ pub fn output(success: bool, stdout: &str, stderr: &str) -> CommandOutput {
 /// argv)` it was asked to run.
 pub(crate) struct FakeRunner {
     calls: Mutex<Vec<(PathBuf, Vec<String>)>>,
+    timeouts: Mutex<Vec<Duration>>,
     replies: Mutex<VecDeque<CommandOutput>>,
     bound_port: Mutex<Option<String>>,
 }
@@ -37,6 +38,7 @@ impl FakeRunner {
     pub(crate) fn scripted(replies: Vec<CommandOutput>) -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
             replies: Mutex::new(replies.into()),
             bound_port: Mutex::new(None),
         })
@@ -49,6 +51,11 @@ impl FakeRunner {
             .map(|c| c.iter().map(|(_, a)| a.clone()).collect())
             .unwrap_or_default()
     }
+
+    /// Every per-call deadline supplied to `run`, in call order.
+    pub(crate) fn timeouts(&self) -> Vec<Duration> {
+        self.timeouts.lock().map(|t| t.clone()).unwrap_or_default()
+    }
 }
 
 impl CommandRunner for FakeRunner {
@@ -56,13 +63,16 @@ impl CommandRunner for FakeRunner {
         &self,
         program: &Path,
         args: &[&str],
-        _timeout: Duration,
+        timeout: Duration,
     ) -> Result<CommandOutput, Failure> {
         if let Ok(mut calls) = self.calls.lock() {
             calls.push((
                 program.to_path_buf(),
                 args.iter().map(ToString::to_string).collect(),
             ));
+        }
+        if let Ok(mut timeouts) = self.timeouts.lock() {
+            timeouts.push(timeout);
         }
         if let Some(i) = args.iter().position(|a| *a == "--no-rebind")
             && let Some(tcp) = args.get(i + 1).and_then(|a| a.strip_prefix("tcp:"))

@@ -3,6 +3,7 @@ package com.lahfir.agentmobile.driver
 import android.accessibilityservice.AccessibilityService
 import android.os.Build
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
 internal interface DriverPlatform {
@@ -80,6 +81,7 @@ internal class Driver internal constructor(
 
     internal val ledger = RefLedger()
     private var lastRead: TreeRead? = null
+    private val admission = AtomicBoolean(false)
 
     fun handle(
         command: String,
@@ -87,24 +89,31 @@ internal class Driver internal constructor(
         cancellation: RequestCancellation = RequestCancellation(),
     ): JSONObject {
         cancellation.check()
-        val out = when (command) {
-            "status" -> status(cancellation)
-            "snapshot" -> snapshot(params, cancellation)
-            "tap" -> tap(params, cancellation)
-            "doubletap" -> doubletap(params, cancellation)
-            "hold" -> hold(params, cancellation)
-            "pinch" -> pinch(params, cancellation)
-            "twofinger" -> twofinger(params, cancellation)
-            "type" -> type(params, cancellation)
-            "swipe" -> swipe(params, cancellation)
-            "back" -> global(GlobalAction.BACK, cancellation)
-            "home" -> global(GlobalAction.HOME, cancellation)
-            "center" -> center(params, cancellation)
-            "screenshot" -> screenshot(cancellation)
-            else -> throw DriverException("UNKNOWN_COMMAND", "unknown command: $command")
+        if (!admission.compareAndSet(false, true)) {
+            throw DriverBusyException()
         }
-        cancellation.check()
-        return out
+        try {
+            val out = when (command) {
+                "status" -> status(cancellation)
+                "snapshot" -> snapshot(params, cancellation)
+                "tap" -> tap(params, cancellation)
+                "doubletap" -> doubletap(params, cancellation)
+                "hold" -> hold(params, cancellation)
+                "pinch" -> pinch(params, cancellation)
+                "twofinger" -> twofinger(params, cancellation)
+                "type" -> type(params, cancellation)
+                "swipe" -> swipe(params, cancellation)
+                "back" -> global(GlobalAction.BACK, cancellation)
+                "home" -> global(GlobalAction.HOME, cancellation)
+                "center" -> center(params, cancellation)
+                "screenshot" -> screenshot(cancellation)
+                else -> throw DriverException("UNKNOWN_COMMAND", "unknown command: $command")
+            }
+            cancellation.check()
+            return out
+        } finally {
+            admission.set(false)
+        }
     }
 
     /** Check cancellation before and after every platform operation. */

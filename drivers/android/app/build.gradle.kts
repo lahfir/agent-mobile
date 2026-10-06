@@ -14,6 +14,15 @@ android {
         versionName = "0.1.0"
     }
 
+    sourceSets {
+        getByName("test") {
+            resources.srcDirs(
+                "../../../crates/core/tests/spec",
+                "../../../crates/core/tests/fixtures",
+            )
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use super::{AdbLifecycle, LifecycleControl, LifecycleError, valid_package};
 use crate::adb::Adb;
@@ -157,4 +159,68 @@ fn launch_rejects_foreign_component_package() {
         Err(LifecycleError::BadRequest(_))
     ));
     assert_eq!(runner.calls().len(), 1);
+}
+
+#[test]
+fn launch_uses_extended_deadline_only_for_start() -> Result<(), LifecycleError> {
+    let (ctl, runner) = ctl_with(vec![
+        output(true, "priority=0\ncom.pkg.app/.MainActivity\n", ""),
+        output(true, "", ""),
+        output(true, "Status: ok\nActivity: com.pkg.app/.MainActivity", ""),
+    ]);
+    ctl.launch("com.pkg.app")?;
+    assert_eq!(
+        runner.timeouts(),
+        vec![
+            Duration::from_secs(15),
+            Duration::from_secs(15),
+            Duration::from_secs(60)
+        ],
+        "resolve and force-stop keep the default; am start -W gets 60s"
+    );
+    Ok(())
+}
+
+#[test]
+fn failed_start_is_driver_error_and_runs_start_once() {
+    let (ctl, runner) = ctl_with(vec![
+        output(true, "priority=0\ncom.pkg.app/.MainActivity\n", ""),
+        output(true, "", ""),
+        output(false, "", "Error: Activity not started"),
+    ]);
+    let result = ctl.launch("com.pkg.app");
+    assert!(
+        matches!(result.as_ref(), Err(LifecycleError::Driver(_))),
+        "{result:?}"
+    );
+    let starts = runner
+        .calls()
+        .iter()
+        .filter(|c| c.iter().any(|a| a.contains("'start'")))
+        .count();
+    assert_eq!(1, starts, "no retry of a side-effecting launch");
+}
+
+#[test]
+fn cancellation_reaches_explicit_timeout_remote_shell() {
+    let runner = FakeRunner::scripted(vec![]);
+    let flag = Arc::new(AtomicBool::new(true));
+    let adb =
+        Adb::with_runner(PathBuf::from("adb"), runner.clone()).with_cancellation(flag.clone());
+    let result = adb.remote_shell_with(
+        "s1",
+        &["am", "start", "-W", "-n", "com.pkg/.Main"],
+        Duration::from_secs(60),
+    );
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|e| e.message().contains("interrupted")),
+        "{result:?}"
+    );
+    assert!(
+        runner.calls().is_empty(),
+        "cancellation short-circuits before spawn: {:?}",
+        runner.calls()
+    );
 }

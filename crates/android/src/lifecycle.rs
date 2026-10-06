@@ -3,14 +3,19 @@
 //! refusal list that can never drop the launcher, system UI, or driver.
 
 use std::fmt;
+use std::time::Duration;
 
-use crate::adb::{Adb, diagnostic_output};
+use crate::adb::{Adb, DEFAULT_TIMEOUT, diagnostic_output};
 use crate::driver::PACKAGE;
 
 /// Launcher category for `resolve-activity`.
 const CAT_LAUNCHER: &str = "android.intent.category.LAUNCHER";
 /// HOME category resolves the user's current launcher package.
 const CAT_HOME: &str = "android.intent.category.HOME";
+
+/// `am start -W` blocks until the activity's first frame — a cold app
+/// start legitimately outlives the default command deadline.
+const APP_START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Lifecycle failure split: caller-shaped mistakes vs device failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,9 +113,20 @@ impl AdbLifecycle {
     /// One remote shell command (words quoted at the adb boundary) that
     /// must succeed and carry no `Error:`/`Exception` text.
     fn shell(&self, op: &str, args: &[&str]) -> Result<String, LifecycleError> {
+        self.shell_with(op, args, DEFAULT_TIMEOUT)
+    }
+
+    /// [`shell`] under an explicit per-call deadline chosen by the
+    /// caller — `shell` delegates with [`DEFAULT_TIMEOUT`].
+    fn shell_with(
+        &self,
+        op: &str,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<String, LifecycleError> {
         let out = self
             .adb
-            .remote_shell(&self.serial, args)
+            .remote_shell_with(&self.serial, args, timeout)
             .map_err(|e| LifecycleError::Driver(format!("adb {op} failed: {}", e.message())))?;
         let text = format!("{} {}", out.stdout, out.stderr);
         let bad_line = text.lines().any(|line| {
@@ -180,7 +196,11 @@ impl LifecycleControl for AdbLifecycle {
         }
         let component = self.resolve(Some(package), CAT_LAUNCHER)?;
         self.shell("force-stop", &["am", "force-stop", package])?;
-        self.shell("start", &["am", "start", "-W", "-n", &component])?;
+        self.shell_with(
+            "start",
+            &["am", "start", "-W", "-n", &component],
+            APP_START_TIMEOUT,
+        )?;
         Ok(())
     }
 

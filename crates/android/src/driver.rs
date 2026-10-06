@@ -199,9 +199,11 @@ pub(crate) fn install(adb: &Adb, serial: &str, apk: &Path) -> Result<(), Failure
     ))
 }
 
-/// Locate the debug APK: `AGENT_MOBILE_ANDROID_APK` wins when it names an
-/// existing file, else an existing build artifact under `driver_dir`, else
-/// invoke the checked-in Gradle wrapper.
+/// Locate the debug APK: `AGENT_MOBILE_ANDROID_APK` is used as supplied when
+/// it names an existing file (an invalid explicit override fails); without
+/// an override the checked-in Gradle wrapper runs — it incrementally
+/// validates source/build inputs and skips unchanged tasks even when a
+/// prior artifact exists.
 ///
 /// # Errors
 /// [`Failure::Local`] when no APK can be produced; never installs SDK,

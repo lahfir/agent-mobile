@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use rustix::process::{Pid, Signal, kill_process_group};
+
 use crate::error::Failure;
 
 /// Token alphabet: 24 lowercase hex chars from 12 random bytes.
@@ -227,11 +229,11 @@ pub fn run_bounded_until(
         std::thread::sleep(Duration::from_millis(50));
     };
     if !matches!(outcome, Done::Exited) {
-        kill_group(child.id());
+        kill_group(&child);
         let _ = child.kill();
     }
     let wait_status = child.wait();
-    kill_group(child.id());
+    kill_group(&child);
     let join = |h: std::thread::JoinHandle<std::io::Result<Captured>>| {
         h.join()
             .map_err(|_| Failure::local("output reader thread panicked", "rerun the command"))?
@@ -330,15 +332,10 @@ fn drain(
     })
 }
 
-/// SIGKILL the process group `pgid` when it exists — best effort; the
+/// SIGKILL the owned child's process group — best effort; the
 /// direct-child `Child::kill` fallback is handled by the caller.
-fn kill_group(pgid: u32) {
-    let _ = Command::new("/bin/kill")
-        .args(["-KILL", &format!("-{pgid}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+fn kill_group(child: &Child) {
+    let _ = kill_process_group(Pid::from_child(child), Signal::KILL);
 }
 
 mod lifecycle;

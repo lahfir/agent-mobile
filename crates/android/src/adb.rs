@@ -306,12 +306,23 @@ impl Adb {
         serial: &str,
         args: &[&str],
     ) -> Result<CommandOutput, Failure> {
+        self.remote_shell_with(serial, args, DEFAULT_TIMEOUT)
+    }
+
+    /// [`remote_shell`] under an explicit deadline — same canonical word
+    /// quoting; use for operations that legitimately outlive the default.
+    pub(crate) fn remote_shell_with(
+        &self,
+        serial: &str,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<CommandOutput, Failure> {
         let command = args
             .iter()
             .map(|arg| quote_remote_word(arg))
             .collect::<Vec<_>>()
             .join(" ");
-        self.scoped(serial, &["shell", &command])
+        self.scoped_with(serial, &["shell", &command], timeout)
     }
 
     /// [`remote_shell`] that also requires a zero exit, folding stderr

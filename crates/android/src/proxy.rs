@@ -170,7 +170,12 @@ fn parse_head(head: &str) -> io::Result<ParsedHead> {
         }
         if name == "content-length" {
             content_lengths += 1;
-            if content_lengths > 1 || value.trim().parse::<usize>().is_err() {
+            let digits = value.trim();
+            if content_lengths > 1
+                || digits.is_empty()
+                || !digits.bytes().all(|b| b.is_ascii_digit())
+                || digits.parse::<usize>().is_err()
+            {
                 return Err(bad());
             }
         }

@@ -271,8 +271,19 @@ fn handle_client(
 ) {
     let started = Instant::now();
     let _ = sock.set_write_timeout(Some(IO_TIMEOUT));
-    let Ok(req) = read_request(&mut DeadlineReader::new(sock, request_deadline)) else {
-        return;
+    let req = match read_request(&mut DeadlineReader::new(sock, request_deadline)) {
+        Ok(req) => req,
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+            ) =>
+        {
+            let body = error_envelope(None, None, "BAD_REQUEST", "malformed request");
+            let _ = sock.write_all(&http_response("409 Bad Request", &body));
+            return;
+        }
+        Err(_) => return,
     };
     let route = req.path.split('?').next().unwrap_or("");
     match route {
