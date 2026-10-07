@@ -84,7 +84,30 @@ jobs:
         env:
           AGENT_MOBILE_DRIVER_DIR: ${{ github.workspace }}/drivers/ios/dd/Build/Products
           AGENT_MOBILE_BOOT_BUDGET_SECS: "600"
-        run: cargo test --test integration_snapshot --locked -- --ignored
+        run: |
+          trace="$RUNNER_TEMP/ios-discovery-processes.log"
+          (
+            while :; do
+              date -u '+%Y-%m-%dT%H:%M:%SZ'
+              /bin/ps -axo pid,ppid,pgid,state,etime,comm | awk \
+                'NR == 1 || /agent-mobile|integration_snapshot|xcrun|simctl|devicectl|CoreSimulatorService/'
+              sleep 2
+            done
+          ) > "$trace" 2>&1 &
+          tracer_pid=$!
+          cleanup_trace() {
+            kill "$tracer_pid" 2>/dev/null || true
+            wait "$tracer_pid" 2>/dev/null || true
+          }
+          trap cleanup_trace EXIT
+          gate_status=0
+          cargo test --test integration_snapshot --locked -- --ignored || gate_status=$?
+          cleanup_trace
+          trap - EXIT
+          if [ "$gate_status" -ne 0 ]; then
+            cat "$trace"
+          fi
+          exit "$gate_status"
 
       - name: Discovery diagnostics on failure
         if: ${{ failure() && steps.simulator-gate.outcome == 'failure' }}

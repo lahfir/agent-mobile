@@ -552,6 +552,13 @@ internal class HttpServer(
             "Content-Length: ${body.size}\r\n" +
             "Connection: close\r\n\r\n"
         val out = client.getOutputStream()
+        // Allow one successor after dispatch commits, before reply bytes are visible.
+        // The persistent worker still serializes writes and owns this request's deadline.
+        synchronized(lock) {
+            if (activeWork?.client === client) {
+                activeWork = null
+            }
+        }
         out.write(head.toByteArray(Charsets.ISO_8859_1))
         out.write(body)
         out.flush()
