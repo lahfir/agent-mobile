@@ -113,7 +113,7 @@ fn unknown_query_is_usage() {
 }
 
 #[test]
-fn default_prefers_iphone_sim_then_any_sim_then_physical_then_android() {
+fn default_prefers_booted_iphone_sim_then_tier_order() {
     let android_only = scan(vec![and_dev("avd:x", None, "shutdown")]);
     assert_eq!(
         default_device(&android_only)
@@ -161,6 +161,22 @@ fn default_prefers_iphone_sim_then_any_sim_then_physical_then_android() {
             .map(|d| d.id().to_owned())
             .as_deref(),
         Some("emulator-5554")
+    );
+    let shutdown_first = scan(vec![
+        PlatformDevice::from_ios(ios::Device {
+            name: "iPhone 17".to_owned(),
+            udid: "UDID-SHUT".to_owned(),
+            kind: "simulator",
+            os: Some("26.0".to_owned()),
+            state: Some("Shutdown".to_owned()),
+        }),
+        ios_dev("iPhone 17 Pro", "UDID-BOOT", "simulator"),
+    ]);
+    assert_eq!(
+        default_device(&shutdown_first)
+            .map(|d| d.id().to_owned())
+            .as_deref(),
+        Some("UDID-BOOT")
     );
 }
 

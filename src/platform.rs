@@ -262,8 +262,9 @@ fn contextualize(scan: &PlatformScan, query: &str, err: Failure) -> Failure {
 }
 
 /// The device a driverless lazy boot should pick, preserving the P1
-/// mac order: iPhone-named simulator, any iOS simulator, an iOS physical
-/// device, a ready Android target, then any Android target.
+/// mac order: booted iPhone-named simulator, iPhone-named simulator,
+/// booted simulator, any iOS simulator, an iOS physical device, a ready
+/// Android target, then any Android target.
 #[must_use]
 pub fn default_device(scan: &PlatformScan) -> Option<PlatformDevice> {
     let ios_kind = |kind: &str| {
@@ -271,17 +272,23 @@ pub fn default_device(scan: &PlatformScan) -> Option<PlatformDevice> {
             .iter()
             .find(|d| d.platform() == Platform::Ios && d.kind() == kind)
     };
+    let sim = |booted: bool, iphone: bool| {
+        scan.devices.iter().find(|d| {
+            d.platform() == Platform::Ios
+                && d.kind() == "simulator"
+                && (!iphone || d.name().contains("iPhone"))
+                && (!booted || d.state() == Some("Booted"))
+        })
+    };
     let android = |ready: bool| {
         scan.devices
             .iter()
             .find(|d| d.platform() == Platform::Android && (!ready || d.state() == Some("device")))
     };
-    scan.devices
-        .iter()
-        .find(|d| {
-            d.platform() == Platform::Ios && d.kind() == "simulator" && d.name().contains("iPhone")
-        })
-        .or_else(|| ios_kind("simulator"))
+    sim(true, true)
+        .or_else(|| sim(false, true))
+        .or_else(|| sim(true, false))
+        .or_else(|| sim(false, false))
         .or_else(|| ios_kind("device"))
         .or_else(|| android(true))
         .or_else(|| android(false))
