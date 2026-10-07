@@ -79,3 +79,58 @@ fn stale_apk_still_runs_gradle_for_freshness() -> Result<(), Failure> {
     drop(tmp);
     Ok(())
 }
+
+#[test]
+fn enable_settle_loop_converges_when_reread_lags_write() -> Result<(), Failure> {
+    let merged = format!("a.b/.C:{SERVICE_COMPONENT}");
+    let bound = "Bound services:{Service[label=Agent Mobile Driver, feedbackType[0]]}";
+    let (adb, runner) = adb_with(vec![
+        output(true, "a.b/.C", ""),
+        output(true, "1", ""),
+        output(true, "1", ""),
+        output(true, "a.b/.C", ""),
+        output(true, "", ""),
+        output(true, "a.b/.C", ""),
+        output(true, &merged, ""),
+        output(true, &merged, ""),
+        output(true, bound, ""),
+    ]);
+    enable_service(&adb, "s1")?;
+    let calls = runner.calls();
+    let puts: Vec<_> = calls
+        .iter()
+        .filter(|c| c.iter().any(|a| a.contains("'put'")))
+        .collect();
+    assert_eq!(puts.len(), 1);
+    assert!(puts[0].iter().any(|a| a.contains(&format!("'{merged}'"))));
+    Ok(())
+}
+
+#[test]
+fn enable_settle_loop_rewrites_after_external_reset() -> Result<(), Failure> {
+    let merged = format!("a.b/.C:{SERVICE_COMPONENT}");
+    let bound = "Bound services:{Service[label=Agent Mobile Driver, feedbackType[0]]}";
+    let (adb, runner) = adb_with(vec![
+        output(true, "a.b/.C", ""),
+        output(true, "1", ""),
+        output(true, "1", ""),
+        output(true, "a.b/.C", ""),
+        output(true, "", ""),
+        output(true, "a.b/.C", ""),
+        output(true, "a.b/.C", ""),
+        output(true, "", ""),
+        output(true, &merged, ""),
+        output(true, bound, ""),
+    ]);
+    enable_service(&adb, "s1")?;
+    let calls = runner.calls();
+    let puts: Vec<_> = calls
+        .iter()
+        .filter(|c| c.iter().any(|a| a.contains("'put'")))
+        .collect();
+    assert_eq!(puts.len(), 2);
+    for p in puts {
+        assert!(p.iter().any(|a| a.contains(&format!("'{merged}'"))));
+    }
+    Ok(())
+}

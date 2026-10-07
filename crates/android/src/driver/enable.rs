@@ -55,8 +55,9 @@ fn settings_put(adb: &Adb, serial: &str, key: &str, value: &str) -> Result<(), F
 }
 
 /// Enable and verify the accessibility service: writes happen only when
-/// the merged value differs, then a reread and a bounded `dumpsys` poll
-/// confirm the service actually bound.
+/// the merged value differs, then a bounded settle loop re-reads and
+/// conditionally re-writes until the exact entry holds, and a bounded
+/// `dumpsys` poll confirms the service actually bound.
 ///
 /// # Errors
 /// [`Failure::Local`] when writes fail, the service does not appear in
@@ -66,7 +67,7 @@ pub(crate) fn enable_service(adb: &Adb, serial: &str) -> Result<(), Failure> {
     enable_service_bounded(adb, serial, BIND_BUDGET)
 }
 
-/// [`enable_service`] with an explicit bind-poll deadline.
+/// [`enable_service`] with an explicit settle-and-bind deadline.
 pub(crate) fn enable_service_bounded(
     adb: &Adb,
     serial: &str,
@@ -83,25 +84,49 @@ pub(crate) fn enable_service_bounded(
     if !qemu {
         return Err(bind_failure("is not enabled"));
     }
-    let fresh = settings_get(adb, serial, "enabled_accessibility_services")?;
-    let merged = merge_enabled_services(&fresh, SERVICE_COMPONENT);
-    if merged != fresh {
-        settings_put(adb, serial, "enabled_accessibility_services", &merged)?;
+    let deadline = Instant::now() + budget;
+    let mut accessibility_done = accessibility == "1";
+    loop {
+        if adb.is_cancelled() {
+            return Err(Failure::local("operation interrupted", "rerun the command"));
+        }
+        let fresh = settings_get(adb, serial, "enabled_accessibility_services")?;
+        let merged = merge_enabled_services(&fresh, SERVICE_COMPONENT);
+        if merged != fresh {
+            settings_put(adb, serial, "enabled_accessibility_services", &merged)?;
+        }
+        if !accessibility_done {
+            settings_put(adb, serial, "accessibility_enabled", "1")?;
+            accessibility_done = true;
+        }
+        if service_present(adb, serial)? {
+            return poll_bound_until(adb, serial, deadline);
+        }
+        if Instant::now() > deadline {
+            return Err(bind_failure("service not present after write"));
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
-    if accessibility != "1" {
-        settings_put(adb, serial, "accessibility_enabled", "1")?;
-    }
-    verify_service(adb, serial, budget)
 }
 
 /// Reread the setting for an exact component match, then poll `dumpsys
 /// accessibility` for the actual bound-service record line.
 fn verify_service(adb: &Adb, serial: &str, budget: Duration) -> Result<(), Failure> {
-    let reread = settings_get(adb, serial, "enabled_accessibility_services")?;
-    if !reread.split(':').any(is_our_service_entry) {
+    if !service_present(adb, serial)? {
         return Err(bind_failure("service not present after write"));
     }
-    let deadline = Instant::now() + budget;
+    poll_bound_until(adb, serial, Instant::now() + budget)
+}
+
+/// Is our exact component in `enabled_accessibility_services` right now?
+fn service_present(adb: &Adb, serial: &str) -> Result<bool, Failure> {
+    let reread = settings_get(adb, serial, "enabled_accessibility_services")?;
+    Ok(reread.split(':').any(is_our_service_entry))
+}
+
+/// Poll `dumpsys accessibility` for the bound-service record until
+/// `deadline`, honouring cancellation.
+fn poll_bound_until(adb: &Adb, serial: &str, deadline: Instant) -> Result<(), Failure> {
     loop {
         if adb.is_cancelled() {
             return Err(Failure::local("operation interrupted", "rerun the command"));

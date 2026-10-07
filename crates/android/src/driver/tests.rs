@@ -189,26 +189,28 @@ fn token_parse_requires_exact_bundle_field() {
 
 #[test]
 fn verify_requires_exact_component_entry() {
+    let evil = "evil.x/com.lahfir.agentmobile.driver.AgentMobileAccessibilityService.evil";
     let merged = format!("a.b/.C:{SERVICE_COMPONENT}");
     let (adb, _r) = adb_with(vec![
         output(true, "a.b/.C", ""),
         output(true, "", ""),
         output(true, "1", ""),
-        output(
-            true,
-            "evil.x/com.lahfir.agentmobile.driver.AgentMobileAccessibilityService.evil",
-            "",
-        ),
+        output(true, evil, ""),
         output(true, &merged, ""),
         output(
             true,
             "Bound services:{Service[label=Agent Mobile Driver, feedbackType[0]]}",
             "",
         ),
+        output(true, evil, ""),
     ]);
+    let err = enable_service_bounded(&adb, "s1", std::time::Duration::ZERO)
+        .err()
+        .map(|e| e.render())
+        .unwrap_or_default();
     assert!(
-        enable_service(&adb, "s1").is_err(),
-        "substring entry accepted"
+        err.contains("not present"),
+        "substring entry accepted or rejected for the wrong reason: {err}"
     );
 }
 
@@ -321,7 +323,7 @@ fn disabled_physical_device_never_writes() {
         assert!(err.contains("Allow restricted settings"), "{err}");
         let calls = runner.calls();
         assert!(
-            !calls.iter().any(|c| c.contains(&"put".to_owned())),
+            !calls.iter().any(|c| c.iter().any(|a| a.contains("'put'"))),
             "physical/unproven device must see zero writes: {calls:?}"
         );
     }
@@ -345,7 +347,7 @@ fn emulator_enabled_needs_no_qemu_probe() -> Result<(), Failure> {
         !runner
             .calls()
             .iter()
-            .any(|c| c.contains(&"getprop".to_owned())),
+            .any(|c| c.iter().any(|a| a.contains("'getprop'"))),
         "enabled device must not probe qemu"
     );
     Ok(())
