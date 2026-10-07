@@ -172,9 +172,16 @@ pub(super) fn pick_device_with(
         return Err(e);
     }
     crate::platform::default_device(&scan).map(|d| d.key()).ok_or_else(|| {
-        Failure::local(
-            "no devices found",
-            "create a simulator with `xcrun simctl create <name> <type>`, pair a device, or create an Android AVD",
-        )
+        if scan.notes.is_empty() {
+            Failure::local(
+                "no devices found",
+                "create a simulator with `xcrun simctl create <name> <type>`, pair a device, or create an Android AVD",
+            )
+        } else {
+            Failure::local(
+                format!("no devices found; {}", scan.notes.join("; ")),
+                "resolve the reported device-discovery failures, then retry",
+            )
+        }
     })
 }

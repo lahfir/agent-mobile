@@ -165,4 +165,72 @@ mod lazy {
         drop(tmp);
         Ok(())
     }
+
+    #[test]
+    fn empty_scan_surfaces_discovery_notes() -> Result<(), Failure> {
+        let (ctx, tmp) = ctx("notes1");
+        let notes = [
+            "ios: simctl probe did not answer within 15000 ms",
+            "android: adb unavailable",
+        ];
+        let result = pick_device_with(&ctx, || {
+            Ok(PlatformScan {
+                devices: vec![],
+                notes: notes.iter().map(|n| (*n).to_owned()).collect(),
+            })
+        });
+        match result {
+            Err(Failure::Local { message, next }) => {
+                assert!(
+                    message.contains("no devices found"),
+                    "message must name the miss: {message:?}"
+                );
+                for n in &notes {
+                    assert!(message.contains(n), "message must carry note: {message:?}");
+                }
+                assert_eq!(
+                    next,
+                    "resolve the reported device-discovery failures, then retry"
+                );
+            }
+            other => {
+                return Err(Failure::local(
+                    format!("expected miss, got: {other:?}"),
+                    "fix test",
+                ));
+            }
+        }
+        drop(ctx);
+        drop(tmp);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_scan_without_notes_keeps_original_message() -> Result<(), Failure> {
+        let (ctx, tmp) = ctx("notes2");
+        let result = pick_device_with(&ctx, || {
+            Ok(PlatformScan {
+                devices: vec![],
+                notes: vec![],
+            })
+        });
+        match result {
+            Err(Failure::Local { message, next }) => {
+                assert_eq!(message, "no devices found");
+                assert_eq!(
+                    next,
+                    "create a simulator with `xcrun simctl create <name> <type>`, pair a device, or create an Android AVD"
+                );
+            }
+            other => {
+                return Err(Failure::local(
+                    format!("expected miss, got: {other:?}"),
+                    "fix test",
+                ));
+            }
+        }
+        drop(ctx);
+        drop(tmp);
+        Ok(())
+    }
 }
