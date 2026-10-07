@@ -24,7 +24,7 @@ fn launch_requires_auth_version_and_body() -> Result<(), Failure> {
         "POST /launch HTTP/1.1\r\nAuthorization: Bearer wrong\r\nX-Agent-Mobile-Version: 1\r\n",
         "{\"bundle_id\":\"com.pkg\"}",
     );
-    assert!(bad.starts_with("HTTP/1.1 401"));
+    assert!(bad.starts_with("HTTP/1.1 401"), "bad reply: {bad:?}");
     assert!(bad.contains("UNAUTHORIZED"));
     assert!(!bad.contains("\"command\""));
     let nover = post(
@@ -32,13 +32,13 @@ fn launch_requires_auth_version_and_body() -> Result<(), Failure> {
         "POST /launch HTTP/1.1\r\nAuthorization: Bearer t0k\r\n",
         "{\"bundle_id\":\"com.pkg\"}",
     );
-    assert!(nover.starts_with("HTTP/1.1 409"));
+    assert!(nover.starts_with("HTTP/1.1 409"), "nover reply: {nover:?}");
     let badid = post(
         bridge.port(),
         &format!("POST /launch HTTP/1.1\r\n{HEAD}"),
         "{\"bundle_id\":\"a;b\"}",
     );
-    assert!(badid.starts_with("HTTP/1.1 409"));
+    assert!(badid.starts_with("HTTP/1.1 409"), "badid reply: {badid:?}");
     assert!(badid.contains("BAD_REQUEST"));
     bridge.stop();
     Ok(())
