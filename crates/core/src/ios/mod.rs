@@ -21,8 +21,10 @@ use crate::error::Failure;
 pub const DEFAULT_PORT: u16 = 8770;
 
 /// Bound on any one `xcrun` probe — a wedged `CoreSimulatorService` or
-/// devicectl must not hang a verb forever.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// devicectl must not hang a verb forever, but enumeration legitimately
+/// takes tens of seconds on current runners, so this matches the
+/// `simctl boot` bound rather than guessing a tighter one.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One reachable device or simulator.
 #[derive(Debug, Clone, PartialEq, Eq)]
