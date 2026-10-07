@@ -11,36 +11,42 @@ use crate::testkit::{ctl, envelope, fake_upstream, post};
 
 const HEAD: &str = "Authorization: Bearer t0k\r\nX-Agent-Mobile-Version: 1\r\n";
 
+const REQ_WRONG_AUTH: &str =
+    "POST /launch HTTP/1.1\r\nAuthorization: Bearer wrong\r\nX-Agent-Mobile-Version: 1\r\n";
+const REQ_NO_VERSION: &str = "POST /launch HTTP/1.1\r\nAuthorization: Bearer t0k\r\n";
+const BODY_PKG: &str = "{\"bundle_id\":\"com.pkg\"}";
+const BODY_BADID: &str = "{\"bundle_id\":\"a;b\"}";
+
 #[test]
-fn launch_requires_auth_version_and_body() -> Result<(), Failure> {
-    let snap = envelope(
-        "200 OK",
-        "{\"version\":\"1\",\"ok\":true,\"command\":\"snapshot\",\"data\":{\"app\":\"com.pkg\",\"snapshot_id\":\"a1b2c3d4\",\"ref_count\":1,\"complete\":true,\"settled\":true,\"reads\":1,\"text\":\"\",\"tree\":{\"role\":\"g\",\"name\":\"\",\"value\":\"\",\"ref_id\":\"@a1b2c3d4:e1\",\"states\":[],\"available_actions\":[],\"bounds\":{\"x\":0.0,\"y\":0.0,\"width\":1.0,\"height\":1.0},\"children\":[]}}}",
-    );
-    let (up, _rx) = fake_upstream(vec![("/snapshot".into(), snap)]);
-    let mut bridge = start_bridge(up, &SecretToken::new("t0k"), ctl())?;
-    let bad = post(
-        bridge.port(),
-        "POST /launch HTTP/1.1\r\nAuthorization: Bearer wrong\r\nX-Agent-Mobile-Version: 1\r\n",
-        "{\"bundle_id\":\"com.pkg\"}",
-    );
-    assert!(bad.starts_with("HTTP/1.1 401"), "bad reply: {bad:?}");
-    assert!(bad.contains("UNAUTHORIZED"));
-    assert!(!bad.contains("\"command\""));
-    let nover = post(
-        bridge.port(),
-        "POST /launch HTTP/1.1\r\nAuthorization: Bearer t0k\r\n",
-        "{\"bundle_id\":\"com.pkg\"}",
-    );
-    assert!(nover.starts_with("HTTP/1.1 409"), "nover reply: {nover:?}");
-    let badid = post(
-        bridge.port(),
-        &format!("POST /launch HTTP/1.1\r\n{HEAD}"),
-        "{\"bundle_id\":\"a;b\"}",
-    );
-    assert!(badid.starts_with("HTTP/1.1 409"), "badid reply: {badid:?}");
-    assert!(badid.contains("BAD_REQUEST"));
-    bridge.stop();
+fn launch_gating_rejects_invalid_requests() -> Result<(), Failure> {
+    let heads = [
+        REQ_WRONG_AUTH.to_string(),
+        REQ_NO_VERSION.to_string(),
+        format!("POST /launch HTTP/1.1\r\n{HEAD}"),
+    ];
+    let rows = [
+        (BODY_PKG, "HTTP/1.1 401", "UNAUTHORIZED", false),
+        (BODY_PKG, "HTTP/1.1 409", "BAD_REQUEST", true),
+        (BODY_BADID, "HTTP/1.1 409", "BAD_REQUEST", true),
+    ];
+    for ((body, status, code, wants_command), head) in rows.iter().zip(&heads) {
+        let fake = ctl();
+        let mut bridge = start_bridge(1, &SecretToken::new("t0k"), fake.clone())?;
+        let reply = post(bridge.port(), head, body);
+        assert!(
+            reply.starts_with(status)
+                && reply.contains(code)
+                && reply.contains("\"command\"") == *wants_command
+                && fake.launched.lock().map(|l| l.is_empty()).unwrap_or(false)
+                && fake
+                    .terminated
+                    .lock()
+                    .map(|l| l.is_empty())
+                    .unwrap_or(false),
+            "{status}/{code} gating failed, got: {reply:?}"
+        );
+        bridge.stop();
+    }
     Ok(())
 }
 
