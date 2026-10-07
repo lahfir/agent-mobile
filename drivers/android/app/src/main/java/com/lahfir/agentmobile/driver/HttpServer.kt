@@ -10,6 +10,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 
@@ -24,25 +25,41 @@ internal class HttpServer(
     private val maxBodyBytes: Int = BODY_CAP,
 ) : AutoCloseable {
 
+    private class RequestWork(
+        val client: Socket,
+        val cancellation: RequestCancellation,
+        val startMs: Long,
+        val deadlineMs: Long,
+        val busy: Boolean = false,
+    ) {
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        @Volatile
+        var watchdog: Thread? = null
+    }
+
     private val lock = Any()
+    private val queue = ArrayBlockingQueue<RequestWork>(1)
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
     private var requestThread: Thread? = null
-    private var activeClient: Socket? = null
-    private var activeCancellation: RequestCancellation? = null
+    private var activeWork: RequestWork? = null
+    private var processingWork: RequestWork? = null
     private var busyClient: Socket? = null
     private var busyCancellation: RequestCancellation? = null
+    private val deadlineThreads = HashSet<Thread>()
     private var closed = false
 
     val localPort: Int
         get() = synchronized(lock) { serverSocket?.localPort ?: -1 }
 
     internal fun hasActiveClient(): Boolean = synchronized(lock) {
-        activeClient != null || requestThread?.isAlive == true
+        activeWork != null || processingWork?.finished?.get() == false
     }
 
     internal fun workerAlive(): Boolean = synchronized(lock) {
-        acceptThread?.isAlive == true || requestThread?.isAlive == true
+        acceptThread?.isAlive == true || requestThread?.isAlive == true ||
+            deadlineThreads.any { it.isAlive }
     }
 
     fun start() {
@@ -60,19 +77,25 @@ internal class HttpServer(
                 }
                 throw e
             }
-            val worker = Thread({ acceptLoop(socket) }, THREAD_NAME)
+            val acceptor = Thread({ acceptLoop(socket) }, THREAD_NAME)
+            acceptor.isDaemon = true
+            val worker = Thread({ requestLoop() }, REQUEST_THREAD_NAME)
             worker.isDaemon = true
             try {
                 serverSocket = socket
-                acceptThread = worker
+                acceptThread = acceptor
+                requestThread = worker
+                acceptor.start()
                 worker.start()
             } catch (e: Exception) {
-                acceptThread = null
-                serverSocket = null
                 try {
                     socket.close()
                 } catch (_: IOException) {
                 }
+                acceptor.interrupt()
+                worker.interrupt()
+                serverSocket = null
+                closed = true
                 throw e
             }
         }
@@ -89,11 +112,13 @@ internal class HttpServer(
         val threads: List<Thread>
         synchronized(lock) {
             closed = true
-            activeCancellation?.cancel()
+            val works = listOfNotNull(activeWork, processingWork).distinct()
+            works.forEach { it.cancellation.cancel() }
             busyCancellation?.cancel()
             listener = serverSocket
-            clients = listOfNotNull(activeClient, busyClient)
-            threads = listOfNotNull(acceptThread, requestThread)
+            clients = works.map { it.client } + listOfNotNull(busyClient)
+            threads = (listOfNotNull(acceptThread, requestThread) + deadlineThreads)
+                .distinct()
                 .filter { it !== Thread.currentThread() }
         }
         listener?.let {
@@ -126,12 +151,14 @@ internal class HttpServer(
             Thread.currentThread().interrupt()
         }
         synchronized(lock) {
-            if (acceptThread?.isAlive != true && requestThread?.isAlive != true) {
+            if (acceptThread?.isAlive != true && requestThread?.isAlive != true &&
+                deadlineThreads.none { it.isAlive }
+            ) {
                 serverSocket = null
                 acceptThread = null
                 requestThread = null
-                activeClient = null
-                activeCancellation = null
+                activeWork = null
+                processingWork = null
                 busyClient = null
                 busyCancellation = null
             }
@@ -139,13 +166,13 @@ internal class HttpServer(
     }
 
     private fun acceptLoop(socket: ServerSocket) {
-        while (!socket.isClosed) {
+        while (!Thread.currentThread().isInterrupted) {
             val client = try {
                 socket.accept()
             } catch (_: IOException) {
                 break
             }
-            var busyCancel: RequestCancellation? = null
+            var busy: RequestWork? = null
             synchronized(lock) {
                 when {
                     closed -> {
@@ -154,56 +181,31 @@ internal class HttpServer(
                         } catch (_: IOException) {
                         }
                     }
-                    requestThread?.isAlive == true -> {
-                        val cancellation = RequestCancellation()
+                    activeWork != null -> {
+                        val now = clockMs()
+                        val work = RequestWork(
+                            client,
+                            RequestCancellation(),
+                            now,
+                            now + requestDeadlineMs,
+                            busy = true,
+                        )
                         busyClient = client
-                        busyCancellation = cancellation
-                        busyCancel = cancellation
+                        busyCancellation = work.cancellation
+                        armDeadlineWatcher(work)
+                        busy = work
                     }
                     else -> {
                         val cancellation = RequestCancellation()
-                        activeClient = client
-                        activeCancellation = cancellation
-                        val worker = Thread({
-                            try {
-                                serve(client, cancellation, busy = false)
-                            } catch (_: Exception) {
-                            } finally {
-                                try {
-                                    client.close()
-                                } catch (_: IOException) {
-                                }
-                                synchronized(lock) {
-                                    if (activeClient === client) {
-                                        activeClient = null
-                                        activeCancellation = null
-                                    }
-                                }
-                            }
-                        }, REQUEST_THREAD_NAME)
-                        worker.isDaemon = true
-                        requestThread = worker
-                        worker.start()
+                        val now = clockMs()
+                        val work = RequestWork(client, cancellation, now, now + requestDeadlineMs)
+                        activeWork = work
+                        armDeadlineWatcher(work)
+                        queue.offer(work)
                     }
                 }
             }
-            busyCancel?.let { cancellation ->
-                try {
-                    serve(client, cancellation, busy = true)
-                } catch (_: Exception) {
-                } finally {
-                    try {
-                        client.close()
-                    } catch (_: IOException) {
-                    }
-                    synchronized(lock) {
-                        if (busyClient === client) {
-                            busyClient = null
-                            busyCancellation = null
-                        }
-                    }
-                }
-            }
+            busy?.let { serveBusy(it) }
         }
         try {
             socket.close()
@@ -211,58 +213,164 @@ internal class HttpServer(
         }
     }
 
-    private fun serve(client: Socket, cancellation: RequestCancellation, busy: Boolean) {
-        val startMs = clockMs()
-        val deadlineMs = startMs + requestDeadlineMs
-        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
-        val owner = Thread.currentThread()
-        val watchdog = Thread {
-            while (!finished.get()) {
-                val remaining = deadlineMs - clockMs()
-                if (remaining <= 0) {
-                    cancellation.cancel()
-                    try {
-                        client.close()
-                    } catch (_: IOException) {
+    private fun requestLoop() {
+        while (true) {
+            if (synchronized(lock) { closed }) {
+                break
+            }
+            val work = try {
+                queue.take()
+            } catch (_: InterruptedException) {
+                // May be a stale deadline interrupt, not shutdown — recheck
+                // closed at the loop head rather than dying here.
+                continue
+            }
+            var proceed = true
+            synchronized(lock) {
+                if (closed) {
+                    proceed = false
+                } else {
+                    processingWork = work
+                }
+            }
+            if (!proceed) {
+                finalizeCancelled(work)
+                break
+            }
+            Thread.interrupted()
+            try {
+                serveWithinDeadline(work.client, work.cancellation, work.startMs, work.deadlineMs)
+            } catch (_: Exception) {
+            } finally {
+                synchronized(lock) {
+                    work.finished.set(true)
+                    if (activeWork === work) {
+                        activeWork = null
                     }
-                    if (!busy) {
-                        owner.interrupt()
-                    }
-                    break
                 }
                 try {
-                    Thread.sleep(minOf(remaining, 100L))
-                } catch (_: InterruptedException) {
-                    break
+                    work.client.close()
+                } catch (_: IOException) {
+                }
+                retireWatcher(work)
+                synchronized(lock) {
+                    if (processingWork === work) {
+                        processingWork = null
+                    }
+                    if (closed) {
+                        return
+                    }
                 }
             }
         }
-        watchdog.isDaemon = true
-        watchdog.name = "agent-mobile-http-deadline"
-        watchdog.start()
+    }
+
+    private fun finalizeCancelled(work: RequestWork) {
+        work.cancellation.cancel()
         try {
-            if (busy) {
-                serveBusyWithinDeadline(client, cancellation)
-            } else {
-                serveWithinDeadline(client, cancellation, startMs, deadlineMs)
+            work.client.close()
+        } catch (_: IOException) {
+        }
+        synchronized(lock) {
+            work.finished.set(true)
+            if (activeWork === work) {
+                activeWork = null
             }
-        } finally {
-            finished.set(true)
+            if (processingWork === work) {
+                processingWork = null
+            }
+        }
+        retireWatcher(work)
+    }
+
+    private fun armDeadlineWatcher(work: RequestWork) {
+        val watcher = Thread {
+            try {
+                while (!work.finished.get()) {
+                    val remaining = work.deadlineMs - clockMs()
+                    if (remaining <= 0) {
+                        var expired = false
+                        synchronized(lock) {
+                            if (!work.finished.get()) {
+                                expired = true
+                                work.cancellation.cancel()
+                                if (!work.busy && processingWork === work) {
+                                    requestThread?.interrupt()
+                                }
+                            }
+                        }
+                        if (expired) {
+                            try {
+                                work.client.close()
+                            } catch (_: IOException) {
+                            }
+                        }
+                        break
+                    }
+                    try {
+                        Thread.sleep(minOf(remaining, 100L))
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                }
+            } finally {
+                synchronized(lock) {
+                    deadlineThreads.remove(Thread.currentThread())
+                }
+            }
+        }
+        watcher.isDaemon = true
+        watcher.name = DEADLINE_THREAD_NAME
+        deadlineThreads.add(watcher)
+        work.watchdog = watcher
+        watcher.start()
+    }
+
+    private fun retireWatcher(work: RequestWork) {
+        val watcher = work.watchdog
+        if (watcher != null && watcher !== Thread.currentThread()) {
+            watcher.interrupt()
             val wasInterrupted = Thread.interrupted()
             var interruptCaught = false
-            watchdog.interrupt()
             try {
-                watchdog.join(JOIN_MARGIN_MS)
+                watcher.join(JOIN_MARGIN_MS)
             } catch (_: InterruptedException) {
                 interruptCaught = true
                 try {
-                    watchdog.join(JOIN_MARGIN_MS)
+                    watcher.join(JOIN_MARGIN_MS)
                 } catch (_: InterruptedException) {
                 }
             }
             if (wasInterrupted || interruptCaught) {
                 Thread.currentThread().interrupt()
             }
+        }
+        synchronized(lock) {
+            if (watcher != null && !watcher.isAlive) {
+                deadlineThreads.remove(watcher)
+            }
+        }
+    }
+
+    private fun serveBusy(work: RequestWork) {
+        try {
+            serveBusyWithinDeadline(work.client, work.cancellation)
+        } catch (_: Exception) {
+        } finally {
+            synchronized(lock) {
+                work.finished.set(true)
+            }
+            try {
+                work.client.close()
+            } catch (_: IOException) {
+            }
+            synchronized(lock) {
+                if (busyClient === work.client) {
+                    busyClient = null
+                    busyCancellation = null
+                }
+            }
+            retireWatcher(work)
         }
     }
 
@@ -457,6 +565,7 @@ internal class HttpServer(
         private const val BACKLOG = 8
         private const val THREAD_NAME = "agent-mobile-http"
         private const val REQUEST_THREAD_NAME = "agent-mobile-http-request"
+        private const val DEADLINE_THREAD_NAME = "agent-mobile-http-deadline"
         private const val FRAMING_MESSAGE = "malformed request"
         private const val BUSY_MESSAGE = "another command is in progress"
         private const val JOIN_MARGIN_MS = 1_000L

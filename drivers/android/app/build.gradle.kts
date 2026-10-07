@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+
 plugins {
     id("com.android.application")
 }
@@ -40,4 +42,13 @@ dependencyLocking {
 dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")
+}
+
+tasks.withType<Test>().configureEach {
+    testLogging {
+        exceptionFormat = TestExceptionFormat.FULL
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+    }
 }

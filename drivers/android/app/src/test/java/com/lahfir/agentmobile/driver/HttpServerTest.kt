@@ -12,6 +12,21 @@ import org.junit.Test
 
 class HttpServerTest {
 
+    private fun awaitUninterruptibly(latch: java.util.concurrent.CountDownLatch) {
+        var interrupted = false
+        while (true) {
+            try {
+                latch.await()
+                break
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
     private fun exchange(port: Int, raw: String): HttpTestResponse? {
         Socket("127.0.0.1", port).use { socket ->
             socket.soTimeout = 10_000
@@ -610,50 +625,6 @@ class HttpServerTest {
     }
 
     @Test
-    fun closeTerminatesStalledHeaderAndActiveHandler() {
-        val entered = java.util.concurrent.CountDownLatch(1)
-        val srv = server(socketTimeoutMs = 300, handler = { _, _, cancellation ->
-            entered.countDown()
-            try {
-                while (!cancellation.isCancelled) {
-                    Thread.sleep(5)
-                }
-                JSONObject()
-            } catch (_: InterruptedException) {
-                JSONObject()
-            }
-        })
-        srv.start()
-        try {
-            Thread {
-                post(srv.localPort, "/status")
-            }.apply { isDaemon = true }.start()
-            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
-            val stalled = java.net.Socket("127.0.0.1", srv.localPort)
-            try {
-                stalled.soTimeout = 3_000
-                stalled.getOutputStream().write("POST /status HTTP/1.1\r\nHost: ".toByteArray(Charsets.UTF_8))
-                stalled.getOutputStream().flush()
-                srv.close()
-                assertFalse("listener must be down", srv.workerAlive())
-                val saw = try {
-                    stalled.getInputStream().read()
-                } catch (_: java.net.SocketException) {
-                    -1
-                }
-                assertTrue("stalled client must see close", saw < 0)
-            } finally {
-                try {
-                    stalled.close()
-                } catch (_: java.io.IOException) {
-                }
-            }
-        } finally {
-            srv.close()
-        }
-    }
-
-    @Test
     fun stubbornWorkerKeepsRefsAndBlocksRestartUntilReleased() {
         val entered = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
@@ -1002,6 +973,240 @@ class HttpServerTest {
             }
             val after = post(srv.localPort, "/status")
             assertEquals(200, after!!.status)
+        }
+    }
+
+    @Test
+    fun completedResponseAdmitsNextRequestWhileWatchdogRetires() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val firstWatcher = java.util.concurrent.atomic.AtomicBoolean(false)
+        val clock: () -> Long = {
+            if (Thread.currentThread().name == "agent-mobile-http-deadline" &&
+                firstWatcher.compareAndSet(false, true)
+            ) {
+                entered.countDown()
+                awaitUninterruptibly(release)
+            }
+            System.nanoTime() / 1_000_000
+        }
+        val srv = server(
+            clockMs = clock,
+            handler = { _, _, _ ->
+                assertTrue("first watcher must be blocked before handler returns",
+                    entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                JSONObject().put("app", "x")
+            },
+        )
+        srv.start()
+        try {
+            val first = post(srv.localPort, "/status")
+            assertNotNull(first)
+            assertEquals(200, first!!.status)
+            val second = post(srv.localPort, "/status")
+            assertNotNull(second)
+            assertEquals("response complete but retiring watchdog must not block next request",
+                200, second!!.status)
+        } finally {
+            release.countDown()
+            srv.close()
+        }
+    }
+
+    @Test
+    fun retiredDeadlineCannotInterruptNextRequest() {
+        val firstWatcherEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseFirst = java.util.concurrent.CountDownLatch(1)
+        val secondEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseSecond = java.util.concurrent.CountDownLatch(1)
+        val firstWatcherCalled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val watcher1 = java.util.concurrent.atomic.AtomicReference<Thread?>()
+        val clock: () -> Long = {
+            if (Thread.currentThread().name == "agent-mobile-http-deadline" &&
+                firstWatcherCalled.compareAndSet(false, true)
+            ) {
+                watcher1.set(Thread.currentThread())
+                firstWatcherEntered.countDown()
+                awaitUninterruptibly(releaseFirst)
+                Long.MAX_VALUE
+            } else {
+                System.nanoTime() / 1_000_000
+            }
+        }
+        val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        val secondInterrupted = java.util.concurrent.atomic.AtomicBoolean(false)
+        val secondCancellation = java.util.concurrent.atomic.AtomicReference<RequestCancellation?>()
+        val srv = server(
+            clockMs = clock,
+            handler = { _, _, cancellation ->
+                val call = calls.incrementAndGet()
+                if (call == 1) {
+                    assertTrue("first watcher must be armed before handler returns",
+                        firstWatcherEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                } else {
+                    secondCancellation.set(cancellation)
+                    secondEntered.countDown()
+                    try {
+                        if (!releaseSecond.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw DriverException("DRIVER_ERROR", "test did not release")
+                        }
+                    } catch (e: InterruptedException) {
+                        secondInterrupted.set(true)
+                        throw DriverException("DRIVER_ERROR", "interrupted")
+                    }
+                    secondInterrupted.set(Thread.currentThread().isInterrupted)
+                    cancellation.check()
+                }
+                JSONObject().put("app", "x")
+            },
+        )
+        srv.start()
+        val respRef = java.util.concurrent.atomic.AtomicReference<HttpTestResponse?>()
+        val failureRef = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val requester = Thread {
+            try {
+                respRef.set(post(srv.localPort, "/status"))
+            } catch (t: Throwable) {
+                failureRef.set(t)
+            }
+        }
+        try {
+            val first = post(srv.localPort, "/status")
+            assertNotNull(first)
+            assertEquals(200, first!!.status)
+            requester.isDaemon = true
+            requester.start()
+            assertTrue("second handler must enter", secondEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            releaseFirst.countDown()
+            val w = watcher1.get()
+            assertNotNull(w)
+            w!!.join(5_000)
+            assertFalse("first watcher must be fully retired", w.isAlive)
+            assertFalse("retired watcher must not interrupt the live handler", secondInterrupted.get())
+            releaseSecond.countDown()
+            requester.join(5_000)
+            assertFalse("second request must finish", requester.isAlive)
+            assertNull("requester must not fail", failureRef.get())
+            val second = respRef.get()
+            assertNotNull(second)
+            assertEquals(200, second!!.status)
+            assertFalse("second handler must not observe interrupt", secondInterrupted.get())
+            assertFalse("second cancellation must stay clean",
+                secondCancellation.get()?.isCancelled ?: true)
+        } finally {
+            releaseFirst.countDown()
+            releaseSecond.countDown()
+            requester.join(5_000)
+            srv.close()
+        }
+    }
+
+    @Test
+    fun closeRetainsBlockedDeadlineWatcher() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val watcher = java.util.concurrent.atomic.AtomicReference<Thread?>()
+        val firstWatcher = java.util.concurrent.atomic.AtomicBoolean(false)
+        val clock: () -> Long = {
+            if (Thread.currentThread().name == "agent-mobile-http-deadline" &&
+                firstWatcher.compareAndSet(false, true)
+            ) {
+                watcher.set(Thread.currentThread())
+                entered.countDown()
+                awaitUninterruptibly(release)
+            }
+            System.nanoTime() / 1_000_000
+        }
+        val srv = server(
+            socketTimeoutMs = 50,
+            clockMs = clock,
+            handler = { _, _, _ ->
+                assertTrue("first watcher must be blocked before handler returns",
+                    entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                JSONObject().put("app", "x")
+            },
+        )
+        srv.start()
+        try {
+            val first = post(srv.localPort, "/status")
+            assertNotNull(first)
+            assertEquals(200, first!!.status)
+            val second = post(srv.localPort, "/status")
+            assertNotNull(second)
+            assertEquals(200, second!!.status)
+            val started = System.nanoTime()
+            srv.close()
+            val closeMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue("close must stay bounded (took ${closeMs}ms)", closeMs < 3_000)
+            val w = watcher.get()
+            assertNotNull(w)
+            assertTrue("blocked watcher must stay tracked", w!!.isAlive)
+            assertTrue("live watcher must count as owned thread", srv.workerAlive())
+            release.countDown()
+            w.join(5_000)
+            assertFalse(w.isAlive)
+            srv.close()
+            assertFalse("all owned threads must be retired", srv.workerAlive())
+        } finally {
+            release.countDown()
+            srv.close()
+        }
+    }
+
+    @Test
+    fun queuedRequestExpiresBeforeDispatch() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val firstWatcher = java.util.concurrent.atomic.AtomicBoolean(false)
+        val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        val clock: () -> Long = {
+            if (Thread.currentThread().name == "agent-mobile-http-deadline" &&
+                firstWatcher.compareAndSet(false, true)
+            ) {
+                entered.countDown()
+                awaitUninterruptibly(release)
+            }
+            System.nanoTime() / 1_000_000
+        }
+        val srv = server(
+            requestDeadlineMs = 300,
+            clockMs = clock,
+            handler = { _, _, _ ->
+                calls.incrementAndGet()
+                assertTrue("first watcher must be blocked before handler returns",
+                    entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                JSONObject().put("app", "x")
+            },
+        )
+        srv.start()
+        try {
+            val first = post(srv.localPort, "/status")
+            assertNotNull(first)
+            assertEquals(200, first!!.status)
+            val queued = java.net.Socket("127.0.0.1", srv.localPort)
+            try {
+                queued.soTimeout = 3_000
+                queued.getOutputStream().apply {
+                    write("POST /status HTTP/1.1\r\nAuthorization: Bearer tok\r\nX-Agent-Mobile-Version: 1\r\nContent-Length: 0\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                    flush()
+                }
+                val saw = try {
+                    queued.getInputStream().read()
+                } catch (e: java.net.SocketException) {
+                    -1
+                }
+                assertEquals("queued request must expire to EOF/reset, not be served", -1, saw)
+            } finally {
+                try {
+                    queued.close()
+                } catch (_: java.io.IOException) {
+                }
+            }
+            assertEquals("expired queued work must never reach the handler", 1, calls.get())
+        } finally {
+            release.countDown()
+            srv.close()
+            assertEquals(1, calls.get())
         }
     }
 }

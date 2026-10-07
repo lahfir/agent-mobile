@@ -80,10 +80,43 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
       - name: Live simulator gate (one real boot, one real snapshot)
+        id: simulator-gate
         env:
           AGENT_MOBILE_DRIVER_DIR: ${{ github.workspace }}/drivers/ios/dd/Build/Products
           AGENT_MOBILE_BOOT_BUDGET_SECS: "600"
         run: cargo test --test integration_snapshot --locked -- --ignored
+
+      - name: Discovery diagnostics on failure
+        if: ${{ failure() && steps.simulator-gate.outcome == 'failure' }}
+        run: |
+          probe_home="$RUNNER_TEMP/ios-discovery-home"
+          mkdir -p "$probe_home"
+          echo "Active Xcode:"
+          xcode-select -p
+          for tool in simctl devicectl; do
+            echo "Resolve $tool:"
+            python3 scripts/run_with_deadline.py 60 /usr/bin/time -p xcrun --find "$tool" || true
+          done
+          echo "Parent HOME simulator list:"
+          python3 scripts/run_with_deadline.py 60 /usr/bin/time -p \
+            xcrun simctl list devices available --json || true
+          echo "Isolated HOME concurrent discovery:"
+          HOME="$probe_home" python3 scripts/run_with_deadline.py 60 /usr/bin/time -p \
+            xcrun simctl list devices available --json \
+            > "$RUNNER_TEMP/ios-simctl.stdout" 2> "$RUNNER_TEMP/ios-simctl.stderr" &
+          sim_pid=$!
+          HOME="$probe_home" python3 scripts/run_with_deadline.py 60 /usr/bin/time -p \
+            xcrun devicectl list devices --timeout 5 --json-output - \
+            > "$RUNNER_TEMP/ios-devicectl.stdout" 2> "$RUNNER_TEMP/ios-devicectl.stderr" &
+          dev_pid=$!
+          sim_status=0
+          dev_status=0
+          wait "$sim_pid" || sim_status=$?
+          wait "$dev_pid" || dev_status=$?
+          echo "simctl exit=$sim_status"
+          cat "$RUNNER_TEMP/ios-simctl.stdout" "$RUNNER_TEMP/ios-simctl.stderr"
+          echo "devicectl exit=$dev_status"
+          cat "$RUNNER_TEMP/ios-devicectl.stdout" "$RUNNER_TEMP/ios-devicectl.stderr"
 
       - name: Driver log on failure
         if: failure()
