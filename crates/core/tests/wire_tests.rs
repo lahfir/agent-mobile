@@ -2,7 +2,7 @@
 //! all three headers go out, and transport failures stay structured.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -58,6 +58,50 @@ fn refused_url() -> Result<String, Failure> {
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(format!("http://127.0.0.1:{port}"))
+}
+
+fn accept_idle(listener: &TcpListener, secs: u64) -> Option<TcpStream> {
+    let waited = std::time::Instant::now();
+    while waited.elapsed() <= Duration::from_secs(secs) {
+        match listener.accept() {
+            Ok((s, _)) => return Some(s),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn stub_seq(plan: Vec<(u16, String)>) -> Result<(String, JoinHandle<usize>), Failure> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let _ = listener.set_nonblocking(true);
+    let join = std::thread::spawn(move || {
+        let mut served = 0;
+        for (status, payload) in plan {
+            let Some(mut stream) = accept_idle(&listener, 2) else {
+                break;
+            };
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            while !request_complete(&buf) {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            served += 1;
+        }
+        served
+    });
+    Ok((format!("http://127.0.0.1:{port}"), join))
 }
 
 const SNAPSHOT: &str = r#"{"version":"1","ok":true,"command":"snapshot","elapsed_ms":42,"data":{"app":"com.apple.springboard","snapshot_id":"abc","ref_count":1,"complete":true,"settled":true,"reads":2,"text":"line","tree":{"role":"application","name":"SpringBoard","value":"","ref_id":"@abc:e1","states":[],"available_actions":[],"bounds":{"x":0.0,"y":0.0,"width":430.0,"height":930.0},"children":[]}}}"#;
@@ -242,5 +286,38 @@ fn unknown_command_parses_code() -> Result<(), Failure> {
     let _ = join.join();
     let err = reply.error.ok_or_else(|| fail("missing error body"))?;
     assert_eq!(err.code, "UNKNOWN_COMMAND");
+    Ok(())
+}
+
+#[test]
+fn busy_503_retries_until_success() -> Result<(), Failure> {
+    let busy = r#"{"version":"1","ok":false,"error":{"code":"DRIVER_ERROR","message":"another command is in progress"}}"#;
+    let ok = r#"{"version":"1","ok":true,"command":"status","elapsed_ms":1,"data":{"app":"a","snapshot_id":"","device":"d","os":"1"}}"#;
+    let (base, join) = stub_seq(vec![
+        (503, busy.to_owned()),
+        (503, busy.to_owned()),
+        (200, ok.to_owned()),
+    ])?;
+    let wire = Wire::new(&base, "tok");
+    let reply = wire.call("status", &serde_json::json!({}))?;
+    let served = join.join().map_err(|_| fail("stub thread panicked"))?;
+    assert!(reply.ok, "transient busy must succeed");
+    assert_eq!(served, 3, "client must have retried twice");
+    Ok(())
+}
+
+#[test]
+fn persistent_503_returns_envelope_bounded() -> Result<(), Failure> {
+    let busy = r#"{"version":"1","ok":false,"error":{"code":"DRIVER_ERROR","message":"another command is in progress"}}"#;
+    let (base, join) = stub_seq(vec![(503, busy.to_owned()); 8])?;
+    let wire = Wire::new(&base, "tok");
+    let reply = wire.call("status", &serde_json::json!({}))?;
+    let served = join.join().map_err(|_| fail("stub thread panicked"))?;
+    assert!(!reply.ok, "persistent busy must still fail");
+    assert!(
+        served < 8,
+        "retry must be bounded, served every plan entry: {served}"
+    );
+    assert!(served > 1, "at least one retry must have happened");
     Ok(())
 }

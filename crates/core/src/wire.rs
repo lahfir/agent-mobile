@@ -24,6 +24,15 @@ pub const LONG_TIMEOUT: Duration = Duration::from_secs(120);
 /// this is a malfunction, not a payload.
 const MAX_REPLY: u64 = 64 << 20;
 
+/// Total attempts for one call while the driver reports busy; a 503
+/// means the verb never ran, so resending is safe — but the wait stays
+/// bounded instead of queueing behind a long verb.
+const BUSY_ATTEMPTS: u32 = 5;
+
+/// Pause between busy attempts — long enough for a short verb to clear,
+/// short enough that a persistently busy driver fails fast.
+const BUSY_WAIT: Duration = Duration::from_millis(200);
+
 /// Configured client bound to one driver base URL and bearer token.
 pub struct Wire {
     agent: ureq::Agent,
@@ -55,7 +64,8 @@ impl Wire {
 
     /// `POST /<verb>` with a JSON body. Any well-formed envelope — success or
     /// error — comes back `Ok`; only transport failures, unparseable bodies,
-    /// and version mismatches are `Err`.
+    /// and version mismatches are `Err`. A 503 busy verdict is retried
+    /// boundedly since the verb never ran; anything else returns at once.
     ///
     /// # Errors
     /// [`Failure::Transport`] on refused, timed-out, or other transport
@@ -63,15 +73,23 @@ impl Wire {
     /// [`ErrorCode::DriverError`] on an unparseable reply body.
     pub fn call(&self, verb: &str, body: &Value) -> Result<Envelope, Failure> {
         let url = format!("{}/{verb}", self.base);
-        let mut resp = self
-            .agent
-            .post(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Connection", "close")
-            .header("X-Agent-Mobile-Version", PROTOCOL_VERSION)
-            .header("Content-Type", "application/json")
-            .send_json(body)
-            .map_err(|e| Failure::transport(e.to_string()))?;
+        let send = || {
+            self.agent
+                .post(&url)
+                .header("Authorization", &format!("Bearer {}", self.token))
+                .header("Connection", "close")
+                .header("X-Agent-Mobile-Version", PROTOCOL_VERSION)
+                .header("Content-Type", "application/json")
+                .send_json(body)
+                .map_err(|e| Failure::transport(e.to_string()))
+        };
+        let mut attempt = 0;
+        let mut resp = send()?;
+        while resp.status().as_u16() == 503 && attempt + 1 < BUSY_ATTEMPTS {
+            attempt += 1;
+            std::thread::sleep(BUSY_WAIT);
+            resp = send()?;
+        }
         let mut buf = Vec::new();
         resp.body_mut()
             .as_reader()

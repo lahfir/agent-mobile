@@ -199,6 +199,7 @@ fn serve(args: ServeArgs) {
             let _ = done.join();
         }
         if worker.is_some() {
+            let _ = read_request(&mut DeadlineReader::new(&mut sock, request_deadline));
             let _ = sock.set_write_timeout(Some(IO_TIMEOUT));
             let body = error_envelope(None, None, "DRIVER_ERROR", "another command is in progress");
             let _ = sock.write_all(&http_response("503 Service Unavailable", &body));
