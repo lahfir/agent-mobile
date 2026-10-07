@@ -3,6 +3,7 @@ run_with_deadline.py group cleanup. Everything is temp-dir/fake-binary —
 no real SDK, adb, or emulator is touched.
 """
 
+import json
 import os
 import signal
 import subprocess
@@ -45,8 +46,14 @@ def fake_sdkmanager(home: Path, installed: dict, available: dict) -> None:
     script.chmod(0o755)
 
 
-def run_setup(home: Path, body: str) -> subprocess.CompletedProcess:
+def run_setup(home: Path, body: str, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ, ANDROID_HOME=str(home))
+    if env_overrides:
+        for key, value in env_overrides.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
     cmd = f"set -e; source '{SETUP}'; detect_host; {body}"
     return subprocess.run(
         ["bash", "-c", cmd], env=env, capture_output=True, text=True, timeout=30
@@ -224,6 +231,220 @@ class DeadlineWrapperTest(unittest.TestCase):
         proc = self.spawn("0.5")
         self.assertEqual(124, proc.wait(timeout=20))
         self.assert_group_gone()
+
+
+def host_abi() -> str:
+    """ABI this test host's detect_host would pin."""
+    if sys.platform == "darwin" and os.uname().machine == "arm64":
+        return "arm64-v8a"
+    return "x86_64"
+
+
+def fake_avdmanager(sdk: Path, log: Path, *, write_config: bool = True,
+                    write_metadata: bool = True) -> None:
+    """Fake avdmanager modelling pinned CLI metadata/data separation:
+    metadata root is ANDROID_AVD_HOME when it already exists as a
+    directory, else HOME/.android/avd; metadata is `<root>/<name>.ini`
+    pointing at the data folder; --path selects the data folder itself.
+    write_config/write_metadata toggle each side independently."""
+    bin_dir = sdk / "cmdline-tools" / CMDTOOLS_BUILD / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "avdmanager"
+    meta_cfg = (
+        "printf 'path=%s\\ntarget=android-37.0\\n' \"$avddir\" > \"$base/$name.ini\"\n"
+        if write_metadata else ""
+    )
+    data_cfg = (
+        "printf 'abi.type=" + host_abi() + "\\n"
+        "hw.device.name=pixel_7\\n"
+        "image.sysdir.1=system-images/android-37.0/google_apis/" + host_abi() + "/\\n"
+        "tag.id=google_apis\\ntarget=android-37.0\\n' > \"$avddir/config.ini\"\n"
+        if write_config else ""
+    )
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"python3 -c \"import json,sys;print(json.dumps(sys.argv[1:]))\" \"$@\" >> '{log}'\n"
+        'target=""\nprev=""\nname=""\n'
+        'for a in "$@"; do\n'
+        '  [ "$prev" = "--name" ] && name="$a"\n'
+        '  [ "$prev" = "--path" ] && target="$a"\n'
+        '  prev="$a"\n'
+        'done\n'
+        'if [ -n "$ANDROID_AVD_HOME" ] && [ -d "$ANDROID_AVD_HOME" ]; then\n'
+        '  base="$ANDROID_AVD_HOME"\n'
+        'else base="$HOME/.android/avd"; fi\n'
+        'if [ -n "$target" ]; then avddir="$target"; else avddir="$base/$name.avd"; fi\n'
+        'mkdir -p "$avddir"\n'
+        + meta_cfg + data_cfg
+    )
+    script.chmod(0o755)
+
+
+def fake_emulator(sdk: Path) -> None:
+    """Fake emulator -list-avds: lists metadata `*.ini` names from the
+    same must-exist root — incomplete AVDs (no config) still list,
+    matching the observed CI behaviour."""
+    bin_dir = sdk / "emulator"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "emulator"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ -n "$ANDROID_AVD_HOME" ] && [ -d "$ANDROID_AVD_HOME" ]; then\n'
+        '  base="$ANDROID_AVD_HOME"\n'
+        'else base="$HOME/.android/avd"; fi\n'
+        'for f in "$base"/*.ini; do [ -f "$f" ] || continue; basename "$f" .ini; done\n'
+    )
+    script.chmod(0o755)
+
+
+
+class CreateAvdTest(unittest.TestCase):
+    """Hermetic fake-binary coverage for create_avd: CLI22 must-exist
+    ANDROID_AVD_HOME semantics, explicit --path, metadata/data split,
+    and post-creation pin verification. No real SDK/AVD/tool touched."""
+
+    AVD = "agent-mobile-api37"
+    TARGET = "android-37.0"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.sdk = Path(self.tmp.name) / "sdk"
+        self.home = Path(self.tmp.name) / "home"
+        self.home.mkdir(parents=True)
+        self.argv_log = Path(self.tmp.name) / "avdmanager-argv.log"
+        self.env = {
+            "HOME": str(self.home),
+            "ANDROID_USER_HOME": None,
+            "ANDROID_EMULATOR_HOME": None,
+            "ANDROID_SDK_HOME": None,
+        }
+
+    def _run(self, env_extra=None):
+        env = dict(self.env)
+        if env_extra:
+            env.update(env_extra)
+        return run_setup(self.sdk, "create_avd", env_overrides=env)
+
+    def _seed(self, **kwargs):
+        fake_avdmanager(self.sdk, self.argv_log, **kwargs)
+        fake_emulator(self.sdk)
+
+    def _meta(self, avd_home: Path) -> Path:
+        return avd_home / f"{self.AVD}.ini"
+
+    def _config(self, avd_home: Path) -> Path:
+        return avd_home / f"{self.AVD}.avd" / "config.ini"
+
+    def _argv(self) -> list:
+        if not self.argv_log.exists():
+            return []
+        return [json.loads(line) for line in self.argv_log.read_text().splitlines() if line]
+
+    def _valid_config(self) -> str:
+        return (
+            f"abi.type={host_abi()}\n"
+            "hw.device.name=pixel_7\n"
+            f"image.sysdir.1=system-images/{self.TARGET}/google_apis/{host_abi()}/\n"
+            "tag.id=google_apis\n"
+            f"target={self.TARGET}\n"
+        )
+
+    def _snapshot(self, root: Path) -> dict:
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in root.rglob("*") if p.is_file()
+        }
+
+    def test_fresh_custom_avd_home_creates_under_configured_path(self):
+        custom = self.home / "nested dir" / "avd-root"
+        self.assertFalse(custom.exists(), "must-exist lookup requires absence at start")
+        self._seed()
+        proc = self._run({"ANDROID_AVD_HOME": str(custom)})
+        self.assertEqual(0, proc.returncode, proc.stderr + proc.stdout)
+        meta = self._meta(custom)
+        self.assertTrue(meta.is_file(), "metadata .ini must land in configured root")
+        self.assertIn(
+            f"path={custom / self.AVD}.avd".encode(), meta.read_bytes(),
+            "metadata must point at the requested data dir",
+        )
+        self.assertIn(b"target=" + self.TARGET.encode(), meta.read_bytes())
+        self.assertTrue(self._config(custom).is_file(), "data config must land under --path")
+        fallback = self.home / ".android" / "avd"
+        self.assertFalse(
+            (fallback / f"{self.AVD}.ini").exists() or (fallback / f"{self.AVD}.avd").exists(),
+            "no fallback metadata or data may be created",
+        )
+        calls = self._argv()
+        self.assertEqual(1, len(calls), "exactly one avdmanager invocation")
+        argv = calls[0]
+        self.assertEqual(str(custom / f"{self.AVD}.avd"), argv[argv.index("--path") + 1])
+        self.assertNotIn("--force", argv)
+        self.assertNotIn("-f", argv)
+
+    def test_existing_valid_avd_short_circuits_without_avdmanager(self):
+        custom = self.home / "avds"
+        avd = custom / f"{self.AVD}.avd"
+        avd.mkdir(parents=True)
+        self._meta(custom).write_text(
+            f"path={avd}\ntarget={self.TARGET}\n"
+        )
+        self._config(custom).write_text(self._valid_config())
+        self._seed()
+        before = self._snapshot(custom)
+        proc = self._run({"ANDROID_AVD_HOME": str(custom)})
+        self.assertEqual(0, proc.returncode, proc.stderr + proc.stdout)
+        self.assertEqual([], self._argv(), "avdmanager must not run for a valid AVD")
+        self.assertEqual(before, self._snapshot(custom), "fixture bytes must be unchanged")
+
+    def test_existing_mismatched_avd_fails_without_avdmanager(self):
+        custom = self.home / "avds"
+        avd = custom / f"{self.AVD}.avd"
+        avd.mkdir(parents=True)
+        self._meta(custom).write_text(f"path={avd}\ntarget={self.TARGET}\n")
+        self._config(custom).write_text("hw.device.name=other\n")
+        self._seed()
+        before = self._snapshot(custom)
+        proc = self._run({"ANDROID_AVD_HOME": str(custom)})
+        self.assertNotEqual(0, proc.returncode)
+        self.assertEqual([], self._argv(), "avdmanager must not run on mismatch")
+        self.assertEqual(before, self._snapshot(custom))
+
+    def test_metadata_only_creation_fails_once(self):
+        custom = self.home / "avds"
+        self._seed(write_config=False)
+        proc = self._run({"ANDROID_AVD_HOME": str(custom)})
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("was not created with the pinned config", proc.stderr + proc.stdout)
+        calls = self._argv()
+        self.assertEqual(1, len(calls), "no retry")
+        self.assertNotIn("--force", calls[0])
+        self.assertTrue(self._meta(custom).is_file())
+        self.assertFalse(self._config(custom).exists())
+
+    def test_config_only_without_metadata_fails_once(self):
+        custom = self.home / "avds"
+        self._seed(write_metadata=False)
+        proc = self._run({"ANDROID_AVD_HOME": str(custom)})
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("was not created with the pinned config", proc.stderr + proc.stdout)
+        self.assertEqual(1, len(self._argv()), "no retry")
+        self.assertFalse(self._meta(custom).exists(), "no metadata may be fabricated")
+        self.assertTrue(self._config(custom).is_file())
+
+    def test_default_home_avd_root_when_env_absent(self):
+        self._seed()
+        proc = self._run({"ANDROID_AVD_HOME": None})
+        self.assertEqual(0, proc.returncode, proc.stderr + proc.stdout)
+        default = self.home / ".android" / "avd"
+        self.assertTrue(self._meta(default).is_file())
+        self.assertTrue(self._config(default).is_file())
+        calls = self._argv()
+        self.assertEqual(1, len(calls))
+        argv = calls[0]
+        self.assertEqual(str(default / f"{self.AVD}.avd"), argv[argv.index("--path") + 1])
+
+
 
 if __name__ == "__main__":
     unittest.main()

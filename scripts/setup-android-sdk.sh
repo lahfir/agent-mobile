@@ -302,13 +302,18 @@ avd_matches_pins() {
 }
 
 create_avd() {
+    local home
+    home="$(avd_home)"
+    # Pinned CLI22 avdmanager only honours ANDROID_AVD_HOME when the
+    # directory already exists — create it before any lookup.
+    mkdir -p "$home"
     if avd_exists; then
         if avd_matches_pins; then
             echo "AVD ${AVD_NAME}: already exists"
             return
         fi
         fail "AVD ${AVD_NAME} exists but does not match the pinned config" \
-            "inspect $(avd_home)/${AVD_NAME}.avd/config.ini; move aside or delete only \
+            "inspect ${home}/${AVD_NAME}.avd/config.ini; move aside or delete only \
              the named AVD, then re-run"
     fi
     local avdmanager
@@ -318,7 +323,12 @@ create_avd() {
         "$avdmanager" create avd \
         --name "$AVD_NAME" \
         --package "system-images;${PLATFORM_ID};google_apis;${SYS_IMAGE_ABI}" \
-        --device "$AVD_DEVICE" >/dev/null
+        --device "$AVD_DEVICE" \
+        --path "$home/${AVD_NAME}.avd" >/dev/null
+    if ! avd_exists || ! avd_matches_pins; then
+        fail "AVD ${AVD_NAME} was not created with the pinned config" \
+            "inspect ${home}/${AVD_NAME}.avd/config.ini and the avdmanager output"
+    fi
 }
 
 write_local_properties() {
