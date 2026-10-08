@@ -8,6 +8,12 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
+mod entry;
+mod journal;
+mod selection;
+
+pub use entry::{ResolvedEndpoint, SessionEntry};
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::Failure;
@@ -24,33 +30,21 @@ pub const URL_ENV: &str = "AGENT_MOBILE_URL";
 /// Env var overriding the driver token for one invocation.
 pub const TOKEN_ENV: &str = "AGENT_MOBILE_TOKEN";
 
-/// One device's live session: where the driver listens, which process owns
-/// it, and which token file holds the bearer.
+/// One in-flight `adb forward` allocation recorded before the create call
+/// runs: lets a later invocation reclaim the exact `serial/local/device`
+/// row even when the owning session crashed before writing its state row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionEntry {
-    /// Base URL of the driver, e.g. `http://127.0.0.1:8770`.
-    pub url: String,
-    /// Pid of the process that owns the session.
-    pub pid: u32,
-    /// Token file name inside `tokens/`; the token never appears here.
-    pub token_file: String,
-    /// Pid of the `xcodebuild` runner `serve` spawned — the owned child to
-    /// reap when the serve pid dies without cleanup (KTD17).
-    #[serde(default)]
-    pub runner_pid: Option<u32>,
-}
-
-impl SessionEntry {
-    /// Record a session.
-    #[must_use]
-    pub fn new(url: String, pid: u32, token_file: String) -> Self {
-        Self {
-            url,
-            pid,
-            token_file,
-            runner_pid: None,
-        }
-    }
+pub struct PendingForward {
+    /// Pid that created the forward.
+    pub owner_pid: u32,
+    /// [`crate::process::process_identity`] marker for `owner_pid`.
+    pub owner_started_at: String,
+    /// `adb` serial the forward was created on.
+    pub serial: String,
+    /// Host loopback port.
+    pub local_port: u16,
+    /// Device-side loopback port.
+    pub device_port: u16,
 }
 
 /// On-disk state: the remembered default device plus one entry per live
@@ -59,12 +53,19 @@ impl SessionEntry {
 pub struct State {
     /// Schema version; must equal [`STATE_VERSION`] to load.
     pub version: u32,
-    /// Device name `--device` last selected, reused when omitted.
+    /// `--device`-selected display name (v1 compatibility), reused when omitted.
     #[serde(default)]
     pub default_device: Option<String>,
-    /// Live sessions keyed by device name.
+    /// Canonical `platform:id` key for the remembered default; written
+    /// alongside `default_device`, preferred at read time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_device_key: Option<String>,
+    /// Live sessions keyed by the legacy name or collision-free `platform:id` key.
     #[serde(default)]
     pub devices: BTreeMap<String, SessionEntry>,
+    /// Forwarded tuples created but not yet attached to a session row.
+    #[serde(default)]
+    pub pending_forwards: Vec<PendingForward>,
 }
 
 impl Default for State {
@@ -72,42 +73,16 @@ impl Default for State {
         Self {
             version: STATE_VERSION,
             default_device: None,
+            default_device_key: None,
             devices: BTreeMap::new(),
+            pending_forwards: Vec::new(),
         }
-    }
-}
-
-/// The endpoint one invocation should talk to: URL plus bearer token.
-/// `Debug` redacts the token.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ResolvedEndpoint {
-    /// Driver base URL.
-    pub url: String,
-    /// Device name the endpoint resolved through, when one was selected.
-    pub device: Option<String>,
-    token: String,
-}
-
-impl ResolvedEndpoint {
-    /// The bearer token for the `Authorization` header.
-    #[must_use]
-    pub fn token(&self) -> &str {
-        &self.token
-    }
-}
-
-impl std::fmt::Debug for ResolvedEndpoint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvedEndpoint")
-            .field("url", &self.url)
-            .field("device", &self.device)
-            .field("token", &"<redacted>")
-            .finish()
     }
 }
 
 /// File-backed session store rooted at `~/.agent-mobile` (or an injected dir
 /// in tests). The root is created on first write, not on construction.
+#[derive(Clone)]
 pub struct StateStore {
     root: PathBuf,
 }
@@ -264,17 +239,20 @@ impl StateStore {
         self.update(|state| (state.devices.remove(device).is_some(), ()))
     }
 
-    /// Remember `device` as the default for future invocations (`--device`);
-    /// an unchanged default skips the save.
+    /// Remember `key` as the canonical default and `display_name` as its
+    /// v1-compatible name; an unchanged pair skips the save.
     ///
     /// # Errors
     /// Returns [`Failure::Local`] when the state cannot be saved.
-    pub fn remember_device(&self, device: &str) -> Result<(), Failure> {
+    pub fn remember_device_selection(&self, key: &str, display_name: &str) -> Result<(), Failure> {
         self.update(|state| {
-            if state.default_device.as_deref() == Some(device) {
+            if state.default_device_key.as_deref() == Some(key)
+                && state.default_device.as_deref() == Some(display_name)
+            {
                 return (false, ());
             }
-            state.default_device = Some(device.to_owned());
+            state.default_device_key = Some(key.to_owned());
+            state.default_device = Some(display_name.to_owned());
             (true, ())
         })
     }
@@ -348,21 +326,32 @@ impl StateStore {
         let url_set = env_url.is_some();
         let token_set = env_token.is_some();
         let state = self.load();
-        let name = device
-            .map(String::from)
-            .or_else(|| state.default_device.clone());
+        if !(url_set && token_set)
+            && let Some((name, entry)) = state.devices.iter().find(|(_, entry)| {
+                entry.process_started_at.is_none() && crate::process::pid_alive(entry.pid)
+            })
+        {
+            return Err(Failure::local(
+                format!(
+                    "pre-upgrade driver session for {name:?} is still running as pid {}, but its process identity cannot be verified safely",
+                    entry.pid
+                ),
+                "stop that existing `agent-mobile serve` process, then retry",
+            ));
+        }
+        let name = selection::choose_device_key(&state, device, url_set && token_set)?;
         let entry = name
             .as_ref()
-            .and_then(|n| state.devices.get(n).cloned())
-            .filter(|e| crate::process::pid_alive(e.pid));
-        let url = env_url.or_else(|| entry.as_ref().map(|e| e.url.clone()));
-        let token = env_token.or_else(|| entry.as_ref().and_then(|e| self.read_token(e).ok()));
+            .and_then(|n| state.devices.get(n))
+            .filter(|e| crate::process::process_matches(e.pid, e.process_started_at.as_deref()));
+        let url = env_url.or_else(|| entry.map(|e| e.url.clone()));
+        let token = match (env_token, entry) {
+            (Some(t), _) => Some(t),
+            (None, Some(e)) => Some(self.read_token(e)?),
+            (None, None) => None,
+        };
         match (url, token) {
-            (Some(url), Some(token)) => Ok(Some(ResolvedEndpoint {
-                url,
-                device: name,
-                token,
-            })),
+            (Some(url), Some(token)) => Ok(Some(ResolvedEndpoint::new(url, name, token))),
             (None, _) if token_set => Err(Failure::usage(
                 "AGENT_MOBILE_TOKEN has no driver URL to pair with; set AGENT_MOBILE_URL or run `agent-mobile serve`",
             )),

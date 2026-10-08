@@ -24,6 +24,20 @@ const TRANSPORT_ESCALATION: &str = concat!(
     "certificate re-trust is human-only; there is no retry loop"
 );
 
+/// Fixed stanza for a synthesized Android transport `DRIVER_ERROR`: the
+/// bridge side can die independently of the CLI — emulator gone, `adb`
+/// server dead, or the forward dropped — so the checklist names the
+/// Android-side probes instead of the iOS trust/Wi-Fi ones.
+const TRANSPORT_ESCALATION_ANDROID: &str = concat!(
+    "next: the driver is unreachable; work through this checklist:\n",
+    "  - is `agent-mobile serve` running? (any verb can lazy-start it)\n",
+    "  - is the emulator still up? (`adb devices` should list its serial)\n",
+    "  - is the adb server alive? (`adb start-server` revives it)\n",
+    "  - was the forward dropped? (`adb forward --list` should show the\n",
+    "    bridge port; restarting `serve` re-establishes it)\n",
+    "there is no retry loop; fix the transport, then retry"
+);
+
 /// The six codes the driver can return in `error.code` (PRD section 5.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
@@ -76,7 +90,9 @@ impl ErrorCode {
             Self::BadRequest => "fix the request; do not retry unchanged",
             Self::UnknownCommand => "fix the client; do not retry",
             Self::Unauthorized => "fix AGENT_MOBILE_TOKEN; do not retry unchanged",
-            Self::DriverError => "retry once; escalate if it recurs",
+            Self::DriverError => {
+                "take a fresh snapshot to verify the current state before retrying; escalate if it recurs"
+            }
         }
     }
 
@@ -102,6 +118,8 @@ pub enum Failure {
     Transport {
         /// Transport-level detail, e.g. `connection refused`.
         message: String,
+        /// Render the Android bridge checklist instead of the iOS one.
+        android: bool,
     },
     /// Usage failure caught before any round trip; exits 2.
     Usage {
@@ -145,6 +163,19 @@ impl Failure {
     pub fn transport(message: impl Into<String>) -> Self {
         Self::Transport {
             message: message.into(),
+            android: false,
+        }
+    }
+
+    /// Synthesize the Android transport `DRIVER_ERROR`: same shape, but
+    /// the render carries the bridge/`adb` checklist — the iOS
+    /// trust/Wi-Fi/Mac checks cannot diagnose a dead emulator, `adb`
+    /// server, or forward.
+    #[must_use]
+    pub fn transport_android(message: impl Into<String>) -> Self {
+        Self::Transport {
+            message: message.into(),
+            android: true,
         }
     }
 
@@ -182,7 +213,7 @@ impl Failure {
     pub fn message(&self) -> &str {
         match self {
             Self::Driver { message, .. }
-            | Self::Transport { message }
+            | Self::Transport { message, .. }
             | Self::Usage { message }
             | Self::Local { message, .. } => message,
         }
@@ -233,9 +264,14 @@ impl Failure {
                 let hint = code.next_action();
                 format!("{code_str}: {message}\nnext: {hint}")
             }
-            Self::Transport { message } => {
+            Self::Transport { message, android } => {
                 let code_str = ErrorCode::DriverError.as_str();
-                format!("{code_str}: {message}\n{TRANSPORT_ESCALATION}")
+                let escalation = if *android {
+                    TRANSPORT_ESCALATION_ANDROID
+                } else {
+                    TRANSPORT_ESCALATION
+                };
+                format!("{code_str}: {message}\n{escalation}")
             }
             Self::Usage { message } => {
                 format!("usage: {message}\nnext: fix the command line and retry")

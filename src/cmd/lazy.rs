@@ -7,7 +7,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
-use agent_mobile_core::ios;
 use agent_mobile_core::process::{BOOT_POLL, BootLock, boot_budget};
 
 use super::{Ctx, Session, ensure_state_dir};
@@ -38,6 +37,10 @@ pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
     }
 }
 
+/// Grace period for a timed-out `serve` to run its own cleanup (several
+/// bounded Android ADB teardowns) before we force-kill it.
+const SERVE_CLEANUP_BUDGET: Duration = Duration::from_secs(60);
+
 /// We hold the boot lock: re-check state, pick a device, spawn `serve`
 /// detached with output to the driver log, then wait for its entry. A
 /// timeout sends TERM first so serve's supervisor can clear state and reap
@@ -63,10 +66,14 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
     loop {
         if Instant::now() > deadline {
             let _ = agent_mobile_core::process::terminate(child.id());
-            if !agent_mobile_core::process::await_exit(child.id(), Duration::from_secs(5)) {
-                let _ = child.kill();
+            let stop = Instant::now() + SERVE_CLEANUP_BUDGET;
+            while child.try_wait()?.is_none() && Instant::now() < stop {
+                std::thread::sleep(Duration::from_millis(100));
             }
-            let _ = child.wait();
+            if child.try_wait()?.is_none() {
+                child.kill()?;
+            }
+            child.wait()?;
             return Err(Failure::local(
                 "the driver did not come up inside the boot budget",
                 format!("check the log at {} and retry", log.display()),
@@ -83,7 +90,10 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
                     f.read_to_string(&mut s).map(|_| s)
                 })
                 .unwrap_or_default();
-            let failure = if super::serve::TRUST_MARKERS.iter().any(|m| text.contains(m)) {
+            let failure = if crate::platform::TRUST_MARKERS
+                .iter()
+                .any(|m| text.contains(m))
+            {
                 "the development certificate is not trusted on the device".to_owned()
             } else {
                 last_error_line(&text)
@@ -111,35 +121,67 @@ fn last_error_line(log_text: &str) -> String {
 }
 
 /// Which device a lazy boot serves: `--device` wins, then the remembered
-/// default, then the first iPhone-shaped simulator, then any simulator,
-/// then a physical device — `devicectl` only runs when no simulator exists.
-/// A remembered UDID or stale name is healed to the canonical name here —
-/// `serve` keys the session under it and the waiter polls `resolve` through
-/// the same `default_device`, so the two must agree.
+/// default healed to a collision-free key, then the platform default —
+/// iPhone-named simulator, any iOS simulator, iOS physical, ready Android
+/// target, any Android target. `serve` keys the session under the same
+/// key the waiter polls through `default_device`, so the two must agree.
 fn pick_device(ctx: &Ctx) -> Result<String, Failure> {
     if let Some(d) = &ctx.device {
         return Ok(d.clone());
     }
-    if let Some(d) = ctx.store.load().default_device {
-        if let Ok(Some(found)) = ios::find_device(&d) {
-            if found.name != d {
-                let _ = ctx.store.remember_device(&found.name);
-            }
-            return Ok(found.name);
+    pick_device_with(ctx, crate::platform::discover)
+}
+
+/// Lazy device selection with the discovery seam injected: live state
+/// aliases answer with zero discovery; stored selectors share exactly one
+/// scan; a total miss returns the first selector's contextualized error.
+pub(super) fn pick_device_with(
+    ctx: &Ctx,
+    scan: impl FnOnce() -> Result<crate::platform::PlatformScan, Failure>,
+) -> Result<String, Failure> {
+    let stored = ctx.store.load();
+    let selectors: Vec<&str> = stored.default_device_selectors().collect();
+    for d in &selectors {
+        if let Some(key) = stored.resolve_live_device_key(d)? {
+            let display = stored
+                .devices
+                .get(&key)
+                .and_then(|e| e.device_name.clone())
+                .unwrap_or_else(|| (*d).to_owned());
+            let _ = ctx.store.remember_device_selection(&key, &display);
+            return Ok(key);
         }
-        return Ok(d);
     }
-    let sims = ios::simulators()?;
-    let pick = sims
-        .iter()
-        .find(|d| d.name.contains("iPhone"))
-        .or_else(|| sims.first())
-        .cloned()
-        .or_else(|| ios::physical().into_iter().next());
-    pick.map(|d| d.name).ok_or_else(|| {
-        Failure::local(
-            "no devices found",
-            "create a simulator with `xcrun simctl create <name> <type>` or pair a device",
-        )
+    let scan = scan()?;
+    let mut first_err = None;
+    for d in &selectors {
+        match crate::platform::resolve_from(&scan, d) {
+            Ok(found) => {
+                let key = found.key();
+                let _ = ctx.store.remember_device_selection(&key, found.name());
+                return Ok(key);
+            }
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    crate::platform::default_device(&scan).map(|d| d.key()).ok_or_else(|| {
+        if scan.notes.is_empty() {
+            Failure::local(
+                "no devices found",
+                "create a simulator with `xcrun simctl create <name> <type>`, pair a device, or create an Android AVD",
+            )
+        } else {
+            Failure::local(
+                format!("no devices found; {}", scan.notes.join("; ")),
+                "resolve the reported device-discovery failures, then retry",
+            )
+        }
     })
 }

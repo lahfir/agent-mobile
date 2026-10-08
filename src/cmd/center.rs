@@ -1,5 +1,5 @@
-//! `center`: open Notification Center from the `SpringBoard` session. Clap
-//! restricts the value to `notification`; anything else exits client-side.
+//! `center`: open notifications from the system UI session. Clap restricts
+//! the value to `notification`; anything else exits client-side.
 
 use agent_mobile_core::error::Failure;
 

@@ -2,7 +2,7 @@
 //! all three headers go out, and transport failures stay structured.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -53,11 +53,56 @@ fn stub_hang(hold: Duration) -> Result<(String, JoinHandle<String>), Failure> {
     Ok((format!("http://127.0.0.1:{port}"), join))
 }
 
-fn refused_url() -> Result<String, Failure> {
+/// A URL nothing listens on: port 1 is privileged, so no parallel stub
+/// can ever recycle it — unlike a bind-then-free ephemeral port, which a
+/// sibling test's stub can grab mid-run and turn a refused dial into a
+/// stray connection.
+fn refused_url() -> String {
+    "http://127.0.0.1:1".to_owned()
+}
+
+fn accept_idle(listener: &TcpListener, secs: u64) -> Option<TcpStream> {
+    let waited = std::time::Instant::now();
+    while waited.elapsed() <= Duration::from_secs(secs) {
+        match listener.accept() {
+            Ok((s, _)) => return Some(s),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn stub_seq(plan: Vec<(u16, String)>) -> Result<(String, JoinHandle<usize>), Failure> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(format!("http://127.0.0.1:{port}"))
+    let _ = listener.set_nonblocking(true);
+    let join = std::thread::spawn(move || {
+        let mut served = 0;
+        for (status, payload) in plan {
+            let Some(mut stream) = accept_idle(&listener, 2) else {
+                break;
+            };
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            while !request_complete(&buf) {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            served += 1;
+        }
+        served
+    });
+    Ok((format!("http://127.0.0.1:{port}"), join))
 }
 
 const SNAPSHOT: &str = r#"{"version":"1","ok":true,"command":"snapshot","elapsed_ms":42,"data":{"app":"com.apple.springboard","snapshot_id":"abc","ref_count":1,"complete":true,"settled":true,"reads":2,"text":"line","tree":{"role":"application","name":"SpringBoard","value":"","ref_id":"@abc:e1","states":[],"available_actions":[],"bounds":{"x":0.0,"y":0.0,"width":430.0,"height":930.0},"children":[]}}}"#;
@@ -100,7 +145,7 @@ fn unauthorized_401_omits_command_and_hints_token() -> Result<(), Failure> {
 
 #[test]
 fn refused_connection_synthesizes_transport_error() -> Result<(), Failure> {
-    let base = refused_url()?;
+    let base = refused_url();
     let wire = Wire::new(&base, "tok");
     match wire.call("status", &serde_json::json!({})) {
         Err(Failure::Transport { .. }) => {}
@@ -114,6 +159,23 @@ fn refused_connection_synthesizes_transport_error() -> Result<(), Failure> {
     assert!(rendered.contains("DRIVER_ERROR"));
     assert!(rendered.contains("unreachable"));
     assert!(rendered.contains("human-only"));
+    Ok(())
+}
+
+#[test]
+fn refused_android_connection_escalates_with_android_checklist() -> Result<(), Failure> {
+    let base = refused_url();
+    let wire = Wire::new(&base, "tok").for_android();
+    let rendered = match wire.call("status", &serde_json::json!({})) {
+        Err(f) => f.render(),
+        Ok(_) => return Err(fail("refused connection must not succeed")),
+    };
+    assert!(rendered.contains("DRIVER_ERROR"), "{rendered}");
+    assert!(rendered.contains("adb"), "{rendered}");
+    assert!(
+        !rendered.contains("Wi-Fi"),
+        "iOS checklist leaked into Android transport: {rendered}"
+    );
     Ok(())
 }
 
@@ -217,7 +279,7 @@ fn malformed_body_is_driver_error() -> Result<(), Failure> {
 }
 
 #[test]
-fn driver_returned_driver_error_retries_once() -> Result<(), Failure> {
+fn driver_returned_driver_error_requires_fresh_snapshot() -> Result<(), Failure> {
     let body = r#"{"version":"1","ok":false,"command":"tap","elapsed_ms":1,"error":{"code":"DRIVER_ERROR","message":"boom"}}"#;
     let (base, join) = stub_once(500, body)?;
     let wire = Wire::new(&base, "tok");
@@ -225,7 +287,7 @@ fn driver_returned_driver_error_retries_once() -> Result<(), Failure> {
     let _ = join.join();
     let err = reply.error.ok_or_else(|| fail("missing error body"))?;
     let rendered = Failure::from_error_body(&err).render();
-    assert!(rendered.contains("retry once"));
+    assert!(rendered.contains("fresh snapshot"));
     assert!(
         !rendered.contains("unreachable"),
         "driver-returned errors must not print the transport stanza"
@@ -242,5 +304,38 @@ fn unknown_command_parses_code() -> Result<(), Failure> {
     let _ = join.join();
     let err = reply.error.ok_or_else(|| fail("missing error body"))?;
     assert_eq!(err.code, "UNKNOWN_COMMAND");
+    Ok(())
+}
+
+#[test]
+fn busy_503_retries_until_success() -> Result<(), Failure> {
+    let busy = r#"{"version":"1","ok":false,"error":{"code":"DRIVER_ERROR","message":"another command is in progress"}}"#;
+    let ok = r#"{"version":"1","ok":true,"command":"status","elapsed_ms":1,"data":{"app":"a","snapshot_id":"","device":"d","os":"1"}}"#;
+    let (base, join) = stub_seq(vec![
+        (503, busy.to_owned()),
+        (503, busy.to_owned()),
+        (200, ok.to_owned()),
+    ])?;
+    let wire = Wire::new(&base, "tok");
+    let reply = wire.call("status", &serde_json::json!({}))?;
+    let served = join.join().map_err(|_| fail("stub thread panicked"))?;
+    assert!(reply.ok, "transient busy must succeed");
+    assert_eq!(served, 3, "client must have retried twice");
+    Ok(())
+}
+
+#[test]
+fn persistent_503_returns_envelope_bounded() -> Result<(), Failure> {
+    let busy = r#"{"version":"1","ok":false,"error":{"code":"DRIVER_ERROR","message":"another command is in progress"}}"#;
+    let (base, join) = stub_seq(vec![(503, busy.to_owned()); 8])?;
+    let wire = Wire::new(&base, "tok");
+    let reply = wire.call("status", &serde_json::json!({}))?;
+    let served = join.join().map_err(|_| fail("stub thread panicked"))?;
+    assert!(!reply.ok, "persistent busy must still fail");
+    assert!(
+        served < 8,
+        "retry must be bounded, served every plan entry: {served}"
+    );
+    assert!(served > 1, "at least one retry must have happened");
     Ok(())
 }

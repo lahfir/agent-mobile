@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Agent Mobile Driver</string>
+    <string name="accessibility_service_name">Agent Mobile Driver</string>
+    <string name="accessibility_service_description">Inspects and controls apps on this device for an authenticated local ADB session.</string>
+</resources>

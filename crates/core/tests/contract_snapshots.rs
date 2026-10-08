@@ -1,7 +1,7 @@
 //! Golden contract tests: driver-shaped JSON parses into the typed contract,
 //! and every registry code renders its verbatim code plus its next action.
 
-use agent_mobile_core::contract::{Bounds, Data, Envelope, ErrorBody, Snapshot};
+use agent_mobile_core::contract::{Bounds, Data, Envelope, ErrorBody, Node, Snapshot};
 use agent_mobile_core::error::{EXIT_ERROR, EXIT_USAGE, ErrorCode, Failure};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -210,10 +210,10 @@ fn all_codes_render_verbatim_hints() {
 }
 
 #[test]
-fn driver_error_envelope_retries_once() {
+fn driver_error_envelope_requires_fresh_snapshot() {
     let rendered = Failure::driver(ErrorCode::DriverError, "the runner exploded").render();
     assert!(rendered.contains("DRIVER_ERROR"));
-    assert!(rendered.contains("retry once"));
+    assert!(rendered.contains("fresh snapshot"));
     assert!(!rendered.contains("checklist"));
     insta::assert_snapshot!("driver_error_render", rendered);
 }
@@ -240,6 +240,52 @@ fn transport_failure_escalates_with_checklist() {
     assert!(rendered.contains("Wi-Fi"));
     assert!(rendered.contains("no retry loop"));
     insta::assert_snapshot!("transport_escalation", rendered);
+}
+
+#[test]
+fn node_without_native_id_omits_the_key() -> TestResult {
+    let node = Node {
+        role: "button".to_owned(),
+        name: String::new(),
+        value: String::new(),
+        ref_id: "@s:e1".to_owned(),
+        states: vec![],
+        available_actions: vec![],
+        bounds: Bounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        },
+        native_id: None,
+        children: vec![],
+    };
+    let json = serde_json::to_string(&node)?;
+    assert!(
+        !json.contains("native_id"),
+        "absent native_id must be omitted like the driver omits it: {json}"
+    );
+    let back: Node = serde_json::from_str(&json)?;
+    assert_eq!(back.native_id, None);
+    Ok(())
+}
+
+#[test]
+fn android_transport_failure_escalates_with_android_checklist() {
+    let failure = Failure::transport_android("connection refused (os error 61)");
+    assert_eq!(failure.exit_code(), EXIT_ERROR);
+    let rendered = failure.render();
+    assert!(rendered.contains("DRIVER_ERROR"), "{rendered}");
+    assert!(rendered.contains("agent-mobile serve"), "{rendered}");
+    assert!(rendered.contains("adb"), "{rendered}");
+    assert!(
+        !rendered.contains("Wi-Fi"),
+        "iOS checklist leaked into Android transport: {rendered}"
+    );
+    assert!(
+        !rendered.contains("VPN & Device Management"),
+        "iOS checklist leaked into Android transport: {rendered}"
+    );
 }
 
 #[test]

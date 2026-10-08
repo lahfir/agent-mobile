@@ -3,4 +3,4 @@ source: crates/core/tests/contract_snapshots.rs
 expression: rendered
 ---
 DRIVER_ERROR: the runner exploded
-next: retry once; escalate if it recurs
+next: take a fresh snapshot to verify the current state before retrying; escalate if it recurs
