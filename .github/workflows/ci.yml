@@ -87,10 +87,28 @@ jobs:
         run: |
           trace="$RUNNER_TEMP/ios-discovery-processes.log"
           (
+            set -o pipefail
             while :; do
               date -u '+%Y-%m-%dT%H:%M:%SZ'
-              /bin/ps -axo pid,ppid,pgid,state,etime,comm | awk \
-                'NR == 1 || /agent-mobile|integration_snapshot|xcrun|simctl|devicectl|CoreSimulatorService/'
+              python3 scripts/run_with_deadline.py 3 \
+                /bin/ps -axo pid,ppid,pgid,state,etime,comm | awk -v root="$$" '
+                NR == 1 { header = $0; next }
+                { parent[$1] = $2; row[$1] = $0 }
+                END {
+                  selected[root] = 1
+                  changed = 1
+                  while (changed) {
+                    changed = 0
+                    for (pid in parent) {
+                      if (selected[parent[pid]] && !selected[pid]) {
+                        selected[pid] = 1
+                        changed = 1
+                      }
+                    }
+                  }
+                  print header
+                  for (pid in selected) if (selected[pid] && (pid in row)) print row[pid]
+                }' || echo "process snapshot failed: $?"
               sleep 2
             done
           ) > "$trace" 2>&1 &
