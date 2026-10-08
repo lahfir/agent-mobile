@@ -180,9 +180,12 @@ internal class RefLedger(
         }
     }
 
-    fun resolve(any: Any?, live: TreeRead): ResolvedNode {
+    /** Lookup-then-resolve with a lazy tree read: `live` runs only after
+        the ref proves fresh, so a stale ref never pays for a read. */
+    fun resolve(any: Any?, live: () -> TreeRead): ResolvedNode {
         val target = lookup(any)
-        return ResolvedNode(RefResolver.resolve(target, live, any.toString()), live)
+        val read = live()
+        return ResolvedNode(RefResolver.resolve(target, read, any.toString()), read)
     }
 
     private fun parseRef(ref: String): Pair<String, Int>? {

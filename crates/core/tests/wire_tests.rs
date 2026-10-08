@@ -53,11 +53,12 @@ fn stub_hang(hold: Duration) -> Result<(String, JoinHandle<String>), Failure> {
     Ok((format!("http://127.0.0.1:{port}"), join))
 }
 
-fn refused_url() -> Result<String, Failure> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(format!("http://127.0.0.1:{port}"))
+/// A URL nothing listens on: port 1 is privileged, so no parallel stub
+/// can ever recycle it — unlike a bind-then-free ephemeral port, which a
+/// sibling test's stub can grab mid-run and turn a refused dial into a
+/// stray connection.
+fn refused_url() -> String {
+    "http://127.0.0.1:1".to_owned()
 }
 
 fn accept_idle(listener: &TcpListener, secs: u64) -> Option<TcpStream> {
@@ -144,7 +145,7 @@ fn unauthorized_401_omits_command_and_hints_token() -> Result<(), Failure> {
 
 #[test]
 fn refused_connection_synthesizes_transport_error() -> Result<(), Failure> {
-    let base = refused_url()?;
+    let base = refused_url();
     let wire = Wire::new(&base, "tok");
     match wire.call("status", &serde_json::json!({})) {
         Err(Failure::Transport { .. }) => {}
@@ -158,6 +159,23 @@ fn refused_connection_synthesizes_transport_error() -> Result<(), Failure> {
     assert!(rendered.contains("DRIVER_ERROR"));
     assert!(rendered.contains("unreachable"));
     assert!(rendered.contains("human-only"));
+    Ok(())
+}
+
+#[test]
+fn refused_android_connection_escalates_with_android_checklist() -> Result<(), Failure> {
+    let base = refused_url();
+    let wire = Wire::new(&base, "tok").for_android();
+    let rendered = match wire.call("status", &serde_json::json!({})) {
+        Err(f) => f.render(),
+        Ok(_) => return Err(fail("refused connection must not succeed")),
+    };
+    assert!(rendered.contains("DRIVER_ERROR"), "{rendered}");
+    assert!(rendered.contains("adb"), "{rendered}");
+    assert!(
+        !rendered.contains("Wi-Fi"),
+        "iOS checklist leaked into Android transport: {rendered}"
+    );
     Ok(())
 }
 

@@ -62,7 +62,7 @@ fn remember_device_selection_writes_key_and_display() -> Result<(), Failure> {
     let state = store.load();
     assert_eq!(state.default_device_key.as_deref(), Some("ios:UDID-1"));
     assert_eq!(state.default_device.as_deref(), Some("iPhone 17"));
-    store.remember_device("ios:UDID-9")?;
+    store.remember_device_selection("ios:UDID-9", "ios:UDID-9")?;
     let state = store.load();
     assert_eq!(state.default_device_key.as_deref(), Some("ios:UDID-9"));
     assert_eq!(state.default_device.as_deref(), Some("ios:UDID-9"));

@@ -166,6 +166,7 @@ pub struct Node {
     /// Frame in points inside the app window.
     pub bounds: Bounds,
     /// Stable identifier when the element exposes one (`ax_identifier` on iOS, `resource_id` on Android).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_id: Option<NativeId>,
     /// Child nodes.
     pub children: Vec<Node>,

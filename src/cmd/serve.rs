@@ -11,7 +11,7 @@ use agent_mobile_core::error::Failure;
 use agent_mobile_core::state::{SessionEntry, StateStore};
 
 use super::{Ctx, Session};
-use crate::platform::{self, PlatformDevice, PlatformRuntime};
+use crate::platform::{self, Platform, PlatformDevice, PlatformRuntime};
 
 /// Run `serve <device>`; blocks for the life of the driver.
 pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
@@ -36,7 +36,11 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     super::emit(&ready);
     eprintln!("driver ready on {}", runtime.url());
     if let Some(app) = &ctx.app {
-        let session = Session::new(runtime.url().to_owned(), runtime.token().to_owned());
+        let session = if matches!(device.platform(), Platform::Android) {
+            Session::new_android(runtime.url().to_owned(), runtime.token().to_owned())
+        } else {
+            Session::new(runtime.url().to_owned(), runtime.token().to_owned())
+        };
         let launch = super::round_trip_within(
             ctx,
             &session,

@@ -21,4 +21,4 @@ pub use device::{AndroidDeviceKind, AndroidDeviceState, AndroidScan, AndroidTarg
 pub use driver::LEGACY_DEVICE_PORT;
 pub use forward::ForwardJournal;
 pub use lifecycle::{LifecycleControl, LifecycleError};
-pub use session::{AndroidAdapter, AndroidSession};
+pub use session::{AndroidAdapter, AndroidSession, AndroidSessionMeta};

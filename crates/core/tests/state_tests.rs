@@ -207,7 +207,7 @@ fn upsert_remove_and_default_device_round_trip() -> Result<(), Failure> {
     store.write_token("dev", "tok")?;
     store.upsert("sim", &entry("http://a:1"))?;
     assert!(store.entry("sim").is_some());
-    store.remember_device("sim")?;
+    store.remember_device_selection("sim", "sim")?;
     match store.resolve_with(None, None, None)? {
         Some(r) => assert_eq!(r.url, "http://a:1"),
         None => return Err(fail("default device must resolve")),
@@ -295,7 +295,7 @@ fn mismatched_process_marker_makes_row_non_live() -> Result<(), Failure> {
     e.process_started_at = Some("ps:Mon Jan  1 00:00:00 1900".to_owned());
     store.upsert("k", &e)?;
     store.write_token("tok", "tok")?;
-    store.remember_device("k")?;
+    store.remember_device_selection("k", "k")?;
     assert!(
         store.resolve(None)?.is_none(),
         "a recorded marker mismatch must resolve as stale"

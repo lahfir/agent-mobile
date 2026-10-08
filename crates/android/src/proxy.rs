@@ -5,8 +5,7 @@
 
 use std::io::{self, Read};
 
-use agent_mobile_core::contract::PROTOCOL_VERSION;
-use serde_json::{Value, json};
+use agent_mobile_core::contract::{Data, Envelope, ErrorBody, PROTOCOL_VERSION};
 
 /// Request head cap: 1 MiB.
 pub(crate) const HEAD_CAP: usize = 1 << 20;
@@ -202,6 +201,10 @@ pub(crate) fn bearer_matches(header: &str, token: &str) -> bool {
     diff == 0
 }
 
+/// Last-resort body when even the scalar error envelope cannot
+/// serialize — unreachable in practice, kept so minting never panics.
+const ENVELOPE_FALLBACK: &str = "{\"version\":\"1\",\"ok\":false,\"error\":{\"code\":\"DRIVER_ERROR\",\"message\":\"envelope serialization failed\"}}";
+
 /// Protocol-v1 failure envelope; `command`/`elapsed_ms` are omitted for
 /// pre-dispatch 401s, matching the service's auth-failure shape.
 #[must_use]
@@ -211,29 +214,41 @@ pub(crate) fn error_envelope(
     code: &str,
     message: &str,
 ) -> String {
-    let mut env = json!({"version": PROTOCOL_VERSION, "ok": false});
-    if let Some(c) = command {
-        env["command"] = json!(c);
-    }
-    if let Some(ms) = elapsed_ms {
-        env["elapsed_ms"] = json!(ms);
-    }
-    env["error"] = json!({"code": code, "message": message});
-    env.to_string()
+    let env = Envelope {
+        version: PROTOCOL_VERSION.to_owned(),
+        ok: false,
+        command: command.map(str::to_owned),
+        elapsed_ms,
+        data: None,
+        error: Some(ErrorBody {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        }),
+    };
+    serde_json::to_string(&env).unwrap_or_else(|_| ENVELOPE_FALLBACK.to_owned())
 }
 
-/// Protocol-v1 success envelope carrying `data`; callers must serialize
-/// to [`Value`] themselves so a failure can never become `ok` + `null`.
+/// Protocol-v1 success envelope carrying typed `data`; a payload that
+/// cannot serialize degrades to the error envelope instead of emitting
+/// `ok` + `null`.
 #[must_use]
-pub(crate) fn success_envelope(command: &str, elapsed_ms: u64, data: &Value) -> String {
-    json!({
-        "version": PROTOCOL_VERSION,
-        "ok": true,
-        "command": command,
-        "elapsed_ms": elapsed_ms,
-        "data": data,
+pub(crate) fn success_envelope(command: &str, elapsed_ms: u64, data: Data) -> String {
+    let env = Envelope {
+        version: PROTOCOL_VERSION.to_owned(),
+        ok: true,
+        command: Some(command.to_owned()),
+        elapsed_ms: Some(elapsed_ms),
+        data: Some(data),
+        error: None,
+    };
+    serde_json::to_string(&env).unwrap_or_else(|_| {
+        error_envelope(
+            Some(command),
+            Some(elapsed_ms),
+            "DRIVER_ERROR",
+            "response data could not be serialized",
+        )
     })
-    .to_string()
 }
 
 /// Whole-request elapsed in milliseconds.

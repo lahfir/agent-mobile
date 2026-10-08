@@ -242,7 +242,7 @@ fn build_apk(driver_dir: &Path, adb: &Adb) -> Result<(), Failure> {
     if !wrapper.is_file() {
         return Err(Failure::local(
             format!("no driver checkout at {}", driver_dir.display()),
-            "clone agent-mobile and retry from the repo root",
+            "set AGENT_MOBILE_REPO_ROOT to the agent-mobile checkout and retry",
         ));
     }
     let dir = driver_dir.to_string_lossy().into_owned();

@@ -11,7 +11,9 @@
 set -euo pipefail
 umask 077
 
-readonly AVD_NAME="agent-mobile-api37"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib-android-common.sh"
+
 readonly TEMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 readonly STATE_DIR="$TEMP_ROOT/agent-mobile-android-ci"
 readonly PID_FILE="$STATE_DIR/emulator.pid"
@@ -20,31 +22,6 @@ readonly EMU_LOG="$STATE_DIR/emulator.log"
 readonly BOOT_BUDGET_SECS=600
 readonly ADB_TIMEOUT=15
 readonly EMU_TIMEOUT=30
-
-fail() {
-    echo "error: $1" >&2
-    if [ "${2:-}" != "" ]; then
-        echo "next: $2" >&2
-    fi
-    exit 1
-}
-
-sdk_root() {
-    local root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-    [ -n "$root" ] || fail "ANDROID_HOME/ANDROID_SDK_ROOT unset" \
-        "run scripts/setup-android-sdk.sh, then export its printed variables"
-    echo "$root"
-}
-
-adb_bin() { echo "$(sdk_root)/platform-tools/adb"; }
-emulator_bin() { echo "$(sdk_root)/emulator/emulator"; }
-avdmanager_bin() {
-    local b
-    for b in "$(sdk_root)"/cmdline-tools/*/bin/avdmanager; do
-        [ -x "$b" ] && { echo "$b"; return; }
-    done
-    return 1
-}
 
 # Bounded probes: every adb call gets 15s, every emulator/avdmanager call
 # 30s — a single wedged call must never consume the whole boot budget.

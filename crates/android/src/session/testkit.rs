@@ -1,14 +1,44 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
 use agent_mobile_core::error::Failure;
 
-use super::AndroidAdapter;
+use super::{AndroidAdapter, AndroidSession};
 use crate::adb::{Adb, CommandOutput, CommandRunner};
+use crate::forward::ForwardJournal;
 use crate::testkit::{FakeRunner, output};
+
+struct TestJournal;
+
+impl ForwardJournal for TestJournal {
+    fn record(&self, _serial: &str, _local: u16, _device: u16) -> Result<(), Failure> {
+        Ok(())
+    }
+
+    fn clear(&self, _serial: &str, _local: u16, _device: u16) -> Result<(), Failure> {
+        Ok(())
+    }
+}
+
+pub(super) fn start_test_session(
+    adapter: &AndroidAdapter,
+    serial: &str,
+) -> Result<AndroidSession, Failure> {
+    start_test_session_until(adapter, serial, Arc::new(AtomicBool::new(false)))
+}
+
+pub(super) fn start_test_session_until(
+    adapter: &AndroidAdapter,
+    serial: &str,
+    flag: Arc<AtomicBool>,
+) -> Result<AndroidSession, Failure> {
+    adapter.start_session_until_journaled(serial, flag, Arc::new(TestJournal))
+}
 
 pub(super) const TOKEN: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
 pub(super) const SVC: &str = "a.b/.C:com.lahfir.agentmobile.driver/com.lahfir.agentmobile.driver.AgentMobileAccessibilityService";

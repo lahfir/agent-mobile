@@ -257,16 +257,6 @@ impl StateStore {
         })
     }
 
-    /// Remember `device` as the default for future invocations (`--device`);
-    /// compatibility wrapper for callers without display context — the
-    /// same string lands in both fields.
-    ///
-    /// # Errors
-    /// Returns [`Failure::Local`] when the state cannot be saved.
-    pub fn remember_device(&self, device: &str) -> Result<(), Failure> {
-        self.remember_device_selection(device, device)
-    }
-
     /// Deterministic token-file name for a device (see
     /// [`crate::secret::token_file_name`]).
     #[must_use]

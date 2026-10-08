@@ -4,7 +4,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use agent_mobile_android::{AndroidAdapter, AndroidDeviceState, ForwardJournal};
+use agent_mobile_android::{
+    AndroidAdapter, AndroidDeviceState, AndroidSessionMeta, ForwardJournal,
+};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::state::{SessionEntry, StateStore};
 
@@ -33,31 +35,21 @@ pub(crate) fn android_serial(
         )),
         AndroidDeviceState::Unauthorized => Err(Failure::local(
             format!("{s} is unauthorized"),
-            "accept the USB debugging prompt on the device and retry",
+            "have a person accept the USB debugging prompt on the device, then retry",
         )),
         _ => Ok((s.clone(), None)),
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct AndroidMeta<'a> {
-    pub(crate) serial: Option<&'a str>,
-    pub(crate) forward_port: Option<u16>,
-    pub(crate) device_port: Option<u16>,
-    pub(crate) bridge_port: Option<u16>,
-    pub(crate) apk_source: Option<&'a Path>,
-    pub(crate) emulator_pid: Option<u32>,
-}
-
 /// Fill `e` with the Android cleanup metadata — the pure half of
 /// `session_entry`, kept separate so tests can verify it without a live
-/// session.
-pub(crate) fn android_entry_fields(e: &mut SessionEntry, meta: AndroidMeta<'_>, log: &Path) {
-    e.serial = meta.serial.map(str::to_owned);
-    e.forward_port = meta.forward_port;
-    e.device_port = meta.device_port;
-    e.bridge_port = meta.bridge_port;
-    e.apk_source = meta.apk_source.map(|p| p.to_string_lossy().into_owned());
+/// session. The row stays flat on disk so pre-upgrade rows keep parsing.
+pub(crate) fn android_entry_fields(e: &mut SessionEntry, meta: &AndroidSessionMeta, log: &Path) {
+    e.serial = Some(meta.serial.clone());
+    e.forward_port = Some(meta.forward_port);
+    e.device_port = Some(meta.device_port);
+    e.bridge_port = Some(meta.bridge_port);
+    e.apk_source = Some(meta.apk_source.to_string_lossy().into_owned());
     e.emulator_pid = meta.emulator_pid;
     e.log_file = Some(log.to_string_lossy().into_owned());
 }

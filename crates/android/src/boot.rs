@@ -157,30 +157,17 @@ fn boot_completed(adb: &Adb, serial: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Boot `name` headless, or reuse it when an emulator already reports it.
-/// Bounded by `budget`; offline/unauthorized states surface remedies.
+/// Boot `name` headless, or reuse it when an emulator already reports
+/// it. Bounded by `budget`; offline/unauthorized states surface remedies.
+/// The flag is checked before the probes and again immediately before
+/// spawn, so a pre-cancelled call never issues `-avd`; once an emulator
+/// IS running, a later cancel still leaves it up for a subsequent
+/// `serve` to reuse.
 ///
 /// # Errors
-/// [`Failure::Local`] on unsafe/unknown names, spawn failure, or a boot
-/// that never reaches `sys.boot_completed=1` inside `budget`.
-pub(crate) fn boot_avd(
-    adb: &Adb,
-    emulator: &Path,
-    name: &str,
-    log: &Path,
-    budget: Duration,
-) -> Result<BootedAvd, Failure> {
-    let cancelled = AtomicBool::new(false);
-    boot_avd_until(adb, emulator, name, log, budget, &cancelled)
-}
-
-/// [`boot_avd`] honoring a cancellation flag — checked before the probes
-/// and again immediately before spawn, so a pre-cancelled call never
-/// issues `-avd`; once an emulator IS running, a later cancel still
-/// leaves it up for a subsequent `serve` to reuse.
-///
-/// # Errors
-/// Same as [`boot_avd`], plus a cancelled-boot [`Failure::Local`].
+/// [`Failure::Local`] on unsafe/unknown names, spawn failure, a boot
+/// that never reaches `sys.boot_completed=1` inside `budget`, or a
+/// cancelled boot.
 pub(crate) fn boot_avd_until(
     adb: &Adb,
     emulator: &Path,

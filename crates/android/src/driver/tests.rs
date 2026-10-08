@@ -157,6 +157,20 @@ fn apk_env_override_wins() -> Result<(), Failure> {
 }
 
 #[test]
+fn missing_checkout_remedy_names_repo_root_env() {
+    let (adb, _r) = adb_with(vec![]);
+    let err = ensure_apk(None, PathBuf::from("/missing").as_path(), &adb)
+        .err()
+        .map(|e| e.render());
+    let text = err.unwrap_or_default();
+    assert!(text.contains("no driver checkout"), "{text}");
+    assert!(
+        text.contains("AGENT_MOBILE_REPO_ROOT"),
+        "remedy must name the env var driver_dir() reads: {text}"
+    );
+}
+
+#[test]
 fn token_parse_requires_exact_bundle_field() {
     let (adb, _r) = adb_with(vec![
         output(true, &format!("Bundle[{{token={TOKEN} port=9}}]"), ""),

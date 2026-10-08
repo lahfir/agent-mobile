@@ -105,6 +105,17 @@ impl PlatformDevice {
         format!("{}:{}", self.platform().as_str(), self.id())
     }
 
+    /// Live `adb` serial — present only when an Android target is
+    /// reachable now; a correlated emulator's stable [`id`](Self::id) is
+    /// `avd:<name>`, so its serial needs this separate handle.
+    #[must_use]
+    pub fn android_serial(&self) -> Option<&str> {
+        match &self.backend {
+            Backend::Ios(_) => None,
+            Backend::Android(t) => t.serial.as_deref(),
+        }
+    }
+
     /// Display name.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -191,8 +202,9 @@ fn android_state(state: &AndroidDeviceState) -> &str {
 
 /// One matching rule of [`select`]: collision-free `key` wins outright,
 /// then a unique stable `id` (UDID or serial/`avd:<name>`), then a unique
-/// display name. Ambiguity at the id or name step is a usage error listing
-/// every candidate's collision-free key, so an iPhone literally named
+/// live `adb` serial (bare or `android:`-prefixed), then a unique display
+/// name. Ambiguity past the key step is a usage error listing every
+/// candidate's collision-free key, so an iPhone literally named
 /// `emulator-5554` can never shadow the serial.
 ///
 /// # Errors
@@ -206,6 +218,20 @@ pub fn select(scan: &PlatformScan, query: &str) -> Result<PlatformDevice, Failur
         1 => return Ok(ids[0].clone()),
         0 => {}
         _ => return Err(ambiguous("id", query, &ids)),
+    }
+    let unprefixed = query.strip_prefix("android:");
+    let serials: Vec<&PlatformDevice> = scan
+        .devices
+        .iter()
+        .filter(|d| {
+            d.android_serial()
+                .is_some_and(|s| Some(s) == unprefixed || s == query)
+        })
+        .collect();
+    match serials.len() {
+        1 => return Ok(serials[0].clone()),
+        0 => {}
+        _ => return Err(ambiguous("serial", query, &serials)),
     }
     let names: Vec<&PlatformDevice> = scan.devices.iter().filter(|d| d.name() == query).collect();
     match names.len() {

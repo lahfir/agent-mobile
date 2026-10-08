@@ -187,9 +187,7 @@ internal class Driver internal constructor(
 
 
     private fun resolveRef(any: Any?, cancellation: RequestCancellation): ResolvedNode {
-        val target = ledger.lookup(any)
-        val live = checked(cancellation) { platform.readTree() }
-        return ResolvedNode(RefResolver.resolve(target, live, any.toString()), live)
+        return ledger.resolve(any) { checked(cancellation) { platform.readTree() } }
     }
 
     /** A logical point converted to raw must still land inside the active

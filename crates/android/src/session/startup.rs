@@ -8,7 +8,7 @@ use agent_mobile_core::error::Failure;
 
 use crate::adb::Adb;
 use crate::driver::{Provisioned, enable_service, ensure_apk, install, probe_status, provision};
-use crate::forward::{self, ForwardJournal, NoopJournal, create_forward, remove_owned_forward};
+use crate::forward::{self, ForwardJournal, create_forward, remove_owned_forward};
 use crate::http::start_bridge;
 use crate::lifecycle::AdbLifecycle;
 use crate::session::{AndroidAdapter, AndroidSession, check_device_state};
@@ -17,33 +17,10 @@ impl AndroidAdapter {
     /// Ordered session bring-up for `serial`: device check → APK →
     /// install → enable/bind service → provision (rotates token onto a
     /// fresh ephemeral port) → forward to that port → probe → bridge.
-    /// Each later step's failure unwinds what this call created.
-    ///
-    /// # Errors
-    /// [`Failure::Local`] at any stage; offline/unauthorized states carry
-    /// remedies.
-    pub fn start_session(&self, serial: &str) -> Result<AndroidSession, Failure> {
-        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.start_session_until(serial, flag)
-    }
-
-    /// [`start_session`] driven by a shared cancellation flag — adb/gradle
-    /// polls honour it; cleanup always runs on an uncancelled clone.
-    /// Compatibility entry point with a no-op journal.
-    ///
-    /// # Errors
-    /// [`Failure::Local`] at any stage, or interruption when the flag is
-    /// set.
-    pub fn start_session_until(
-        &self,
-        serial: &str,
-        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<AndroidSession, Failure> {
-        self.start_session_until_journaled(serial, cancelled, Arc::new(NoopJournal))
-    }
-
-    /// [`start_session_until`] that journals the exact forward tuple
-    /// before the ADB side effect, so a crashed startup can be reclaimed.
+    /// Each later step's failure unwinds what this call created. The
+    /// exact forward tuple is journaled before the ADB side effect, so
+    /// a crashed startup can be reclaimed; adb/gradle polls honour the
+    /// shared cancellation flag.
     ///
     /// # Errors
     /// [`Failure::Local`] at any stage; a journal record is cleared only

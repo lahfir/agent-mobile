@@ -38,6 +38,7 @@ pub struct Wire {
     agent: ureq::Agent,
     base: String,
     token: String,
+    android: bool,
 }
 
 impl Wire {
@@ -59,6 +60,24 @@ impl Wire {
             agent,
             base: base.trim_end_matches('/').to_owned(),
             token: token.to_owned(),
+            android: false,
+        }
+    }
+
+    /// Target the Android bridge: transport failures render the
+    /// bridge/`adb` checklist instead of the iOS trust/Wi-Fi one.
+    #[must_use]
+    pub fn for_android(mut self) -> Self {
+        self.android = true;
+        self
+    }
+
+    /// The transport failure for this client's platform.
+    fn transport_failure(&self, message: String) -> Failure {
+        if self.android {
+            Failure::transport_android(message)
+        } else {
+            Failure::transport(message)
         }
     }
 
@@ -81,7 +100,7 @@ impl Wire {
                 .header("X-Agent-Mobile-Version", PROTOCOL_VERSION)
                 .header("Content-Type", "application/json")
                 .send_json(body)
-                .map_err(|e| Failure::transport(e.to_string()))
+                .map_err(|e| self.transport_failure(e.to_string()))
         };
         let mut attempt = 0;
         let mut resp = send()?;
@@ -95,7 +114,7 @@ impl Wire {
             .as_reader()
             .take(MAX_REPLY)
             .read_to_end(&mut buf)
-            .map_err(|e| Failure::transport(e.to_string()))?;
+            .map_err(|e| self.transport_failure(e.to_string()))?;
         let raw = String::from_utf8(buf)
             .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
         let envelope = Envelope::from_json(&raw).map_err(|e| {

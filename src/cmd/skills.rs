@@ -52,8 +52,11 @@ COMMANDS
                                  returned tree: web-history back is unproven
   twofinger <ref>                two-finger tap on a ref
   center notification            open notifications (system UI session).
-                                 Earlier refs die; snapshot or --app to
-                                 return to your app
+                                 Earlier refs die; snapshot to return to
+                                 your app (iOS also accepts --app). On
+                                 Android, back out of the shade first:
+                                 snapshot --app fails while System UI
+                                 holds the foreground
   launch <app_id>                cold-start or restart an app (iOS bundle id
                                  or Android package); app data is kept
   screenshot [path]              PNG to a file, or base64 to stdout
@@ -78,6 +81,15 @@ ENVIRONMENT
                                  set BOTH — a URL alone has no token to pair
                                  with and fails as a usage error. Use these
                                  for tunnel URLs (https://…trycloudflare.com).
+  ANDROID_HOME, ANDROID_SDK_ROOT SDK location, in that precedence order;
+                                 then the platform default, then PATH.
+                                 scripts/setup-android-sdk.sh --check
+                                 verifies without installing.
+  AGENT_MOBILE_BOOT_BUDGET_SECS  lazy-boot deadline in seconds (default
+                                 240). A cold Gradle build may run the
+                                 full 600 s build bound while lazy boot
+                                 kills serve at the deadline — raise past
+                                 600 before the first Android boot.
 
 SESSIONS
   Any verb starts the driver on demand when none runs — the first call can
@@ -96,11 +108,15 @@ ANDROID SETUP / RECOVERY
                                  or require Android Studio
   AGENT_MOBILE_ANDROID_APK       path override for the driver APK; otherwise
                                  the checked-in Gradle wrapper builds it
-  unauthorized device            accept the USB debugging prompt, then retry
+  AGENT_MOBILE_REPO_ROOT         checkout root locating drivers/android;
+                                 only needed outside a repo checkout
+  unauthorized device            a person accepts the USB debugging
+                                 prompt, then retry
   Restricted Settings            the \"Agent Mobile Driver\" toggle in
                                  Settings > Accessibility; Android 13+
                                  also needs App Info > ⋮ >
-                                 \"Allow restricted settings\"
+                                 \"Allow restricted settings\" — a person
+                                 must flip these on the device
   duplicate device names         select by platform:id key, not the name
   boot timeout                   inspect ~/.agent-mobile/driver-*.log
   physical Android               user-authorized USB/wireless adb plus

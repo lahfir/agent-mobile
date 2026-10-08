@@ -2,7 +2,8 @@
 //! on-device listener, send the raw request bytes, read a strict reply.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 use crate::proxy::{
@@ -13,12 +14,25 @@ use crate::proxy::{
 /// Relay `req.raw` to the forwarded listener and copy the reply back,
 /// preserving status and bytes for every envelope upstream sends. Any
 /// connect/write/read failure becomes a structured `DRIVER_ERROR` 500 —
-/// never an EOF or a partial reply.
-pub(super) fn relay(sock: &mut TcpStream, req: &Request, upstream_port: u16, started: Instant) {
+/// never an EOF or a partial reply. Every relay resets
+/// `upstream_failures` on success and saturates it upward on failure, so
+/// [`Bridge::is_running`](super::Bridge::is_running) can trip the session
+/// when the device side dies behind a live accept loop.
+pub(super) fn relay(
+    sock: &mut TcpStream,
+    req: &Request,
+    upstream_port: u16,
+    started: Instant,
+    upstream_failures: &AtomicU32,
+) {
     let verb = req.path.trim_matches('/');
     if let Ok(reply) = relay_once(&req.raw, upstream_port) {
+        upstream_failures.store(0, Ordering::SeqCst);
         let _ = sock.write_all(&reply);
     } else {
+        let _ = upstream_failures.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            Some(n.saturating_add(1))
+        });
         let body = error_envelope(
             Some(verb),
             Some(elapsed_ms(started)),
@@ -32,7 +46,8 @@ pub(super) fn relay(sock: &mut TcpStream, req: &Request, upstream_port: u16, sta
 /// One upstream round trip: connect, send the raw request, read a strict
 /// reply.
 fn relay_once(raw: &[u8], upstream_port: u16) -> std::io::Result<Vec<u8>> {
-    let mut up = TcpStream::connect(("127.0.0.1", upstream_port))?;
+    let addr = SocketAddr::from(([127, 0, 0, 1], upstream_port));
+    let mut up = TcpStream::connect_timeout(&addr, IO_TIMEOUT)?;
     up.set_read_timeout(Some(UPSTREAM_TIMEOUT))?;
     up.set_write_timeout(Some(IO_TIMEOUT))?;
     up.write_all(raw)?;
@@ -66,7 +81,10 @@ fn parse_reply_head(raw: &[u8], pos: usize) -> std::io::Result<usize> {
         .split_once(':')
         .and_then(|(_, v)| v.trim().parse::<usize>().ok())
         .ok_or_else(|| bad("reply content-length is not numeric"))?;
-    let total = pos + 4 + len;
+    let total = pos
+        .checked_add(4)
+        .and_then(|head| head.checked_add(len))
+        .ok_or_else(|| bad("reply size overflows"))?;
     if total > REPLY_CAP {
         return Err(bad("reply exceeds cap"));
     }

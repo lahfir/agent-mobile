@@ -64,8 +64,7 @@ fn cancel_after_forward_removes_exact_row_without_probe() -> Result<(), Failure>
         PathBuf::from("emulator"),
         Some(apk),
     );
-    let err = adapter
-        .start_session_until("s1", flag)
+    let err = start_test_session_until(&adapter, "s1", flag)
         .err()
         .map(|e| e.message().to_owned())
         .unwrap_or_default();
@@ -93,8 +92,7 @@ fn probe_rejects_non_status_envelope_and_rolls_back() -> Result<(), Failure> {
         ],
         SNAPSHOT_BODY,
     )?;
-    let err = adapter
-        .start_session("s1")
+    let err = start_test_session(&adapter, "s1")
         .err()
         .map(|e| e.render())
         .unwrap_or_default();

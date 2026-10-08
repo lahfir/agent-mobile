@@ -56,7 +56,13 @@ fn error_envelope_omits_command_for_auth() {
 
 #[test]
 fn success_envelope_carries_data() {
-    let body = success_envelope("terminate", 3, &serde_json::json!({"terminated": "a.b"}));
+    let body = success_envelope(
+        "terminate",
+        3,
+        agent_mobile_core::contract::Data::Terminate(agent_mobile_core::contract::Terminate {
+            terminated: "a.b".to_owned(),
+        }),
+    );
     assert!(body.contains("\"ok\":true"));
     assert!(body.contains("\"data\":{\"terminated\":\"a.b\"}"));
 }

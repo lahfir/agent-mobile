@@ -46,18 +46,47 @@ pub struct Ctx {
 pub struct Session {
     url: String,
     token: String,
+    android: bool,
 }
 
 impl Session {
     /// Build a session straight from a URL and token (serve's own calls).
     #[must_use]
     pub fn new(url: String, token: String) -> Self {
-        Self { url, token }
+        Self {
+            url,
+            token,
+            android: false,
+        }
+    }
+
+    /// Build a session against the Android bridge: transport failures
+    /// render the bridge/`adb` checklist instead of the iOS one.
+    #[must_use]
+    pub fn new_android(url: String, token: String) -> Self {
+        Self {
+            url,
+            token,
+            android: true,
+        }
+    }
+
+    /// The wire client for this session's platform.
+    fn wire(&self, timeout: Option<std::time::Duration>) -> Wire {
+        let wire = match timeout {
+            Some(t) => Wire::with_timeout(&self.url, &self.token, t),
+            None => Wire::new(&self.url, &self.token),
+        };
+        if self.android {
+            wire.for_android()
+        } else {
+            wire
+        }
     }
 
     /// One driver call with the standard timeout.
     pub fn call(&self, verb: &str, body: &Value) -> Result<Envelope, Failure> {
-        Wire::new(&self.url, &self.token).call(verb, body)
+        self.wire(None).call(verb, body)
     }
 
     /// One driver call with an explicit timeout — for verbs whose
@@ -69,7 +98,7 @@ impl Session {
         body: &Value,
         timeout: std::time::Duration,
     ) -> Result<Envelope, Failure> {
-        Wire::with_timeout(&self.url, &self.token, timeout).call(verb, body)
+        self.wire(Some(timeout)).call(verb, body)
     }
 }
 
@@ -101,13 +130,25 @@ impl Ctx {
     /// the recorded session's pid is dead — `resolve` reconciles stale
     /// entries to a lazy boot instead of a wire failure. The stale entry
     /// stays on disk for `serve` to reclaim: its `runner_pid` reaps any
-    /// orphaned runner still holding the port (KTD7).
+    /// orphaned runner still holding the port (KTD7). State keys are
+    /// canonical `platform:id` (legacy pre-upgrade rows are iOS display
+    /// names, and env-override resolves carry no key), so only an
+    /// `android:` key selects the Android transport checklist.
     fn ready_session(&self) -> Result<Option<Session>, Failure> {
         let Some(r) = self.store.resolve(self.device.as_deref())? else {
             return Ok(None);
         };
         let token = r.token().to_owned();
-        Ok(Some(Session::new(r.url, token)))
+        let android = r
+            .device
+            .as_deref()
+            .is_some_and(|d| d.starts_with("android:"));
+        let session = if android {
+            Session::new_android(r.url, token)
+        } else {
+            Session::new(r.url, token)
+        };
+        Ok(Some(session))
     }
 
     /// Emit one reply: honor `--max-depth`, then write text or JSON to

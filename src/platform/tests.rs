@@ -7,9 +7,8 @@ use agent_mobile_core::ios::{self, DeviceScan};
 use agent_mobile_core::state::SessionEntry;
 
 use super::{
-    Platform, PlatformDevice, PlatformScan,
-    android_ops::{AndroidMeta, android_entry_fields},
-    default_device, select,
+    Platform, PlatformDevice, PlatformScan, android_ops::android_entry_fields, default_device,
+    select,
 };
 
 fn ios_dev(name: &str, udid: &str, kind: &'static str) -> PlatformDevice {
@@ -68,6 +67,30 @@ fn stable_id_beats_anothers_display_name() -> Result<(), Failure> {
     let picked = select(&scan, "emulator-5554")?;
     assert_eq!(picked.platform(), Platform::Android);
     assert_eq!(picked.id(), "emulator-5554");
+    Ok(())
+}
+
+#[test]
+fn correlated_emulator_matches_by_serial() -> Result<(), Failure> {
+    let scan = scan(vec![
+        and_dev("avd:Pixel_8", Some("emulator-5554"), "device"),
+        ios_dev("iPhone 17", "UDID-1", "simulator"),
+    ]);
+    assert_eq!(select(&scan, "android:emulator-5554")?.id(), "avd:Pixel_8");
+    assert_eq!(select(&scan, "emulator-5554")?.id(), "avd:Pixel_8");
+    assert_eq!(select(&scan, "android:avd:Pixel_8")?.id(), "avd:Pixel_8");
+    Ok(())
+}
+
+#[test]
+fn serial_beats_anothers_display_name() -> Result<(), Failure> {
+    let scan = scan(vec![
+        ios_dev("emulator-5554", "UDID-9", "simulator"),
+        and_dev("avd:Pixel_8", Some("emulator-5554"), "device"),
+    ]);
+    let picked = select(&scan, "emulator-5554")?;
+    assert_eq!(picked.platform(), Platform::Android);
+    assert_eq!(picked.id(), "avd:Pixel_8");
     Ok(())
 }
 
@@ -203,12 +226,12 @@ fn android_entry_fields_carries_cleanup_metadata() {
     );
     android_entry_fields(
         &mut e,
-        AndroidMeta {
-            serial: Some("emulator-5554"),
-            forward_port: Some(50001),
-            device_port: Some(45678),
-            bridge_port: Some(60001),
-            apk_source: Some(std::path::Path::new("/repo/app-debug.apk")),
+        &agent_mobile_android::AndroidSessionMeta {
+            serial: "emulator-5554".to_owned(),
+            forward_port: 50001,
+            device_port: 45678,
+            bridge_port: 60001,
+            apk_source: std::path::PathBuf::from("/repo/app-debug.apk"),
             emulator_pid: Some(50564),
         },
         std::path::Path::new("/tmp/avd.log"),

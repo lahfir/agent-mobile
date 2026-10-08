@@ -1,5 +1,5 @@
 //! Session assembly: `AndroidAdapter` resolves tools and repo paths, then
-//! `start_session` runs the ordered install → enable/bind → provision →
+//! `start_session_until_journaled` runs the ordered install → enable/bind → provision →
 //! forward → probe → bridge sequence, owning exactly one forward and one
 //! bridge for its whole life.
 
@@ -10,7 +10,6 @@ use std::time::Duration;
 use agent_mobile_core::error::Failure;
 
 use crate::adb::{Adb, resolve_sdk};
-use crate::boot::boot_avd;
 use crate::device::{self, AndroidScan, BootedAvd};
 use crate::driver::SecretToken;
 use crate::forward::{ForwardJournal, remove_owned_forward};
@@ -75,20 +74,12 @@ impl AndroidAdapter {
     }
 
     /// Boot `name` headless (or reuse a running instance), bounded by
-    /// `budget`.
+    /// `budget` and honoring a cancellation flag; a cancelled boot leaves
+    /// the emulator running for a later `serve`.
     ///
     /// # Errors
     /// [`Failure::Local`] on unsafe/unknown names, spawn failure, or boot
     /// timeouts with remedies.
-    pub fn boot_avd(&self, name: &str, log: &Path, budget: Duration) -> Result<BootedAvd, Failure> {
-        boot_avd(&self.adb, &self.emulator, name, log, budget)
-    }
-
-    /// [`AndroidAdapter::boot_avd`] honoring a cancellation flag; a
-    /// cancelled boot leaves the emulator running for a later `serve`.
-    ///
-    /// # Errors
-    /// Same contract as [`AndroidAdapter::boot_avd`] plus cancel.
     pub fn boot_avd_until(
         &self,
         name: &str,
@@ -127,7 +118,7 @@ pub(super) fn check_device_state(adb: &Adb, serial: &str) -> Result<(), Failure>
     if text.contains("unauthorized") {
         return Err(Failure::local(
             format!("{serial} is unauthorized"),
-            "accept the USB debugging prompt on the device and retry",
+            "have a person accept the USB debugging prompt on the device, then retry",
         ));
     }
     if text.contains("offline") {
@@ -159,6 +150,25 @@ fn probe_tool(adb: &Adb) -> Result<(), Failure> {
             "install Android SDK platform-tools and retry",
         ))
     }
+}
+
+/// Owned cleanup metadata for one Android session: everything a later
+/// stop or stale-row sweep needs to release exactly this session's
+/// forward, without re-deriving it from loose `Option` fields.
+#[derive(Debug, Clone)]
+pub struct AndroidSessionMeta {
+    /// `adb` serial the session is bound to.
+    pub serial: String,
+    /// Owned `adb forward` host port.
+    pub forward_port: u16,
+    /// Device-side loopback port the forward targets.
+    pub device_port: u16,
+    /// Local bridge listen port.
+    pub bridge_port: u16,
+    /// APK installed for the session.
+    pub apk_source: PathBuf,
+    /// Emulator pid this serve booted, when it booted one.
+    pub emulator_pid: Option<u32>,
 }
 
 /// One live device session: bridge first (client-facing), prepared driver
@@ -222,8 +232,9 @@ impl AndroidSession {
         &self.apk_source
     }
 
-    /// Whether the bridge is still serving — `false` once stopped or the
-    /// accept thread ended.
+    /// Whether the bridge is still serving — `false` once stopped, the
+    /// accept thread ended, or the upstream relay tripped after repeated
+    /// device-side failures.
     #[must_use]
     pub fn is_running(&self) -> bool {
         !self.closed && self.bridge.as_ref().is_some_and(Bridge::is_running)
@@ -245,34 +256,46 @@ impl AndroidSession {
         Ok(())
     }
 
-    /// Stop the bridge, then remove only this session's
-    /// `forward --remove tcp:<port>` — accessibility stays enabled, the
-    /// APK stays installed, other forwards are untouched.
-    ///
-    /// # Errors
-    /// Propagates the forward-removal failure.
-    pub fn close(mut self) -> Result<(), Failure> {
-        if self.closed {
-            return Ok(());
-        }
+    /// The one teardown sequence — bridge, owned forward, pending
+    /// journal record — shared by [`close`](Self::close) and [`drop`](Self::drop):
+    /// stop the bridge, then remove only this session's
+    /// `forward --remove tcp:<port>` (accessibility stays enabled, the APK
+    /// stays installed, other forwards are untouched), then clear the
+    /// pending-forward journal record. Returns the first failure for
+    /// `close` to propagate; `drop` ignores it. The `closed` flag lives
+    /// outside this sequence on purpose: `drop` sets it first so a panic
+    /// mid-teardown cannot rerun the sequence while unwinding, while
+    /// `close` sets it only on success so a failure falls through to the
+    /// `drop` retry.
+    fn teardown(&mut self) -> Result<(), Failure> {
         if let Some(mut bridge) = self.bridge.take() {
             bridge.stop();
         }
-        match remove_owned_forward(
+        remove_owned_forward(
             &self.adb.without_cancellation(),
             &self.serial,
             self.forward_port,
             self.device_port,
-        ) {
-            Ok(()) => match self.commit_forward_journal() {
-                Ok(()) => {
-                    self.closed = true;
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            },
-            Err(e) => Err(e),
+        )?;
+        self.commit_forward_journal()
+    }
+
+    /// Stop the bridge, then remove only this session's
+    /// `forward --remove tcp:<port>` — accessibility stays enabled, the
+    /// APK stays installed, other forwards are untouched. A failure leaves
+    /// the session unmarked so the ensuing `drop` retries the teardown.
+    ///
+    /// # Errors
+    /// Propagates the forward-removal or journal failure.
+    pub fn close(mut self) -> Result<(), Failure> {
+        if self.closed {
+            return Ok(());
         }
+        let result = self.teardown();
+        if result.is_ok() {
+            self.closed = true;
+        }
+        result
     }
 }
 
@@ -282,18 +305,7 @@ impl Drop for AndroidSession {
             return;
         }
         self.closed = true;
-        if let Some(mut bridge) = self.bridge.take() {
-            bridge.stop();
-        }
-        let removed = remove_owned_forward(
-            &self.adb.without_cancellation(),
-            &self.serial,
-            self.forward_port,
-            self.device_port,
-        );
-        if removed.is_ok() {
-            let _ = self.commit_forward_journal();
-        }
+        let _ = self.teardown();
     }
 }
 

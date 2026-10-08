@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly CMDTOOLS_BUILD="15859902"
 readonly API_LEVEL="37"
 readonly PLATFORM_ID="android-${API_LEVEL}.0"
 readonly BUILD_TOOLS_VERSION="36.0.0"
@@ -14,7 +13,6 @@ readonly PLATFORM_REVISION="2"
 readonly BUILD_TOOLS_REVISION="36.0.0"
 readonly EMULATOR_REVISION="37.2.12"
 readonly SYS_IMAGE_REVISION="6"
-readonly AVD_NAME="agent-mobile-api37"
 readonly AVD_DEVICE="pixel_7"
 readonly DOWNLOAD_BASE="https://dl.google.com/android/repository"
 readonly REQUIRED_JDK_MAJOR="17"
@@ -36,6 +34,7 @@ readonly ANDROID_HOME
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 readonly REPO_ROOT
+source "$SCRIPT_DIR/lib-android-common.sh"
 
 HOST_OS=""
 HOST_ARCH=""
@@ -54,14 +53,6 @@ cleanup() {
     esac
 }
 trap cleanup EXIT
-
-fail() {
-    echo "error: $1" >&2
-    if [ "${2:-}" != "" ]; then
-        echo "next: $2" >&2
-    fi
-    exit 1
-}
 
 usage() {
     echo "usage: $0 [--check]"
@@ -96,9 +87,6 @@ detect_host() {
 }
 
 sdkmanager_bin() { echo "${ANDROID_HOME}/cmdline-tools/${CMDTOOLS_BUILD}/bin/sdkmanager"; }
-avdmanager_bin() { echo "${ANDROID_HOME}/cmdline-tools/${CMDTOOLS_BUILD}/bin/avdmanager"; }
-emulator_bin() { echo "${ANDROID_HOME}/emulator/emulator"; }
-adb_bin() { echo "${ANDROID_HOME}/platform-tools/adb"; }
 avd_home() { echo "${ANDROID_AVD_HOME:-$HOME/.android/avd}"; }
 local_properties_file() { echo "${REPO_ROOT}/drivers/android/local.properties"; }
 

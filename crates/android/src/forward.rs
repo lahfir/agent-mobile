@@ -58,19 +58,6 @@ pub trait ForwardJournal: Send + Sync {
     fn clear(&self, serial: &str, local_port: u16, device_port: u16) -> Result<(), Failure>;
 }
 
-/// The journal that records nothing — used by direct adapter callers that
-/// predate the state-backed pending-forward flow.
-pub(crate) struct NoopJournal;
-
-impl ForwardJournal for NoopJournal {
-    fn record(&self, _serial: &str, _local_port: u16, _device_port: u16) -> Result<(), Failure> {
-        Ok(())
-    }
-    fn clear(&self, _serial: &str, _local_port: u16, _device_port: u16) -> Result<(), Failure> {
-        Ok(())
-    }
-}
-
 /// Claim an ephemeral host port by binding and releasing `127.0.0.1:0` —
 /// the ADB create is then issued with `--no-rebind` on that exact port.
 ///

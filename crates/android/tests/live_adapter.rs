@@ -3,10 +3,22 @@
 
 use std::time::Duration;
 
-use agent_mobile_android::AndroidAdapter;
+use agent_mobile_android::{AndroidAdapter, ForwardJournal};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::wire::Wire;
 use serde_json::json;
+
+struct TestJournal;
+
+impl ForwardJournal for TestJournal {
+    fn record(&self, _serial: &str, _local: u16, _device: u16) -> Result<(), Failure> {
+        Ok(())
+    }
+
+    fn clear(&self, _serial: &str, _local: u16, _device: u16) -> Result<(), Failure> {
+        Ok(())
+    }
+}
 
 #[test]
 #[ignore = "needs a live Android device; set AGENT_MOBILE_ANDROID_SERIAL and AGENT_MOBILE_ANDROID_TEST_PACKAGE"]
@@ -24,7 +36,9 @@ fn session_drives_real_device() -> Result<(), Failure> {
         )
     })?;
     let adapter = AndroidAdapter::from_environment()?;
-    let session = adapter.start_session(&serial)?;
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let journal = std::sync::Arc::new(TestJournal);
+    let session = adapter.start_session_until_journaled(&serial, flag, journal)?;
     println!(
         "session up: local={} forward={}",
         session.local_port(),

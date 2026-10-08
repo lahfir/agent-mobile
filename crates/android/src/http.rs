@@ -5,7 +5,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -23,9 +23,17 @@ use relay::relay;
 /// A running bridge: one accept loop feeding at most one worker at a
 /// time — complete requests that arrive while a command is in flight get
 /// a 503, not a backlog slot — bounded and idempotent [`Bridge::stop`].
+/// Consecutive upstream relay failures after which the bridge reports
+/// stopped: one failure is a transient device hiccup, but a run this long
+/// means the device side (`adb` server, forward, on-device listener) died
+/// behind a live accept loop — tripping lets lazy supervision reclaim the
+/// session instead of serving 500s forever.
+const UPSTREAM_FAILURE_LIMIT: u32 = 3;
+
 pub(crate) struct Bridge {
     port: u16,
     stop: Arc<AtomicBool>,
+    upstream_failures: Arc<AtomicU32>,
     active: Arc<Mutex<Option<TcpStream>>>,
     #[cfg(test)]
     accepted: Arc<Mutex<Option<std::sync::mpsc::Sender<()>>>>,
@@ -104,6 +112,7 @@ struct ServeArgs {
     token: SecretToken,
     lifecycle: Arc<dyn LifecycleControl>,
     stop: Arc<AtomicBool>,
+    upstream_failures: Arc<AtomicU32>,
     active: Arc<Mutex<Option<TcpStream>>>,
     accepted: Arc<Mutex<Option<std::sync::mpsc::Sender<()>>>>,
     request_deadline: Duration,
@@ -118,10 +127,12 @@ fn start_on(
 ) -> Result<Bridge, Failure> {
     let port = listener.local_addr().map_err(Failure::from)?.port();
     let stop = Arc::new(AtomicBool::new(false));
+    let upstream_failures = Arc::new(AtomicU32::new(0));
     let active: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
     let accepted = Arc::new(Mutex::new(None));
     let handle = {
         let stop = stop.clone();
+        let upstream_failures = upstream_failures.clone();
         let active = active.clone();
         let accepted = accepted.clone();
         thread_spawn(move || {
@@ -131,6 +142,7 @@ fn start_on(
                 token,
                 lifecycle,
                 stop,
+                upstream_failures,
                 active,
                 accepted,
                 request_deadline,
@@ -140,6 +152,7 @@ fn start_on(
     Ok(Bridge {
         port,
         stop,
+        upstream_failures,
         active,
         #[cfg(test)]
         accepted,
@@ -178,6 +191,7 @@ fn serve(args: ServeArgs) {
         token,
         lifecycle,
         stop,
+        upstream_failures,
         active,
         accepted,
         request_deadline,
@@ -233,6 +247,7 @@ fn serve(args: ServeArgs) {
         };
         let active_w = active.clone();
         let (token_w, lifecycle_w) = (token.clone(), lifecycle.clone());
+        let failures_w = upstream_failures.clone();
         worker = if let Ok(h) = thread_spawn(move || {
             handle_client(
                 &mut sock_w,
@@ -240,6 +255,7 @@ fn serve(args: ServeArgs) {
                 &token_w,
                 &lifecycle_w,
                 request_deadline,
+                &failures_w,
             );
             if let Ok(mut slot) = active_w.lock() {
                 *slot = None;
@@ -269,6 +285,7 @@ fn handle_client(
     token: &SecretToken,
     lifecycle: &Arc<dyn LifecycleControl>,
     request_deadline: Duration,
+    upstream_failures: &AtomicU32,
 ) {
     let started = Instant::now();
     let _ = sock.set_write_timeout(Some(IO_TIMEOUT));
@@ -299,7 +316,7 @@ fn handle_client(
                 started,
             );
         }
-        _ => relay(sock, &req, upstream_port, started),
+        _ => relay(sock, &req, upstream_port, started, upstream_failures),
     }
 }
 impl Bridge {
@@ -308,9 +325,15 @@ impl Bridge {
         self.port
     }
 
-    /// Whether the accept thread is alive and no stop was requested.
+    /// Whether the accept thread is alive, no stop was requested, and
+    /// the upstream relay has not tripped: once
+    /// [`UPSTREAM_FAILURE_LIMIT`] consecutive relays fail, the device
+    /// side is gone behind a live accept loop, so report stopped and let
+    /// lazy supervision reclaim the session.
     pub(crate) fn is_running(&self) -> bool {
-        !self.stop.load(Ordering::SeqCst) && self.handle.as_ref().is_some_and(|h| !h.is_finished())
+        !self.stop.load(Ordering::SeqCst)
+            && self.upstream_failures.load(Ordering::SeqCst) < UPSTREAM_FAILURE_LIMIT
+            && self.handle.as_ref().is_some_and(|h| !h.is_finished())
     }
 
     /// Test hook: signal each accepted client after it is installed in

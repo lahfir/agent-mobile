@@ -2,12 +2,12 @@
 //! child or an `AndroidSession` (bridge + owned forward) — behind the
 //! identical `serve` lifecycle contract.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use agent_mobile_android::{AndroidAdapter, AndroidSession};
+use agent_mobile_android::{AndroidAdapter, AndroidSession, AndroidSessionMeta};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::ios;
 use agent_mobile_core::process::{BOOT_POLL, ServeChild, boot_budget, mint_token, tcp_ready_at};
@@ -35,6 +35,15 @@ enum Backend {
     Android(Box<AndroidSession>),
 }
 
+/// Exact forward-removal record a failed `stop` keeps so Drop (or a
+/// second `stop`) retries the same removal instead of losing it.
+#[derive(Debug, Clone)]
+struct PendingForwardRemoval {
+    serial: String,
+    local_port: u16,
+    device_port: u16,
+}
+
 /// One running driver regardless of platform.
 pub struct PlatformRuntime {
     backend: Option<Backend>,
@@ -43,13 +52,8 @@ pub struct PlatformRuntime {
     device_name: Option<String>,
     url: String,
     token: String,
-    serial: Option<String>,
-    forward_port: Option<u16>,
-    device_port: Option<u16>,
-    bridge_port: Option<u16>,
-    apk_source: Option<PathBuf>,
-    emulator_pid: Option<u32>,
-    retry_forward: Option<(String, u16, u16)>,
+    android_meta: Option<AndroidSessionMeta>,
+    retry_forward: Option<PendingForwardRemoval>,
     stopped: bool,
 }
 
@@ -57,7 +61,7 @@ impl PlatformRuntime {
     /// Start a driver for `device`: iOS preserves the exact P1 serve path
     /// (boot → token → runner → bounded authenticated await); Android
     /// rejects unreachable rows, boots a shutdown AVD when that's the
-    /// selected target, then runs `start_session`. `log` receives the
+    /// selected target, then runs journaled session bring-up. `log` receives the
     /// runner/emulator output; `term` cancels the wait.
     ///
     /// # Errors
@@ -114,12 +118,7 @@ impl PlatformRuntime {
             device_name: Some(device.name().to_owned()),
             url,
             token,
-            serial: None,
-            forward_port: None,
-            device_port: None,
-            bridge_port: None,
-            apk_source: None,
-            emulator_pid: None,
+            android_meta: None,
             retry_forward: None,
             stopped: false,
         })
@@ -158,18 +157,21 @@ impl PlatformRuntime {
                 Err(cleanup) => return Err(cleanup),
             }
         }
+        let android_meta = AndroidSessionMeta {
+            serial,
+            forward_port: session.forward_port(),
+            device_port: session.device_port(),
+            bridge_port: session.local_port(),
+            apk_source: session.apk_source().to_path_buf(),
+            emulator_pid,
+        };
         Ok(Self {
             url: session.url().to_owned(),
             token: session.token().to_owned(),
             platform: Platform::Android,
             device_id: device.id().to_owned(),
             device_name: Some(device.name().to_owned()),
-            serial: Some(serial),
-            forward_port: Some(session.forward_port()),
-            device_port: Some(session.device_port()),
-            bridge_port: Some(session.local_port()),
-            apk_source: Some(session.apk_source().to_path_buf()),
-            emulator_pid,
+            android_meta: Some(android_meta),
             backend: Some(Backend::Android(Box::new(session))),
             retry_forward: None,
             stopped: false,
@@ -199,18 +201,11 @@ impl PlatformRuntime {
         e.device_name.clone_from(&self.device_name);
         match &self.backend {
             Some(Backend::Ios(child)) => e.runner_pid = Some(child.pid()),
-            Some(Backend::Android(_)) => android_entry_fields(
-                &mut e,
-                crate::platform::android_ops::AndroidMeta {
-                    serial: self.serial.as_deref(),
-                    forward_port: self.forward_port,
-                    device_port: self.device_port,
-                    bridge_port: self.bridge_port,
-                    apk_source: self.apk_source.as_deref(),
-                    emulator_pid: self.emulator_pid,
-                },
-                log,
-            ),
+            Some(Backend::Android(_)) => {
+                if let Some(meta) = &self.android_meta {
+                    android_entry_fields(&mut e, meta, log);
+                }
+            }
             None => {}
         }
         e
@@ -245,9 +240,9 @@ impl PlatformRuntime {
     /// Release only what this runtime owns: kill+wait the iOS child, or
     /// close the Android session (bridge first, then the exact forward).
     /// `stopped` flips only after a fully successful cleanup — a failed
-    /// Android close leaves the recorded `serial`/`forward_port` behind so
-    /// a second `stop` (or Drop) retries the exact removal rather than
-    /// losing the ownership record.
+    /// Android close leaves the recorded removal behind so a second
+    /// `stop` (or Drop) retries the exact forward rather than losing the
+    /// ownership record.
     ///
     /// # Errors
     /// Propagates the Android forward-removal failure.
@@ -283,21 +278,21 @@ impl PlatformRuntime {
                     Ok(())
                 }
                 Err(e) => {
-                    self.retry_forward = self
-                        .serial
-                        .clone()
-                        .zip(self.forward_port)
-                        .zip(self.device_port)
-                        .map(|((s, l), d)| (s, l, d));
+                    self.retry_forward =
+                        self.android_meta.as_ref().map(|m| PendingForwardRemoval {
+                            serial: m.serial.clone(),
+                            local_port: m.forward_port,
+                            device_port: m.device_port,
+                        });
                     Err(e)
                 }
             },
             None => {
-                let Some((serial, port, device_port)) = self.retry_forward.clone() else {
+                let Some(rec) = self.retry_forward.clone() else {
                     self.stopped = true;
                     return Ok(());
                 };
-                match remove(&serial, port, device_port) {
+                match remove(&rec.serial, rec.local_port, rec.device_port) {
                     Ok(()) => {
                         self.retry_forward = None;
                         self.stopped = true;

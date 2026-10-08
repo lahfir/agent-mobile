@@ -13,7 +13,7 @@ use crate::testkit::{FakeRunner, output};
 #[test]
 fn session_starts_and_closes_only_its_forward() -> Result<(), Failure> {
     let (adapter, runner) = adapter_with()?;
-    let session = adapter.start_session("s1")?;
+    let session = start_test_session(&adapter, "s1")?;
     assert_eq!(session.token(), TOKEN);
     assert_eq!(session.serial(), "s1");
     assert_ne!(session.forward_port(), 0);
@@ -46,7 +46,7 @@ fn session_requires_device_state() {
         PathBuf::from("emulator"),
         None,
     );
-    assert!(adapter.start_session("s1").is_err());
+    assert!(start_test_session(&adapter, "s1").is_err());
     assert_eq!(runner.calls().len(), 1);
 }
 
@@ -58,8 +58,7 @@ fn session_reports_offline_even_when_get_state_nonzero() {
         PathBuf::from("emulator"),
         None,
     );
-    let err = adapter
-        .start_session("s1")
+    let err = start_test_session(&adapter, "s1")
         .err()
         .map(|e| e.render())
         .unwrap_or_default();
@@ -79,8 +78,7 @@ fn session_reports_unauthorized_on_stderr_state() {
         PathBuf::from("emulator"),
         None,
     );
-    let err = adapter
-        .start_session("s1")
+    let err = start_test_session(&adapter, "s1")
         .err()
         .map(|e| e.render())
         .unwrap_or_default();
@@ -98,7 +96,7 @@ fn close_failure_leaves_drop_retry() -> Result<(), Failure> {
         output(true, "", ""),
         output(true, "other tcp:1 tcp:2", ""),
     ])?;
-    let session = adapter.start_session("s1")?;
+    let session = start_test_session(&adapter, "s1")?;
     assert!(session.close().is_err());
     let removes = runner
         .calls()
@@ -156,7 +154,7 @@ fn remove_owned_forward_errors_when_row_persists() {
 #[test]
 fn session_reports_running_state() -> Result<(), Failure> {
     let (adapter, _r) = adapter_with()?;
-    let session = adapter.start_session("s1")?;
+    let session = start_test_session(&adapter, "s1")?;
     assert!(session.is_running());
     session.close()?;
     Ok(())

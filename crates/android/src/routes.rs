@@ -7,10 +7,10 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent_mobile_core::contract::{Data, PROTOCOL_VERSION};
+use agent_mobile_core::contract::{Data, Envelope, PROTOCOL_VERSION, Terminate};
 use agent_mobile_core::error::ErrorCode;
 use agent_mobile_core::wire::Wire;
-use serde_json::json;
+use serde_json::{Map, json};
 
 use crate::driver::{SecretToken, is_status_envelope};
 use crate::lifecycle::{LifecycleControl, LifecycleError, valid_package};
@@ -91,6 +91,9 @@ fn gate(
         );
         return None;
     }
+    if req.body.is_empty() {
+        return Some(serde_json::Value::Object(Map::new()));
+    }
     let body: serde_json::Value = match serde_json::from_slice::<serde_json::Value>(&req.body) {
         Ok(v) if v.is_object() => v,
         _ => {
@@ -149,20 +152,32 @@ fn lifecycle_fail(sock: &mut TcpStream, verb: &str, started: Instant, err: Lifec
     }
 }
 
+/// Forward an upstream error envelope downstream, preserving its code
+/// and message; `fallback_msg` covers envelopes without an error body.
+fn forward_upstream_error(
+    sock: &mut TcpStream,
+    verb: &str,
+    started: Instant,
+    env: &Envelope,
+    fallback_msg: &str,
+) {
+    let (code, msg) = env.error.as_ref().map_or_else(
+        || ("DRIVER_ERROR".to_owned(), fallback_msg.to_owned()),
+        |e| (e.code.clone(), e.message.clone()),
+    );
+    respond(
+        sock,
+        status_for_code(&code),
+        &error_envelope(Some(verb), Some(elapsed_ms(started)), &code, &msg),
+    );
+}
+
 /// Authenticated upstream `status` before any ADB side effect.
 fn preflight_status(sock: &mut TcpStream, wire: &Wire, started: Instant) -> bool {
     match wire.call("status", &json!({})) {
         Ok(env) if is_status_envelope(&env) => true,
         Ok(env) if !env.ok => {
-            let (code, msg) = env.error.map_or_else(
-                || ("DRIVER_ERROR".to_owned(), "status failed".to_owned()),
-                |e| (e.code, e.message),
-            );
-            respond(
-                sock,
-                status_for_code(&code),
-                &error_envelope(Some("launch"), Some(elapsed_ms(started)), &code, &msg),
-            );
+            forward_upstream_error(sock, "launch", started, &env, "status failed");
             false
         }
         _ => {
@@ -224,48 +239,32 @@ fn launch_route(
             ),
         ),
         Ok(env) if !env.ok => {
-            let (code, msg) = env.error.map_or_else(
-                || ("DRIVER_ERROR".to_owned(), "snapshot failed".to_owned()),
-                |e| (e.code, e.message),
-            );
-            respond(
-                sock,
-                status_for_code(&code),
-                &error_envelope(Some("launch"), Some(elapsed_ms(started)), &code, &msg),
-            );
+            forward_upstream_error(sock, "launch", started, &env, "snapshot failed");
         }
         Ok(env) => match env.data {
-            Some(Data::Snapshot(snap)) if snap.app == bundle => match serde_json::to_value(&snap) {
-                Ok(data) => {
-                    let elapsed = elapsed_ms(started);
-                    if wants_text {
-                        let body = format!(
-                            "app={} snapshot=@{} refs={} settled={} reads={} elapsed_ms={}{}\n{}\n",
-                            snap.app,
-                            snap.snapshot_id,
-                            snap.ref_count,
-                            snap.settled,
-                            snap.reads,
-                            elapsed,
-                            if snap.complete { "" } else { " complete=false" },
-                            snap.text
-                        );
-                        let _ = sock.write_all(&http_response_typed("200 OK", &body, "text/plain"));
-                    } else {
-                        respond(sock, "200 OK", &success_envelope("launch", elapsed, &data));
-                    }
+            Some(Data::Snapshot(snap)) if snap.app == bundle => {
+                let elapsed = elapsed_ms(started);
+                if wants_text {
+                    let body = format!(
+                        "app={} snapshot=@{} refs={} settled={} reads={} elapsed_ms={}{}\n{}\n",
+                        snap.app,
+                        snap.snapshot_id,
+                        snap.ref_count,
+                        snap.settled,
+                        snap.reads,
+                        elapsed,
+                        if snap.complete { "" } else { " complete=false" },
+                        snap.text
+                    );
+                    let _ = sock.write_all(&http_response_typed("200 OK", &body, "text/plain"));
+                } else {
+                    respond(
+                        sock,
+                        "200 OK",
+                        &success_envelope("launch", elapsed, Data::Snapshot(snap)),
+                    );
                 }
-                Err(_) => respond(
-                    sock,
-                    "500 Internal Server Error",
-                    &error_envelope(
-                        Some("launch"),
-                        Some(elapsed_ms(started)),
-                        "DRIVER_ERROR",
-                        "snapshot data could not be serialized",
-                    ),
-                ),
-            },
+            }
             _ => respond(
                 sock,
                 "500 Internal Server Error",
@@ -303,15 +302,7 @@ fn terminate_route(
             return;
         }
         Ok(env) if !env.ok => {
-            let (code, msg) = env.error.map_or_else(
-                || ("DRIVER_ERROR".to_owned(), "status failed".to_owned()),
-                |e| (e.code, e.message),
-            );
-            respond(
-                sock,
-                status_for_code(&code),
-                &error_envelope(Some("terminate"), Some(elapsed_ms(started)), &code, &msg),
-            );
+            forward_upstream_error(sock, "terminate", started, &env, "status failed");
             return;
         }
         Ok(env) => match env.data {
@@ -341,11 +332,13 @@ fn terminate_route(
         &success_envelope(
             "terminate",
             elapsed_ms(started),
-            &json!({"terminated": app}),
+            Data::Terminate(Terminate { terminated: app }),
         ),
     );
 }
 
+#[cfg(test)]
+mod body_tests;
 #[cfg(test)]
 mod spec_tests;
 #[cfg(test)]

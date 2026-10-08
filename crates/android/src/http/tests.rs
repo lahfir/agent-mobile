@@ -59,6 +59,53 @@ fn dead_upstream_becomes_driver_error_envelope() -> Result<(), Failure> {
 }
 
 #[test]
+fn three_consecutive_upstream_failures_trip_liveness() -> Result<(), Failure> {
+    let (up, _rx) = fake_upstream(vec![
+        ("/status".into(), "CLOSE".into()),
+        ("/status".into(), "CLOSE".into()),
+        ("/status".into(), "CLOSE".into()),
+    ]);
+    let mut bridge = start_bridge(up, &SecretToken::new("t0k"), ctl())?;
+    let head = "POST /status HTTP/1.1\r\nAuthorization: Bearer [REDACTED]\r\nX-Agent-Mobile-Version: 1\r\n";
+    for n in 1..=2 {
+        let out = post(bridge.port(), head, "{}");
+        assert!(out.starts_with("HTTP/1.1 500"), "{out}");
+        assert!(bridge.is_running(), "tripped after only {n} failures");
+    }
+    let out = post(bridge.port(), head, "{}");
+    assert!(out.starts_with("HTTP/1.1 500"), "{out}");
+    assert!(
+        !bridge.is_running(),
+        "session still live after 3 consecutive upstream failures"
+    );
+    bridge.stop();
+    Ok(())
+}
+
+#[test]
+fn upstream_success_resets_failure_liveness_counter() -> Result<(), Failure> {
+    let (up, _rx) = fake_upstream(vec![
+        ("/status".into(), "CLOSE".into()),
+        ("/status".into(), envelope("200 OK", "{\"ok\":true}")),
+        ("/status".into(), "CLOSE".into()),
+        ("/status".into(), "CLOSE".into()),
+    ]);
+    let mut bridge = start_bridge(up, &SecretToken::new("t0k"), ctl())?;
+    let head = "POST /status HTTP/1.1\r\nAuthorization: Bearer [REDACTED]\r\nX-Agent-Mobile-Version: 1\r\n";
+    let counts = [500u16, 200, 500, 500];
+    for want in counts {
+        let out = post(bridge.port(), head, "{}");
+        assert!(out.starts_with(&format!("HTTP/1.1 {want}")), "{out}");
+    }
+    assert!(
+        bridge.is_running(),
+        "a success between failures must reset the trip counter"
+    );
+    bridge.stop();
+    Ok(())
+}
+
+#[test]
 fn stop_closes_listener_and_stalled_client() -> Result<(), Failure> {
     let mut bridge = start_bridge(1, &SecretToken::new("t0k"), ctl())?;
     let (tx, rx) = channel();
@@ -105,6 +152,22 @@ fn bridge_reports_running_then_stopped() -> Result<(), Failure> {
     assert!(bridge.is_running());
     bridge.stop();
     assert!(!bridge.is_running());
+    Ok(())
+}
+
+#[test]
+fn reply_content_length_overflow_is_rejected_not_wrapped() -> std::io::Result<()> {
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", usize::MAX);
+    let mut reader = head.as_bytes();
+    match read_reply(&mut reader) {
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+        Ok(reply) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("overflowing length accepted: {} bytes", reply.len()),
+            ));
+        }
+    }
     Ok(())
 }
 

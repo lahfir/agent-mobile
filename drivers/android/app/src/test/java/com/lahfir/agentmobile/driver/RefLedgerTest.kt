@@ -167,7 +167,7 @@ class RefLedgerTest {
         val live = read(
             node(identity = ident(text = "save", bounds = RawBounds(101, 199, 151, 241))),
         )
-        val resolved = ledger.resolve("@snap0001:e1", live)
+        val resolved = ledger.resolve("@snap0001:e1") { live }
         assertEquals("save", resolved.node.identity.text)
         assertEquals(live, resolved.baseline)
     }
@@ -178,13 +178,13 @@ class RefLedgerTest {
         val id = ident(text = "save", bounds = RawBounds(100, 200, 150, 240))
         ledger.mint(read(node(identity = id)), true, 1, 0)
         try {
-            ledger.resolve("@snap0001:e1", read(node(identity = ident(text = "save", bounds = RawBounds(102, 200, 150, 240)))))
+            ledger.resolve("@snap0001:e1") { read(node(identity = ident(text = "save", bounds = RawBounds(102, 200, 150, 240)))) }
             fail("expected STALE_REF")
         } catch (e: DriverException) {
             assertEquals("STALE_REF", e.code)
         }
         try {
-            ledger.resolve("@snap0001:e1", read(node(identity = ident(text = "different"))))
+            ledger.resolve("@snap0001:e1") { read(node(identity = ident(text = "different"))) }
             fail("expected STALE_REF")
         } catch (e: DriverException) {
             assertEquals("STALE_REF", e.code)
@@ -198,7 +198,7 @@ class RefLedgerTest {
         ledger.mint(read(node(identity = id)), true, 1, 0)
         val live = read(node(children = listOf(node(identity = id), node(identity = id))))
         try {
-            ledger.resolve("@snap0001:e1", live)
+            ledger.resolve("@snap0001:e1") { live }
             fail("expected AMBIGUOUS_TARGET")
         } catch (e: DriverException) {
             assertEquals("AMBIGUOUS_TARGET", e.code)
@@ -211,7 +211,7 @@ class RefLedgerTest {
         val id = ident(text = "x")
         ledger.mint(read(node(identity = id)), true, 1, 0)
         try {
-            ledger.resolve("@snap0001:e1", read(node(identity = id), complete = false))
+            ledger.resolve("@snap0001:e1") { read(node(identity = id), complete = false) }
             fail("expected DRIVER_ERROR")
         } catch (e: DriverException) {
             assertEquals("DRIVER_ERROR", e.code)
@@ -234,7 +234,7 @@ class RefLedgerTest {
         }
         assertEquals(17, calls)
         assertEquals("valid001", ledger.snapshotId)
-        ledger.resolve("@valid001:e1", read(node(identity = ident(text = "keep"))))
+        ledger.resolve("@valid001:e1") { read(node(identity = ident(text = "keep"))) }
     }
 
     @Test
@@ -253,7 +253,7 @@ class RefLedgerTest {
         }
         assertEquals(17, calls)
         assertEquals("first001", ledger.snapshotId)
-        ledger.resolve("@first001:e1", read(node(identity = ident())))
+        ledger.resolve("@first001:e1") { read(node(identity = ident())) }
     }
 
     @Test
@@ -350,7 +350,7 @@ class RefLedgerTest {
         val ledger = RefLedger { ids2.next() }
         ledger.mint(read(node(identity = ident(text = "keep"))), true, 1, 0)
         assertEquals("first001", ledger.snapshotId)
-        val resolved = ledger.resolve("@first001:e1", read(node(identity = ident(text = "keep"))))
+        val resolved = ledger.resolve("@first001:e1") { read(node(identity = ident(text = "keep"))) }
         assertEquals("keep", resolved.node.identity.text)
     }
 }

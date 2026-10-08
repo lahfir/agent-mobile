@@ -151,6 +151,7 @@ fn bind_failure(why: &str) -> Failure {
     Failure::local(
         format!("accessibility service {why}"),
         "enable it in Settings > Accessibility > Agent Mobile Driver; on Android 13+ \
-         first allow App Info > Allow restricted settings",
+         first allow App Info > Allow restricted settings; enabling is human-only, \
+         there is no retry loop",
     )
 }
