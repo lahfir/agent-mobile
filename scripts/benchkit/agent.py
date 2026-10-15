@@ -26,7 +26,8 @@ def parse_stream(lines, server):
         data = event.get("data", event)
         message = data.get("message", {}) if isinstance(data, dict) else {}
         if data.get("type") == "system" and data.get("subtype") == "init":
-            failed = [x.get("name") for x in data.get("mcp_servers", []) if x.get("status") != "connected"]
+            connected = {x.get("name") for x in data.get("mcp_servers", []) if x.get("status") == "connected"}
+            failed = [] if server in connected else [server]
         content = message.get("content", []) if isinstance(message, dict) else []
         for item in content:
             if item.get("type") == "tool_use":
@@ -63,7 +64,7 @@ def run_claude(goal, label, server, cwd, timeout=TIMEOUT):
         env = os.environ.copy()
         env["ENABLE_TOOL_SEARCH"] = "false"
         start = time.monotonic()
-        command = ["claude", "-p", "--safe-mode", "--model", CLAUDE_MODEL, "--mcp-config", str(config),
+        command = ["claude", "-p", "--setting-sources", "", "--disable-slash-commands", "--model", CLAUDE_MODEL, "--mcp-config", str(config),
                    "--strict-mcp-config", "--tools", "", "--allowedTools", f"mcp__{label}",
                    "--no-session-persistence", "--output-format", "stream-json", "--verbose", goal]
         proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

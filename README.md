@@ -143,6 +143,8 @@ Smoke check, listing the tools:
 npx @modelcontextprotocol/inspector@2.11.0 --cli agent-mobile mcp --method tools/list
 ```
 
+The Inspector does not pass your shell environment to the server. Give each variable the server needs with `-e`, for example `-e ANDROID_HOME="$ANDROID_HOME"`.
+
 ## Environment
 
 | Variable | Effect |

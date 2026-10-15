@@ -240,6 +240,8 @@ class HarnessTests(unittest.TestCase):
     def test_server_that_fails_to_connect_is_a_fault_not_a_failed_task(self):
         init = json.dumps({"type": "system", "subtype": "init", "mcp_servers": [{"name": "s", "status": "failed"}]})
         self.assertEqual(agent.parse_stream([init], "s")["failed"], ["s"])
+        empty = json.dumps({"type": "system", "subtype": "init", "mcp_servers": []})
+        self.assertEqual(agent.parse_stream([empty], "s")["failed"], ["s"])
 
 
 if __name__ == "__main__":
