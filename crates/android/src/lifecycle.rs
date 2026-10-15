@@ -196,9 +196,19 @@ impl LifecycleControl for AdbLifecycle {
         }
         let component = self.resolve(Some(package), CAT_LAUNCHER)?;
         self.shell("force-stop", &["am", "force-stop", package])?;
+        // force-stop leaves other packages' activities in the app's task
+        // (Settings search lives in settings.intelligence); without
+        // clear-task `am start` resumes that foreign top activity.
         self.shell_with(
             "start",
-            &["am", "start", "-W", "-n", &component],
+            &[
+                "am",
+                "start",
+                "-W",
+                "--activity-clear-task",
+                "-n",
+                &component,
+            ],
             APP_START_TIMEOUT,
         )?;
         Ok(())

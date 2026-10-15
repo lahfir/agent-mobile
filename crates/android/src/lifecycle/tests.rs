@@ -52,6 +52,11 @@ fn launch_resolves_stops_and_starts_in_order() -> Result<(), LifecycleError> {
         "{:?}",
         calls[2]
     );
+    assert!(
+        calls[2][3].contains("'--activity-clear-task'"),
+        "a restart must not resume a foreign top activity: {:?}",
+        calls[2]
+    );
     Ok(())
 }
 
