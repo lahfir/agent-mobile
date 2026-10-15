@@ -51,6 +51,7 @@ class DriverTest {
         var readGate: java.util.concurrent.CountDownLatch? = null,
         var readEntered: java.util.concurrent.CountDownLatch? = null,
     ) : DriverPlatform {
+        var failures = mutableListOf<DriverException>()
         var readCalls = 0
         val nodeActions = mutableListOf<NodeAction>()
         val gestures = mutableListOf<GestureSpec>()
@@ -67,6 +68,7 @@ class DriverTest {
                 }
             }
             fail?.let { throw it }
+            if (failures.isNotEmpty()) throw failures.removeAt(0)
             val tree = trees.getOrElse(readCalls) { trees.last() }
             readCalls += 1
             return tree.copy(readAtNanos = now())
@@ -208,19 +210,48 @@ class DriverTest {
     }
 
     @Test
-    fun snapshotSettleUsesBaselineDonationOnSecondCall() {
+    fun snapshotDoesNotDonateEarlierReadAsSettled() {
         var now = 200_000_000L
         val platform = FakePlatform(trees = listOf(read(signature = "same", atNanos = 0)), now = { now })
         val driver = Driver(
             platform,
             Settler(clock = { now }, sleeper = { now += it }),
         )
-        val first = driver.handle("snapshot", JSONObject())
-        assertEquals(2, first.getInt("reads"))
+        assertEquals(2, driver.handle("snapshot", JSONObject()).getInt("reads"))
         now += 200_000_000L
-        val second = driver.handle("snapshot", JSONObject())
-        assertEquals(1, second.getInt("reads"))
-        assertTrue(second.getBoolean("settled"))
+        assertEquals(2, driver.handle("snapshot", JSONObject()).getInt("reads"))
+    }
+
+    @Test
+    fun globalWaitsOutMissingWindowAfterAction() {
+        var now = 0L
+        val platform = FakePlatform(trees = listOf(read(app = "com.home")), now = { now })
+        platform.failures = mutableListOf(
+            DriverException("DRIVER_ERROR", "no active accessibility window; focus a foreground app and retry"),
+        )
+        val driver = Driver(platform, Settler(clock = { now }, sleeper = { now += it }))
+        val out = driver.handle("home", JSONObject())
+        assertEquals(listOf(GlobalAction.HOME), platform.globals)
+        assertEquals("com.home", out.getString("app"))
+        assertTrue(out.getBoolean("settled"))
+    }
+
+    @Test
+    fun globalFailsWhenNoWindowAppearsBeforeDeadline() {
+        var now = 0L
+        val platform = FakePlatform(
+            trees = listOf(read()),
+            fail = DriverException("DRIVER_ERROR", "no active accessibility window; focus a foreground app and retry"),
+            now = { now },
+        )
+        val driver = Driver(platform, Settler(clock = { now }, sleeper = { now += it }))
+        try {
+            driver.handle("home", JSONObject())
+            fail("expected DriverException")
+        } catch (e: DriverException) {
+            assertEquals("DRIVER_ERROR", e.code)
+        }
+        assertTrue(now >= 3_000_000_000L)
     }
 
     private fun mintedDriver(platform: FakePlatform): Pair<Driver, String> {
