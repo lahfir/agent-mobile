@@ -20,6 +20,7 @@ class TreeReaderTest {
         override var text: String? = null,
         override var contentDescription: String? = null,
         override var hintText: String? = null,
+        override var isShowingHintText: Boolean = false,
         override var isPassword: Boolean = false,
         override var isEditable: Boolean = false,
         override var isEnabled: Boolean = true,
@@ -268,6 +269,18 @@ class TreeReaderTest {
     }
 
     @Test
+    fun fieldShowingHintReportsNoValue() {
+        val root = fake {
+            children = listOf(
+                fake { className = "android.widget.EditText"; isEditable = true; text = "Search here"; hintText = "Search here"; isShowingHintText = true },
+            )
+        }
+        val field = read(root).root.children[0]
+        assertEquals("Search here", field.name)
+        assertEquals("", field.value)
+    }
+
+    @Test
     fun actionsFollowAdvertisedCapabilities() {
         val root = fake {
             children = listOf(
@@ -416,6 +429,19 @@ class TreeReaderTest {
 }
 
 class AppendWithReturnTest {
+
+    @Test
+    fun hintShownAsTextIsNotAppendedTo() {
+        val sets = mutableListOf<String>()
+        val ok = appendWithReturn(
+            "abc",
+            currentValue = { textExcludingHint("Search here", showingHint = true) },
+            setText = { sets += it; true },
+            imeEnter = null,
+        )
+        assertTrue(ok)
+        assertEquals(listOf("abc"), sets)
+    }
 
     @Test
     fun newlineUsesImeEnterWhenAvailable() {
