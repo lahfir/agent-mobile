@@ -93,6 +93,8 @@ def cold_android(b):
         deadline = time.time() + 60
         while android_serial(b.adb, avd) and time.time() < deadline:
             time.sleep(2)
+        if android_serial(b.adb, avd):
+            raise SystemExit(f"emulator {avd} survived `emu kill`; aborting before it is timed as a cold boot")
     OUT.mkdir(exist_ok=True)
     log = (OUT / "emulator.log").open("w")
     start = time.perf_counter()

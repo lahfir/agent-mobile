@@ -52,6 +52,20 @@ class SettlerTest {
     }
 
     @Test
+    fun missingWindowMidSettleIsWaitedOutAndBreaksStability() {
+        val clock = Clock()
+        var calls = 0
+        val result = settler(clock).settle({ true }) {
+            calls += 1
+            if (calls == 2) throw DriverException("DRIVER_ERROR", "no window")
+            read("S", clock.time())
+        }
+        assertTrue(result.settled)
+        assertEquals(4, calls)
+        assertEquals(3, result.reads)
+    }
+
+    @Test
     fun missingWindowIsWaitedOutWhenTolerated() {
         val clock = Clock()
         var calls = 0

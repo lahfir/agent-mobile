@@ -50,7 +50,7 @@ def _sweep_serves(device):
     out = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
     for line in out.splitlines():
         parts = line.split(None, 1)
-        if len(parts) < 2 or f"agent-mobile serve {device}" not in parts[1]:
+        if len(parts) < 2 or not _is_serve(parts[1], device):
             continue
         pid = int(parts[0])
         with contextlib.suppress(ProcessLookupError):
@@ -61,3 +61,9 @@ def _sweep_serves(device):
             os.kill(pid, signal.SIGKILL)
         if not _wait_gone(pid, 5):
             raise SystemExit(f"orphan serve pid {pid} refuses to die; aborting")
+
+
+def _is_serve(args, device):
+    """True when `args` is a serve for exactly `device`, not a longer key that starts with it."""
+    argv = args.split()
+    return any(a.endswith("agent-mobile") and argv[i + 1:i + 3] == ["serve", device] for i, a in enumerate(argv))

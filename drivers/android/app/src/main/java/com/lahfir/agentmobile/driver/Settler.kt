@@ -18,25 +18,29 @@ internal class Settler(
     },
 ) {
 
-    /** [tolerate] marks read failures worth waiting out until the deadline, e.g. a window still opening. */
+    /** [tolerate] marks read failures worth waiting out until the deadline, e.g. a window still opening;
+     *  a tolerated gap between two reads means they cannot prove stability. */
     fun settle(
         tolerate: (DriverException) -> Boolean = { false },
         read: () -> TreeRead,
     ): SettleResult {
         val start = clock()
         val deadline = start + timeoutNanos
-        var previous: TreeRead
-        while (true) {
-            try {
-                previous = read()
-                break
-            } catch (e: DriverException) {
-                if (!tolerate(e) || clock() >= deadline) {
-                    throw e
+        var interrupted = false
+        fun attempt(): TreeRead {
+            while (true) {
+                try {
+                    return read()
+                } catch (e: DriverException) {
+                    if (!tolerate(e) || clock() >= deadline) {
+                        throw e
+                    }
+                    interrupted = true
+                    waitUntil((clock() + gapNanos).coerceAtMost(deadline))
                 }
-                waitUntil((clock() + gapNanos).coerceAtMost(deadline))
             }
         }
+        var previous = attempt()
         var reads = 1
         var lastReadWall = clock()
         while (true) {
@@ -45,10 +49,12 @@ internal class Settler(
             if (now >= deadline) {
                 return SettleResult(previous, false, reads, elapsedMs(start))
             }
-            val next = read()
+            interrupted = false
+            val next = attempt()
             reads += 1
             lastReadWall = clock()
-            if (next.signature == previous.signature &&
+            if (!interrupted &&
+                next.signature == previous.signature &&
                 next.readAtNanos - previous.readAtNanos >= gapNanos
             ) {
                 return SettleResult(next, true, reads, elapsedMs(start))

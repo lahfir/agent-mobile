@@ -121,6 +121,29 @@ class StopDriverTests(unittest.TestCase):
             driver.stop_driver("k", state_path=pathlib.Path(tmp) / "absent.json")
 
 
+class IsServeTests(unittest.TestCase):
+    def test_matches_the_exact_device_only(self):
+        self.assertTrue(driver._is_serve("/x/target/release/agent-mobile serve android:avd:api37", "android:avd:api37"))
+        self.assertFalse(driver._is_serve("/x/agent-mobile serve android:avd:api37-other", "android:avd:api37"))
+        self.assertFalse(driver._is_serve("vim agent-mobile-serve-notes android:avd:api37", "android:avd:api37"))
+
+
+class AndroidColdShutdownTests(unittest.TestCase):
+    def test_a_surviving_emulator_aborts_before_a_boot_is_timed(self):
+        from unittest import mock
+        from scripts.benchkit import cold
+        b = mock.Mock(avd="api37", selected_kind="emulator", adb="adb", emulator="emu", device="d")
+        with mock.patch.object(cold, "stop_driver"), mock.patch.object(cold, "_sweep_serves"), \
+                mock.patch.object(cold, "android_serial", return_value="emulator-5554"), \
+                mock.patch.object(cold.subprocess, "run"), mock.patch.object(cold.subprocess, "Popen") as popen, \
+                mock.patch.object(cold.time, "sleep"), mock.patch.object(cold.time, "perf_counter", return_value=0), \
+                mock.patch.dict(cold.os.environ, {"AGENT_MOBILE_BOOT_BUDGET_SECS": "0"}), \
+                mock.patch.object(cold.time, "time", side_effect=[0, 0, 61, 61]):
+            with self.assertRaises(SystemExit):
+                cold.cold_android(b)
+        popen.assert_not_called()
+
+
 class ConfShapeTests(unittest.TestCase):
     def test_every_platform_conf_has_every_key(self):
         for platform, conf in config.CONF.items():
