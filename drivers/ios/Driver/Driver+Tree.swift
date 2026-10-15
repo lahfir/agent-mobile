@@ -4,7 +4,7 @@ import UIKit
 extension Driver {
     // Three-read tree-hash idle check with a finite cap (Apple's own
     // quiescence wait is unbounded). Reads are spaced by at least `gap`.
-    func settledSnapshot(timeout: TimeInterval = 3, baseline: (h: Int, at: Date)? = nil, target: String? = nil) throws -> [String: Any] {
+    func settledSnapshot(timeout: TimeInterval = 3, target: String? = nil) throws -> [String: Any] {
         let gap: TimeInterval = 0.15
         let a = app(target ?? bundle)
         var alert: XCUIElement?

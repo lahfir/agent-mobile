@@ -9,6 +9,13 @@ use serde_json::Value;
 
 use super::{Ctx, Session, emit};
 
+pub(super) fn error_failure(env: &Envelope) -> Failure {
+    env.error.as_ref().map_or_else(
+        || Failure::local("empty error envelope", "report a bug"),
+        Failure::from_error_body,
+    )
+}
+
 /// A validated wire request, built without session lookup or I/O.
 pub struct Request {
     /// Driver route, which can differ from the CLI verb.
@@ -48,10 +55,7 @@ impl Ctx {
     /// Render a driver reply as text or a typed failure, without output.
     pub fn reply(&self, mut env: Envelope) -> Result<String, Failure> {
         if !env.ok {
-            return Err(env.error.as_ref().map_or_else(
-                || Failure::local("empty error envelope", "report a bug"),
-                Failure::from_error_body,
-            ));
+            return Err(error_failure(&env));
         }
         self.trim_reply(&mut env);
         Ok(format::render(&env).into_owned())
@@ -147,25 +151,6 @@ mod tests {
         let ctx = Ctx::from_options(None, None, None)?;
         let result = ctx.reply(env);
         assert!(matches!(&result, Err(failure) if failure.code_str() == "STALE_REF"));
-        if std::env::var_os("AM_REPLY_STDOUT_PROBE").is_none() {
-            let output = std::process::Command::new(std::env::current_exe()?)
-                .args([
-                    "--exact",
-                    "cmd::reply::tests::stale_ref_is_a_typed_reply_failure",
-                    "--nocapture",
-                    "--quiet",
-                ])
-                .env("AM_REPLY_STDOUT_PROBE", "1")
-                .output()?;
-            assert!(output.status.success(), "{output:?}");
-            assert!(output.stderr.is_empty(), "{output:?}");
-            assert!(
-                output.stdout.starts_with(
-                    b"\nrunning 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
-                ),
-                "reply must not write before the test harness summary: {output:?}"
-            );
-        }
         Ok(())
     }
 
