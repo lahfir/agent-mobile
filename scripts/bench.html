@@ -141,6 +141,30 @@ function stats(samples) {
 }
 const loop = (run) => run.samples.filter((s) => s.i != null && !["soak", "stale", "scenario"].includes(s.v));
 const all = (run) => Object.assign(stats(run.samples.filter((s) => s.v !== "tree" && s.v !== "soak")), stats(loop(run)));
+function agentReport() {
+  const rows = RUN.agent_tasks || [], servers = [...new Set(rows.map((x) => x.server))];
+  const usable = (server) => rows.filter((x) => x.server === server && x.status !== "invalid");
+  const value = (server, field) => {
+    if (field === "invalid") return rows.filter((x) => x.server === server && x.status === "invalid").length;
+    const xs = usable(server);
+    if (field === "success") return xs.length ? xs.filter((x) => x.status === "success").length / xs.length * 100 : null;
+    if (field === "steps") return xs.length ? mean(xs.map((x) => x.steps).filter((x) => x != null)) : null;
+    if (field === "stale") { const ys = xs.map((x) => x.stale_refs).filter((x) => x != null); return ys.length ? mean(ys) : null; }
+    return xs.length ? mean(xs.map((x) => x.wall_ms).filter((x) => x != null)) : null;
+  };
+  const colors = ["#4F55F0", "#E0584F", "#8B5CF6", "#D4861A", "#D946C8"];
+  const metric = (title, field, unit, digits = 1) => {
+    const items = servers.map((name, i) => ({ name, v: value(name, field) ?? 0, c: colors[i % colors.length] }));
+    const top = Math.max(1, ...items.map((x) => x.v));
+    const bars = items.map((x) => `<div class="rname">${x.name}</div><div class="track"><div class="stackh" style="width:calc((100% - 110px) * ${x.v / top})"><div class="seg" style="flex:1;background:${x.c}"></div></div><span class="rval">${x.v.toFixed(digits)} ${unit}</span></div>`).join("");
+    return slide(title, "by server", "var(--observe)", `<div class="body full"><div class="rows fill">${bars}</div></div>`);
+  };
+  const foot = `<div class="foot"><span>Claude ${RUN.meta?.claude || "—"} · model ${RUN.meta?.model || "—"}</span><span>${RUN.meta?.stamp || "—"} · ${rows.length} runs</span></div>`;
+  const table = `<details open><summary>All numbers</summary><table><tr><th>server</th><th>platform</th><th>task</th><th>seed</th><th>outcome</th><th>steps</th><th>stale refs</th><th>wall time</th><th>cause</th></tr>${rows.map((x) => `<tr><td>${x.server}</td><td>${x.platform}</td><td>${x.task}</td><td>${x.seed}</td><td>${x.status}</td><td>${x.steps ?? "—"}</td><td>${x.stale_refs ?? "n/a"}</td><td>${ms(x.wall_ms)}</td><td>${x.cause || x.reason || ""}</td></tr>`).join("")}</table></details>`;
+  document.body.insertAdjacentHTML("beforeend", [metric("How often does the task succeed?", "success", "%"), metric("How many tool calls per task?", "steps", "steps"), metric("How many stale references?", "stale", "refs"), metric("How long does each task take?", "wall", "ms"), metric("How many runs were invalid?", "invalid", "runs", 0), table].join(""));
+  document.querySelectorAll(".card .foot").forEach((x) => x.remove());
+  document.querySelectorAll(".slide .card").forEach((x) => x.insertAdjacentHTML("beforeend", foot));
+}
 const coldTotal = (run) => run?.cold?.length ? mean(run.cold.map((c) => c.boot + c.driver + c.snapshot)) : null;
 const settledRate = (run) => { const xs = run.samples.filter((s) => s.ok && s.settled != null); return xs.length ? xs.filter((s) => s.settled).length / xs.length : null; };
 const staleOf = (run) => { const st = run.samples.filter((s) => s.v === "stale"); return [st.filter((s) => s.err === "STALE_REF").length, st.length]; };
@@ -154,6 +178,8 @@ function delta(now, then, lowerIsBetter = true) {
   return `<span class="delta ${good ? "good" : "bad"}">${d < 0 ? "▼" : "▲"} ${Math.abs(d * 100).toFixed(0)} %</span>`;
 }
 
+if (RUN.agent_tasks) agentReport();
+else {
 const S = all(RUN), B = BASE ? all(BASE) : null, M = RUN.meta || {};
 const FOOT = `<div class="foot"><span><b>agent-mobile</b> ${M.cli?.replace("agent-mobile ", "v") ?? ""} · ${M.device ?? "—"} · ${M.platform === "android" ? "Android" : "iOS"} ${M.os ?? "—"}</span>
   <span>${M.sha ?? ""}${M.dirty ? "+dirty" : ""} · ${M.runs ?? "—"} runs · ${M.stamp ?? ""}${BASE ? ` · vs ${BASE.meta?.sha ?? "base"}` : ""}</span></div>`;
@@ -382,6 +408,7 @@ document.addEventListener("mousemove", (e) => {
   tip.style.left = `${Math.min(e.clientX + 16, innerWidth - tip.offsetWidth - 12)}px`;
   tip.style.top = `${e.clientY + 16}px`;
 });
+}
 </script>
 </body>
 </html>

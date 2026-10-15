@@ -27,3 +27,10 @@ def render(run, base, path):
     html = REPORT_TEMPLATE.read_text().replace("/*DATA*/", data)
     path.write_text(html)
     print(f"report: {path}")
+
+
+def render_agent(run, path):
+    data = f"const RUN = {json.dumps(run)};\nconst BASE = null;"
+    html = REPORT_TEMPLATE.read_text().replace("/*DATA*/", data)
+    path.write_text(html)
+    print(f"report: {path}")
