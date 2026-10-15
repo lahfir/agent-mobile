@@ -31,10 +31,7 @@ fn snapshot(
     env: &agent_mobile_core::contract::Envelope,
 ) -> Result<&agent_mobile_core::contract::Snapshot, Failure> {
     if !env.ok {
-        return Err(env.error.as_ref().map_or_else(
-            || Failure::local("empty error envelope", "report a bug"),
-            Failure::from_error_body,
-        ));
+        return Err(super::reply::error_failure(env));
     }
     match env.data.as_ref() {
         Some(Data::Snapshot(value)) => Ok(value.as_ref()),

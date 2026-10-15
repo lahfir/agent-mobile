@@ -42,8 +42,7 @@ extension Driver {
     // Ref-to-element twin of resolve() for the verbs XCTest only offers on
     // XCUIElement (pinch, twoFingerTap). Same ledger, same
     // STALE_REF/AMBIGUOUS_TARGET contract, matched on type + identifier +
-    // label + frame with no isHittable reads (KTD2). The returned read seeds
-    // the settle baseline like resolve()'s does.
+    // label + frame with no isHittable reads (KTD2).
     func element(_ any: Any?) throws -> (el: XCUIElement, read: (h: Int, at: Date)) {
         let (ref, id) = try lookupIdent(any)
         let a = alertTarget ?? app()
