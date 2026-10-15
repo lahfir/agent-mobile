@@ -244,7 +244,7 @@ U1, U3, and U6 start together. U6 builds against its stub server and needs U2 on
 - **Patterns to follow:** the fake clock and sleeper in `SettlerTest.kt`; the interrupted-read rule already in `Settler.kt`.
 - **Test scenarios:**
   - Three equal reads a gap apart settle with `reads == 3`.
-  - Two equal reads then a different read then two equal reads settle only after the last, with `reads == 5`.
+  - Two equal reads, then a different read, then two more equal to it settle at the fifth read, with `reads == 5`.
   - A tree that changes on every read returns `settled:false` at the 3 s deadline with the last read.
   - A tolerated missing-window gap between reads resets the match count.
 - **Verification:** the Android unit tests and lint pass; the iOS change is proven by the simulator CI job and the U7 live run, since the iOS driver has no unit-test target.
