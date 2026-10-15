@@ -75,8 +75,11 @@ def run_claude(goal, label, server, cwd, timeout=TIMEOUT):
             os.killpg(proc.pid, signal.SIGKILL)
             stdout, _ = proc.communicate()
             out = stdout or (exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout) or ""
-            return {"status": "success_false", "reason": "timeout", "wall_ms": timeout * 1000,
-                    **parse_stream(out.splitlines(), label)}
+            parsed = parse_stream(out.splitlines(), label)
+            if parsed["failed"]:
+                return {"status": "invalid", "cause": "server failed to start: " + ", ".join(parsed["failed"]),
+                        "wall_ms": timeout * 1000, **parsed}
+            return {"status": "success_false", "reason": "timeout", "wall_ms": timeout * 1000, **parsed}
         elapsed = (time.monotonic() - start) * 1000
         parsed = parse_stream(stdout.splitlines(), label)
         final = parsed["final"]
@@ -97,8 +100,8 @@ def fill(command, values, device):
     if argv[0] != "adb":
         return argv
     adb = android_sdk()[0]
-    avd = device.rsplit(":", 1)[-1] if device and device.startswith("android:avd:") else None
-    serial = android_serial(adb, avd) if avd else None
+    key = device.split(":", 1)[1] if device and device.startswith("android:") else ""
+    serial = android_serial(adb, key[4:]) if key.startswith("avd:") else key or None
     if not serial:
         raise OSError(f"could not resolve Android device serial for {device}")
     return [adb, "-s", serial, *argv[1:]]

@@ -124,6 +124,25 @@ class HarnessTests(unittest.TestCase):
             agent.android_sdk, agent.android_serial = original, original_serial
         self.assertEqual(command, ["/sdk/adb", "-s", "emulator-5554", "shell", "settings get x"])
 
+    def test_fill_passes_a_serial_key_straight_to_adb(self):
+        with mock.patch.object(agent, "android_sdk", return_value=("/sdk/adb", "/sdk/emulator")):
+            command = agent.fill(["adb", "shell", "id"], {}, "android:emulator-5556")
+        self.assertEqual(command, ["/sdk/adb", "-s", "emulator-5556", "shell", "id"])
+
+    def test_timeout_with_a_missing_server_is_invalid(self):
+        init = json.dumps({"type": "system", "subtype": "init", "mcp_servers": []})
+        class Process:
+            pid = 123
+            returncode = -9
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("claude", timeout)
+                return init + "\n", ""
+        with mock.patch.object(agent.subprocess, "Popen", return_value=Process()), \
+             mock.patch.object(agent.os, "killpg"):
+            result = agent.run_claude("goal", "server-a", {"command": "stub"}, "/tmp", timeout=1)
+        self.assertEqual(result["status"], "invalid")
+
     def test_reset_device_runs_each_command_and_reports_failure(self):
         seen = []
         task = {"reset": {"ios": [["one", "{a}"], ["two"]]}}
