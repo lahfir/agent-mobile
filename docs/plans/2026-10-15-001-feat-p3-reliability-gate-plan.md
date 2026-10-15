@@ -204,7 +204,7 @@ U1, U3, and U6 start together. U6 builds against its stub server and needs U2 on
   - Every existing `tests/cli_*.rs` case passes unchanged, proving byte-identical CLI output and exit codes.
   - A unit test calls the reply function with a recorded snapshot fixture and asserts the returned text equals the CLI's printed text.
   - A unit test calls the reply function with a `STALE_REF` error body and asserts a `Failure` whose `code_str()` is `STALE_REF` and nothing reaches stdout.
-  - The `hold` builder rejects a non-finite duration and the `pinch` builder rejects scale 1.0 without any wire call.
+  - The `hold` builder rejects a non-finite duration and the `pinch` builder rejects a non-finite scale without any wire call; a near-1 scale still reaches the driver, which owns that `BAD_REQUEST` (PRD §5.2).
 - **Verification:** the workspace test suite and the source rules pass with no CLI behavior change.
 
 ### U2. `agent-mobile mcp` stdio server
