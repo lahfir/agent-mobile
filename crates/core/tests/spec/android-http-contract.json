@@ -1,0 +1,311 @@
+{
+  "version": "1",
+  "token": "tok",
+  "request_line": "POST /status HTTP/1.1",
+  "base_headers": "Authorization: Bearer tok\r\nX-Agent-Mobile-Version: 1\r\n",
+  "head_cap": 1048576,
+  "body_cap": 16777216,
+  "error_fixtures": [
+    {
+      "file": "android-error-unauthorized.json",
+      "status": 401
+    },
+    {
+      "file": "android-error-bad-request.json",
+      "status": 409
+    },
+    {
+      "file": "android-error-stale.json",
+      "status": 409
+    },
+    {
+      "file": "android-error-ambiguous.json",
+      "status": 409
+    },
+    {
+      "file": "android-error-unknown-command.json",
+      "status": 409
+    },
+    {
+      "file": "android-error-version-mismatch.json",
+      "status": 409
+    }
+  ],
+  "cases": [
+    {
+      "name": "json_body_http_1_1",
+      "framing_headers": "Content-Length: 2\r\n",
+      "body": "{}",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "json_body_http_1_0",
+      "request_line": "POST /status HTTP/1.0",
+      "framing_headers": "Content-Length: 2\r\n",
+      "body": "{}",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "request_line_whitespace",
+      "request_line": "POST   /status\tHTTP/1.1",
+      "framing_headers": "Content-Length: 2\r\n",
+      "body": "{}",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "absent_content_length_means_empty_body",
+      "framing_headers": "",
+      "body": "",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "zero_content_length",
+      "framing_headers": "Content-Length: 0\r\n",
+      "body": "",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "content_length_name_is_case_insensitive",
+      "framing_headers": "cOnTeNt-LeNgTh: 2\r\n",
+      "body": "{}",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "leading_zero_content_length",
+      "framing_headers": "Content-Length: 0002\r\n",
+      "body": "{}",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "content_length_counts_utf8_bytes",
+      "framing_headers": "Content-Length: 13\r\n",
+      "body": "{\"text\":\"\u00e9\"}",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "reads_only_declared_body",
+      "framing_headers": "Content-Length: 2\r\n",
+      "body": "{}ignored",
+      "expected_body": "{}",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "duplicate_content_length_equal",
+      "framing_headers": "Content-Length: 0\r\nContent-Length: 0\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "duplicate_content_length_conflicting",
+      "framing_headers": "Content-Length: 2\r\nContent-Length: 0\r\n",
+      "body": "{}",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "duplicate_content_length_mixed_case",
+      "framing_headers": "Content-Length: 2\r\ncontent-length: 2\r\n",
+      "body": "{}",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "chunked_without_content_length",
+      "framing_headers": "Transfer-Encoding: chunked\r\n",
+      "body": "2\r\n{}\r\n0\r\n\r\n",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "chunked_with_content_length",
+      "framing_headers": "Content-Length: 2\r\nTransfer-Encoding: chunked\r\n",
+      "body": "{}",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "unsupported_transfer_encoding",
+      "framing_headers": "transfer-encoding: identity\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "negative_content_length",
+      "framing_headers": "Content-Length: -1\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "nonnumeric_content_length",
+      "framing_headers": "Content-Length: nope\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "signed_content_length_is_not_decimal_framing",
+      "framing_headers": "Content-Length: +2\r\n",
+      "body": "{}",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "comma_separated_content_length",
+      "framing_headers": "Content-Length: 2,2\r\n",
+      "body": "{}",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "overflowing_content_length",
+      "framing_headers": "Content-Length: 18446744073709551616\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "body_exceeds_cap",
+      "framing_headers": "Content-Length: 16777217\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "truncated_body",
+      "framing_headers": "Content-Length: 2\r\n",
+      "body": "{",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "malformed_header",
+      "framing_headers": "NoColonHere\r\nContent-Length: 0\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "empty_header_name",
+      "framing_headers": ": value\r\nContent-Length: 0\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "short_request_line",
+      "request_line": "POST /status",
+      "framing_headers": "Content-Length: 0\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "long_request_line",
+      "request_line": "POST /status HTTP/1.1 extra",
+      "framing_headers": "Content-Length: 0\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "unsupported_http_version",
+      "request_line": "POST /status HTTP/2",
+      "framing_headers": "Content-Length: 0\r\n",
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "head_exactly_at_cap",
+      "framing_headers": "X-Pad: {pad}\r\nContent-Length: 0\r\n",
+      "head_bytes": 1048576,
+      "body": "",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "head_exceeds_cap",
+      "framing_headers": "X-Pad: {pad}\r\nContent-Length: 0\r\n",
+      "head_bytes": 1048577,
+      "body": "",
+      "valid_frame": false,
+      "status": 409,
+      "handler_calls": 0,
+      "error_code": "BAD_REQUEST"
+    },
+    {
+      "name": "authorization_uses_first_value_like_host",
+      "framing_headers": "Authorization: Bearer wrong\r\nContent-Length: 0\r\n",
+      "body": "",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    },
+    {
+      "name": "version_uses_first_value_like_host",
+      "framing_headers": "X-Agent-Mobile-Version: 2\r\nContent-Length: 0\r\n",
+      "body": "",
+      "valid_frame": true,
+      "status": 200,
+      "handler_calls": 1
+    }
+  ]
+}

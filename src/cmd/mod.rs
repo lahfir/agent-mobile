@@ -27,7 +27,6 @@ use serde_json::Value;
 use agent_mobile_core::contract::{Data, Envelope, Ref, trim_snapshot};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::format;
-use agent_mobile_core::ios;
 use agent_mobile_core::state::StateStore;
 use agent_mobile_core::wire::Wire;
 
@@ -47,18 +46,47 @@ pub struct Ctx {
 pub struct Session {
     url: String,
     token: String,
+    android: bool,
 }
 
 impl Session {
     /// Build a session straight from a URL and token (serve's own calls).
     #[must_use]
     pub fn new(url: String, token: String) -> Self {
-        Self { url, token }
+        Self {
+            url,
+            token,
+            android: false,
+        }
+    }
+
+    /// Build a session against the Android bridge: transport failures
+    /// render the bridge/`adb` checklist instead of the iOS one.
+    #[must_use]
+    pub fn new_android(url: String, token: String) -> Self {
+        Self {
+            url,
+            token,
+            android: true,
+        }
+    }
+
+    /// The wire client for this session's platform.
+    fn wire(&self, timeout: Option<std::time::Duration>) -> Wire {
+        let wire = match timeout {
+            Some(t) => Wire::with_timeout(&self.url, &self.token, t),
+            None => Wire::new(&self.url, &self.token),
+        };
+        if self.android {
+            wire.for_android()
+        } else {
+            wire
+        }
     }
 
     /// One driver call with the standard timeout.
     pub fn call(&self, verb: &str, body: &Value) -> Result<Envelope, Failure> {
-        Wire::new(&self.url, &self.token).call(verb, body)
+        self.wire(None).call(verb, body)
     }
 
     /// One driver call with an explicit timeout — for verbs whose
@@ -70,7 +98,7 @@ impl Session {
         body: &Value,
         timeout: std::time::Duration,
     ) -> Result<Envelope, Failure> {
-        Wire::with_timeout(&self.url, &self.token, timeout).call(verb, body)
+        self.wire(Some(timeout)).call(verb, body)
     }
 }
 
@@ -102,13 +130,25 @@ impl Ctx {
     /// the recorded session's pid is dead — `resolve` reconciles stale
     /// entries to a lazy boot instead of a wire failure. The stale entry
     /// stays on disk for `serve` to reclaim: its `runner_pid` reaps any
-    /// orphaned runner still holding the port (KTD7).
+    /// orphaned runner still holding the port (KTD7). State keys are
+    /// canonical `platform:id` (legacy pre-upgrade rows are iOS display
+    /// names, and env-override resolves carry no key), so only an
+    /// `android:` key selects the Android transport checklist.
     fn ready_session(&self) -> Result<Option<Session>, Failure> {
         let Some(r) = self.store.resolve(self.device.as_deref())? else {
             return Ok(None);
         };
         let token = r.token().to_owned();
-        Ok(Some(Session::new(r.url, token)))
+        let android = r
+            .device
+            .as_deref()
+            .is_some_and(|d| d.starts_with("android:"));
+        let session = if android {
+            Session::new_android(r.url, token)
+        } else {
+            Session::new(r.url, token)
+        };
+        Ok(Some(session))
     }
 
     /// Emit one reply: honor `--max-depth`, then write text or JSON to
@@ -158,22 +198,34 @@ fn canonical_device(cli: &Cli, store: &StateStore) -> Result<Option<String>, Fai
     let Some(raw) = cli.device.as_deref().filter(|_| flag_counts) else {
         return Ok(None);
     };
-    let live = store
-        .entry(raw)
-        .is_some_and(|e| agent_mobile_core::process::pid_alive(e.pid));
-    let canonical = if live {
-        raw.to_owned()
-    } else {
-        ios::find_device(raw)?
-            .ok_or_else(|| {
-                Failure::usage(format!(
-                    "no device {raw:?}; `agent-mobile devices` lists reachable devices"
-                ))
-            })?
-            .name
-    };
-    store.remember_device(&canonical)?;
-    Ok(Some(canonical))
+    Ok(Some(canonical_with_alias(
+        raw,
+        store,
+        crate::platform::resolve,
+    )?))
+}
+
+/// `raw` -> canonical key, live state aliases before any platform
+/// discovery (the injected resolver must not run for a live row).
+fn canonical_with_alias(
+    raw: &str,
+    store: &StateStore,
+    discover: impl Fn(&str) -> Result<crate::platform::PlatformDevice, Failure>,
+) -> Result<String, Failure> {
+    let state = store.load();
+    if let Some(key) = state.resolve_live_device_key(raw)? {
+        let display = state
+            .devices
+            .get(&key)
+            .and_then(|e| e.device_name.clone())
+            .unwrap_or_else(|| raw.to_owned());
+        store.remember_device_selection(&key, &display)?;
+        return Ok(key);
+    }
+    let device = discover(raw)?;
+    let canonical = device.key();
+    store.remember_device_selection(&canonical, device.name())?;
+    Ok(canonical)
 }
 
 /// Note when a global flag lands on a verb that ignores it — a flag that
@@ -311,3 +363,6 @@ pub fn round_trip_within(
     let env = session.call_within(verb, body, timeout)?;
     Ok(ctx.finish(env))
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,1 @@
+{"version":"1","ok":false,"command":"tap","elapsed_ms":1,"error":{"code":"STALE_REF","message":"current snapshot is @w69t3awd; ref @ful7of88:e1 is from another snapshot; re-snapshot"}}

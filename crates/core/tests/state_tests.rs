@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use agent_mobile_core::error::{EXIT_USAGE, Failure};
 use agent_mobile_core::secret::write_secret;
-use agent_mobile_core::state::{SessionEntry, StateStore};
+use agent_mobile_core::state::{PendingForward, SessionEntry, StateStore};
 
 static SEQ: AtomicUsize = AtomicUsize::new(0);
 
@@ -29,12 +29,7 @@ impl Drop for TempDir {
 }
 
 fn entry(url: &str) -> SessionEntry {
-    SessionEntry {
-        url: url.to_owned(),
-        pid: std::process::id(),
-        token_file: "dev".to_owned(),
-        runner_pid: None,
-    }
+    SessionEntry::new(url.to_owned(), std::process::id(), "dev".to_owned())
 }
 
 mod common;
@@ -212,7 +207,7 @@ fn upsert_remove_and_default_device_round_trip() -> Result<(), Failure> {
     store.write_token("dev", "tok")?;
     store.upsert("sim", &entry("http://a:1"))?;
     assert!(store.entry("sim").is_some());
-    store.remember_device("sim")?;
+    store.remember_device_selection("sim", "sim")?;
     match store.resolve_with(None, None, None)? {
         Some(r) => assert_eq!(r.url, "http://a:1"),
         None => return Err(fail("default device must resolve")),
@@ -223,5 +218,154 @@ fn upsert_remove_and_default_device_round_trip() -> Result<(), Failure> {
         None => {}
         Some(_) => return Err(fail("removed entry must not resolve")),
     }
+    Ok(())
+}
+
+#[test]
+fn android_metadata_roundtrips_without_token() -> Result<(), Failure> {
+    let tmp = TempDir::new("android-meta");
+    let home = tmp.0.clone();
+    let store = StateStore::at(&home);
+    let mut entry = SessionEntry::new(
+        "http://127.0.0.1:60001".to_owned(),
+        std::process::id(),
+        "dev".to_owned(),
+    );
+    entry.platform = Some("android".to_owned());
+    entry.device_id = Some("avd:agent-mobile-api37".to_owned());
+    entry.serial = Some("emulator-5554".to_owned());
+    entry.forward_port = Some(59890);
+    entry.device_port = Some(43210);
+    entry.bridge_port = Some(59894);
+    entry.apk_source = Some("/repo/app-debug.apk".to_owned());
+    entry.emulator_pid = Some(50564);
+    entry.log_file = Some("/tmp/avd.log".to_owned());
+    store.write_token("dev", "canary-android-token")?;
+    store.upsert("android:avd:agent-mobile-api37", &entry)?;
+    let raw = std::fs::read_to_string(store.state_file()).map_err(Failure::from)?;
+    assert!(raw.contains("\"platform\": \"android\""), "{raw}");
+    assert!(raw.contains("\"serial\": \"emulator-5554\""), "{raw}");
+    assert!(raw.contains("\"forward_port\": 59890"), "{raw}");
+    assert!(raw.contains("\"device_port\": 43210"), "{raw}");
+    assert!(!raw.contains("canary"), "token must never land in state");
+    let loaded = store.load();
+    let back = loaded
+        .devices
+        .get("android:avd:agent-mobile-api37")
+        .ok_or_else(|| fail("row missing"))?;
+    assert_eq!(back, &entry);
+    assert_eq!(back.device_port, Some(43210));
+    let legacy: Result<SessionEntry, _> =
+        serde_json::from_str("{\"url\":\"http://x\",\"pid\":1,\"token_file\":\"k\"}");
+    let Ok(legacy) = legacy else {
+        return Err(Failure::local("legacy row rejected", "fail"));
+    };
+    assert_eq!(legacy.device_port, None);
+    Ok(())
+}
+
+#[test]
+fn version1_json_without_new_fields_still_loads() -> Result<(), Failure> {
+    let tmp = TempDir::new("legacy-fields");
+    let store = StateStore::at(&tmp.0);
+    let raw = r#"{"version":1,"default_device":"k","devices":{"k":{"url":"http://127.0.0.1:1","pid":1,"token_file":"t"}}}"#;
+    std::fs::create_dir_all(store.root())?;
+    std::fs::write(store.state_file(), raw)?;
+    let state = store.load();
+    let entry = state
+        .devices
+        .get("k")
+        .ok_or_else(|| Failure::local("row missing", "fail"))?;
+    assert_eq!(entry.device_port, None);
+    assert_eq!(entry.process_started_at, None);
+    assert_eq!(entry.device_name, None);
+    assert!(state.pending_forwards.is_empty());
+    Ok(())
+}
+
+#[test]
+fn mismatched_process_marker_makes_row_non_live() -> Result<(), Failure> {
+    let tmp = TempDir::new("marker-mismatch");
+    let store = StateStore::at(&tmp.0);
+    let mut e = SessionEntry::new(
+        "http://127.0.0.1:9".to_owned(),
+        std::process::id(),
+        "tok".to_owned(),
+    );
+    e.process_started_at = Some("ps:Mon Jan  1 00:00:00 1900".to_owned());
+    store.upsert("k", &e)?;
+    store.write_token("tok", "tok")?;
+    store.remember_device_selection("k", "k")?;
+    assert!(
+        store.resolve(None)?.is_none(),
+        "a recorded marker mismatch must resolve as stale"
+    );
+    let mut live = e.clone();
+    live.process_started_at = Some(
+        agent_mobile_core::process::process_identity(std::process::id())
+            .ok_or_else(|| Failure::local("no marker", "fail"))?,
+    );
+    store.upsert("k", &live)?;
+    assert!(
+        store.resolve(None)?.is_some(),
+        "matching marker keeps the row live"
+    );
+    Ok(())
+}
+
+#[test]
+fn pending_forward_journal_roundtrip_dedup_and_remove() -> Result<(), Failure> {
+    let tmp = TempDir::new("journal");
+    let store = StateStore::at(&tmp.0);
+    store.record_pending_forward("s1", 5501, 8770)?;
+    store.record_pending_forward("s1", 5501, 8770)?;
+    let rows = store.pending_forwards();
+    assert_eq!(rows.len(), 1, "exact duplicate must dedup: {rows:?}");
+    assert_eq!(rows[0].serial, "s1");
+    assert_eq!(rows[0].local_port, 5501);
+    assert_eq!(rows[0].device_port, 8770);
+    assert!(!rows[0].owner_started_at.is_empty());
+    store.remove_pending_forward(&rows[0])?;
+    assert!(store.pending_forwards().is_empty());
+    store.remove_pending_forward(&PendingForward {
+        owner_pid: 1,
+        owner_started_at: "x".to_owned(),
+        serial: "s1".to_owned(),
+        local_port: 5501,
+        device_port: 8770,
+    })?;
+    Ok(())
+}
+
+#[test]
+fn clear_pending_forward_removes_only_the_current_owner_record() -> Result<(), Failure> {
+    let tmp = TempDir::new("journal-owner");
+    let store = StateStore::at(&tmp.0);
+    std::fs::create_dir_all(store.root())?;
+    let mine = PendingForward {
+        owner_pid: std::process::id(),
+        owner_started_at: agent_mobile_core::process::process_identity(std::process::id())
+            .ok_or_else(|| Failure::local("no marker", "fail"))?,
+        serial: "s1".to_owned(),
+        local_port: 5501,
+        device_port: 8770,
+    };
+    let dead_owner = PendingForward {
+        owner_pid: u32::MAX - 1,
+        owner_started_at: "ps:stale-owner".to_owned(),
+        ..mine.clone()
+    };
+    let mut state = store.load();
+    state.pending_forwards = vec![dead_owner.clone(), mine];
+    std::fs::write(
+        store.state_file(),
+        serde_json::to_string(&state).unwrap_or_default(),
+    )?;
+    store.clear_pending_forward("s1", 5501, 8770)?;
+    assert_eq!(
+        store.pending_forwards(),
+        vec![dead_owner],
+        "a foreign owner's identical tuple must survive"
+    );
     Ok(())
 }

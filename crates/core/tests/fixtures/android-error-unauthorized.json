@@ -1,0 +1,1 @@
+{"version":"1","ok":false,"error":{"code":"UNAUTHORIZED","message":"Authorization: Bearer <token> required"}}

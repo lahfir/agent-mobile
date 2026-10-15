@@ -185,6 +185,13 @@ fn skills_guide_teaches_ref_lifecycle_and_recovery() -> Result<(), Failure> {
         "settled=false",
         "tap <x> <y>",
         "AGENT_MOBILE_URL",
+        "android:avd:",
+        "setup-android-sdk.sh --check",
+        "Allow restricted settings",
+        "platform:id",
+        "emulator stays up",
+        "Agent Mobile Driver",
+        "use launch",
     ] {
         assert!(text.contains(needle), "skills missing {needle:?}");
     }

@@ -1,0 +1,1 @@
+{"version":"1","ok":false,"command":"bogus","elapsed_ms":1,"error":{"code":"UNKNOWN_COMMAND","message":"unknown command: bogus"}}

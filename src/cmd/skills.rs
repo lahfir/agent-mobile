@@ -4,30 +4,39 @@
 /// The guide text; every command named here exists in `--help`, and the test
 /// proves it in both directions.
 const GUIDE: &str = "\
-agent-mobile — drive an iOS app through a snapshot -> act loop
+agent-mobile — drive an iOS or Android app through a snapshot -> act loop
 
 COMMANDS
-  devices                        list reachable simulators and paired devices
-  serve <device> [--app <id>]    start a driver in the foreground; --app
-                                 launches the bundle once the driver binds.
-                                 Prints url/device/token to a terminal; when
-                                 piped the token lives only in
-                                 ~/.agent-mobile/tokens/<device>
+  devices                        list iOS simulators/phones and Android
+                                 AVD/USB/wireless targets
+  serve <device> [--app <id>]    start a driver in the foreground; <device>
+                                 is a name, id, or collision-free
+                                 platform:id key (`ios:<udid>`,
+                                 `android:avd:<name>`, `android:<serial>`).
+                                 --app launches the app once the driver
+                                 binds. Prints url/device/token to a
+                                 terminal; when piped the token lives only
+                                 in ~/.agent-mobile/tokens/<device>
   status                         active app, device, os, current snapshot id
   snapshot [--app <id>]          mint refs and print the accessibility tree;
-                                 --app retargets a different bundle
+                                 --app carries an app selector: iOS targets
+                                 the bundle, Android only validates the
+                                 foreground package — use launch to change
+                                 apps
   tap <ref> | <x> <y>            tap an element ref, or a point in the app
                                  frame's top-left space (at=x,y is the node's
                                  origin — tap its center x+w/2, y+h/2)
   type [<ref>] <text...>         append text; a leading ref writes that field
                                  directly (the field may not keep focus), else
                                  keys go to the focused field. A newline
-                                 presses Return.
+                                 requests IME Return when the field exposes
+                                 it (Android); otherwise a literal newline
+                                 is appended. Judge the returned snapshot.
                                  Text starting with `-` needs `--`:
                                  type -- -flag
   swipe <up|down|left|right> [<ref>]
                                  swipe the app, or one element
-  home                           press Home; returns the springboard tree
+  home                           go to the launcher/home; returns that tree
   doubletap <ref> | <x> <y>      tap twice on a ref, or a point in the app
                                  frame's top-left space
   pinch <ref> <scale> [--velocity <v>]
@@ -39,14 +48,17 @@ COMMANDS
                                  press and hold 0 < d <= 10 s, default 1.0;
                                  native context menus surface in the
                                  snapshot (web long-press is unproven)
-  back                           system edge swipe back; no target. Judge
-                                 from the returned tree: web-history
-                                 back is unproven
+  back                           navigate back; no target. Judge from the
+                                 returned tree: web-history back is unproven
   twofinger <ref>                two-finger tap on a ref
-  center notification            open Notification Center (SpringBoard
-                                 session). Earlier refs die; snapshot or
-                                 --app to return to your app
-  launch <bundle_id>             cold-start the app; kills saved state
+  center notification            open notifications (system UI session).
+                                 Earlier refs die; snapshot to return to
+                                 your app (iOS also accepts --app). On
+                                 Android, back out of the shade first:
+                                 snapshot --app fails while System UI
+                                 holds the foreground
+  launch <app_id>                cold-start or restart an app (iOS bundle id
+                                 or Android package); app data is kept
   screenshot [path]              PNG to a file, or base64 to stdout
                                  (--json stays base64; path+--json is an error)
   stop                           terminate the active app; the driver stays
@@ -56,29 +68,67 @@ COMMANDS
 FLAGS (global)
   --json                         emit the raw JSON envelope; failures then
                                  print the envelope shape on stdout too
-  --app <bundle>                 retarget `snapshot`/`serve`
+  --app <app_id>                 app selector for `snapshot`/`serve`; on
+                                 Android `snapshot --app` only checks the
+                                 already-foreground package
   --max-depth <n>                trim the tree client-side; header then shows
                                  complete=false
-  --device <name>                pick a device by name or UDID; remembered
-                                 for later calls
+  --device <device>              pick a device by name, id, or platform:id;
+                                 remembered for later calls
 
 ENVIRONMENT
   AGENT_MOBILE_URL, AGENT_MOBILE_TOKEN   override the saved session per call;
                                  set BOTH — a URL alone has no token to pair
                                  with and fails as a usage error. Use these
                                  for tunnel URLs (https://…trycloudflare.com).
+  ANDROID_HOME, ANDROID_SDK_ROOT SDK location, in that precedence order;
+                                 then the platform default, then PATH.
+                                 scripts/setup-android-sdk.sh --check
+                                 verifies without installing.
+  AGENT_MOBILE_BOOT_BUDGET_SECS  lazy-boot deadline in seconds (default
+                                 240). A cold Gradle build may run the
+                                 full 600 s build bound while lazy boot
+                                 kills serve at the deadline — raise past
+                                 600 before the first Android boot.
 
 SESSIONS
   Any verb starts the driver on demand when none runs — the first call can
-  take a minute while the runner builds and the simulator boots. `serve`
-  runs the driver in the foreground instead and prints the token once.
-  One driver serves one device on port 8770; serving a second device means
-  stopping the first serve.
+  take a minute while a runner builds or a device boots. `serve` runs one
+  long-lived driver in the foreground and prints the token once. iOS owns a
+  runner process on fixed port 8770; Android owns a localhost bridge plus
+  one ephemeral `adb forward`. Stopping an Android serve removes only its
+  bridge/forward/state/token — the emulator stays up, the APK stays
+  installed, the accessibility service stays enabled.
 
-SYSTEM DIALOGS
-  Permission alerts and other system UI live in com.apple.springboard, not
-  the app under test: `snapshot --app com.apple.springboard`, act on its
-  refs, then `snapshot --app <your-bundle>` to return.
+ANDROID SETUP / RECOVERY
+  scripts/setup-android-sdk.sh --check
+                                 verifies the SDK without installing; the
+                                 bare command installs only missing pinned
+                                 components (idempotent). Does not install
+                                 or require Android Studio
+  AGENT_MOBILE_ANDROID_APK       path override for the driver APK; otherwise
+                                 the checked-in Gradle wrapper builds it
+  AGENT_MOBILE_REPO_ROOT         checkout root locating drivers/android;
+                                 only needed outside a repo checkout
+  unauthorized device            a person accepts the USB debugging
+                                 prompt, then retry
+  Restricted Settings            the \"Agent Mobile Driver\" toggle in
+                                 Settings > Accessibility; Android 13+
+                                 also needs App Info > ⋮ >
+                                 \"Allow restricted settings\" — a person
+                                 must flip these on the device
+  duplicate device names         select by platform:id key, not the name
+  boot timeout                   inspect ~/.agent-mobile/driver-*.log
+  physical Android               user-authorized USB/wireless adb plus
+                                 Accessibility consent; sideload/debug only
+                                 — no Play distribution, no bypass
+
+SYSTEM UI
+  Permission alerts and other system UI live outside the app under test.
+  On iOS that is com.apple.springboard; on Android it is the active
+  launcher/system package shown in a snapshot's app field. Act on those
+  refs, then return with `snapshot --app <bundle>` on iOS or `back` on
+  Android — refs die across apps.
 
 THE LOOP
   snapshot -> pick a ref -> act -> repeat. Every action replies with the next
@@ -93,18 +143,25 @@ REFS AND ERRORS
   BAD_REQUEST        -> fix the request; do not retry unchanged
   UNKNOWN_COMMAND    -> fix the client; do not retry
   UNAUTHORIZED       -> fix AGENT_MOBILE_TOKEN; do not retry unchanged
-  DRIVER_ERROR       -> retry once; escalate if it recurs
+  DRIVER_ERROR       -> take a fresh snapshot to verify the current
+                        state before retrying; escalate if it recurs
   (client-side codes: USAGE exits 2 before any call; LOCAL/DRIVER_ERROR
    mark failures that never reached the driver)
 
 OUTPUT CONTRACT
   stdout carries parseable data; stderr carries hints and errors.
   settled=false means the settle loop hit its cap; the tree is still usable.
-  complete=false means --max-depth trimmed nodes below the printed depth.
+  complete=false means the tree is incomplete — --max-depth trimming or
+  driver-side traversal caps, cycles, or unavailable children. Ref actions
+  on an incomplete tree fail closed because uniqueness can't be proven.
   Exit codes: 0 ok, 1 driver or transport failure, 2 usage error.
 
 LAUNCH
-  launch cold-starts and destroys saved state; use it for a clean start.
+  launch terminates the process then starts it from the launcher; app
+  data is kept. On Android, terminate refuses the driver, System UI, and
+  the current launcher. If System UI wedges the foreground, `back` first —
+  judge the returned snapshot; `launch` is only a cold-restart fallback
+  and loses transient app state.
 ";
 
 /// Run `skills`; prints the guide, no wire involved.

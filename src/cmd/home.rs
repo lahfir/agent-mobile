@@ -1,4 +1,4 @@
-//! `home`: press Home and return the springboard tree.
+//! `home`: go to the launcher/home and return its tree.
 
 use agent_mobile_core::error::Failure;
 

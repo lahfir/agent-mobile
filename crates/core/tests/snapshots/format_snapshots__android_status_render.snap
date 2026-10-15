@@ -1,0 +1,5 @@
+---
+source: crates/core/tests/format_snapshots.rs
+expression: text
+---
+app=com.google.android.deskclock device="sdk_gphone64_arm64" os=17 snapshot=@SNAP elapsed_ms=N

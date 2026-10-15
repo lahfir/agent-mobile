@@ -4,13 +4,14 @@
 //! doubles as the trust-refusal scan source.
 
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+use rustix::process::{Pid, Signal, kill_process_group};
 
 use crate::error::Failure;
 
@@ -37,32 +38,6 @@ fn budget_from(raw: Option<&str>) -> Duration {
         .map_or(BOOT_BUDGET_DEFAULT, Duration::from_secs)
 }
 
-#[cfg(test)]
-mod budget_tests {
-    use super::{BOOT_BUDGET_DEFAULT, budget_from};
-    use std::time::Duration;
-
-    #[test]
-    fn unset_or_junk_keeps_the_default() {
-        for raw in [
-            None,
-            Some(
-                "
-",
-            ),
-            Some("soon"),
-            Some("0"),
-            Some("-5"),
-        ] {
-            assert_eq!(budget_from(raw), BOOT_BUDGET_DEFAULT);
-        }
-    }
-
-    #[test]
-    fn a_whole_number_of_seconds_wins() {
-        assert_eq!(budget_from(Some(" 600 ")), Duration::from_secs(600));
-    }
-}
 /// Poll interval for boot waits in `serve` and lazy start.
 pub const BOOT_POLL: Duration = Duration::from_millis(500);
 
@@ -203,145 +178,198 @@ impl Drop for ServeChild {
 /// # Errors
 /// Returns [`Failure::Local`] on spawn, wait, or timeout failures.
 pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, Failure> {
+    let never = std::sync::atomic::AtomicBool::new(false);
+    run_bounded_until(cmd, timeout, &never)
+}
+
+/// [`run_bounded`] that also watches `cancelled`: a set flag kills and
+/// reaps the child and reports interruption rather than the timeout
+/// message. Cancellation never suppresses the wait — a killed child is
+/// always reaped before returning.
+///
+/// The child runs in its own process group so cancellation/timeout kills
+/// the whole tree, and both pipes drain on reader threads so output can
+/// never fill a pipe while the parent waits for exit. Reader threads are
+/// joined on every path so no descendant-held pipe is left behind.
+///
+/// # Errors
+/// Spawn/io failures, timeout, or `cancelled` interruption.
+pub fn run_bounded_until(
+    cmd: &mut Command,
+    timeout: Duration,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<std::process::Output, Failure> {
+    use std::os::unix::process::CommandExt as _;
     let program = cmd.get_program().to_string_lossy().into_owned();
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(Failure::local("operation interrupted", "rerun the command"));
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .map_err(Failure::from)?;
+    let stdout_reader = drain(child.stdout.take());
+    let stderr_reader = drain(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    loop {
-        if child.try_wait().map_err(Failure::from)?.is_some() {
-            return child.wait_with_output().map_err(Failure::from);
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break Done::Exited,
+            Ok(None) => {}
+            Err(e) => break Done::Io(Failure::from(e)),
+        }
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            break Done::Interrupted;
         }
         if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            break Done::TimedOut;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    if !matches!(outcome, Done::Exited) {
+        kill_group(&child);
+        let _ = child.kill();
+    }
+    let wait_status = child.wait();
+    kill_group(&child);
+    let join = |h: std::thread::JoinHandle<std::io::Result<Captured>>| {
+        h.join()
+            .map_err(|_| Failure::local("output reader thread panicked", "rerun the command"))?
+            .map_err(Failure::from)
+    };
+    let stdout = join(stdout_reader);
+    let stderr = join(stderr_reader);
+    let status = match wait_status {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(Failure::local(
+                format!("wait failed: {e}"),
+                "rerun the command",
+            ));
+        }
+    };
+    match outcome {
+        Done::Io(e) => return Err(e),
+        Done::Interrupted => {
+            return Err(Failure::local("operation interrupted", "rerun the command"));
+        }
+        Done::TimedOut => {
             return Err(Failure::local(
                 format!("`{program}` did not answer within {}s", timeout.as_secs()),
                 "run the probe yourself to see what it is waiting on",
             ));
         }
-        std::thread::sleep(Duration::from_millis(50));
+        Done::Exited => {}
     }
+    let stdout = stdout?;
+    let stderr = stderr?;
+    if stdout.exceeded || stderr.exceeded {
+        let which = match (stdout.exceeded, stderr.exceeded) {
+            (true, true) => "stdout and stderr",
+            (true, false) => "stdout",
+            (false, true) => "stderr",
+            (false, false) => "no stream",
+        };
+        return Err(Failure::local(
+            format!("`{program}` {which} exceeded the 8 MiB capture limit"),
+            "reduce the command's output or run it yourself",
+        ));
+    }
+    let stdout = stdout.bytes;
+    let stderr = stderr.bytes;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
-/// `/bin/kill -<flag> <pid>` with all stdio detached; `true` when the signal
-/// was delivered.
-fn signal(pid: u32, flag: &str) -> bool {
-    Command::new("/bin/kill")
-        .args([flag, &pid.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Which way `run_bounded_until` left its poll loop.
+enum Done {
+    Exited,
+    Interrupted,
+    TimedOut,
+    Io(Failure),
 }
 
-/// Is `pid` a live process? Uses `kill -0`, which needs no permission for
-/// our own children and answers "no" for zombies and reused-pid misses.
-#[must_use]
-pub fn pid_alive(pid: u32) -> bool {
-    signal(pid, "-0")
+/// Drain one child pipe to a Vec on its own thread.
+/// Hard cap on retained bytes per stream — output past this is drained
+/// and discarded so the child never blocks, but never returned as if it
+/// were complete.
+const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
+/// One stream's capture: retained bytes plus the overrun flag.
+struct Captured {
+    bytes: Vec<u8>,
+    exceeded: bool,
 }
 
-/// SIGTERM `pid` — the graceful stop for a child that owns its own cleanup
-/// (`serve` forwards it to the runner and clears session state first).
-/// Returns whether the signal was delivered.
-#[must_use]
-pub fn terminate(pid: u32) -> bool {
-    signal(pid, "-TERM")
-}
-
-/// Send SIGTERM to `pid` only when `ps` still shows it as an xcodebuild —
-/// the comm check keeps a recycled pid safe, and the target is always a pid
-/// we recorded ourselves (KTD17). Returns whether the signal was sent.
-#[must_use]
-pub fn terminate_runner(pid: u32) -> bool {
-    let is_runner = Command::new("/bin/ps")
-        .args(["-o", "comm=", "-p", &pid.to_string()])
-        .stdin(Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("xcodebuild"))
-        .unwrap_or(false);
-    is_runner && signal(pid, "-TERM")
-}
-
-/// Poll until `pid` dies or `budget` expires; returns true when it exited.
-#[must_use]
-pub fn await_exit(pid: u32, budget: Duration) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < budget {
-        if !pid_alive(pid) {
-            return true;
+fn drain(
+    pipe: Option<impl Read + Send + 'static>,
+) -> std::thread::JoinHandle<std::io::Result<Captured>> {
+    std::thread::spawn(move || {
+        let mut cap = Captured {
+            bytes: Vec::new(),
+            exceeded: false,
+        };
+        let Some(mut p) = pipe else {
+            return Ok(cap);
+        };
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            match p.read(&mut chunk) {
+                Ok(0) => return Ok(cap),
+                Ok(n) => {
+                    let take = (MAX_CAPTURE_BYTES - cap.bytes.len()).min(n);
+                    cap.bytes.extend_from_slice(&chunk[..take]);
+                    cap.exceeded = cap.exceeded || take < n;
+                }
+                Err(e) => return Err(e),
+            }
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    !pid_alive(pid)
+    })
 }
 
-/// Does `host:port` accept a TCP connection? Hostnames resolve first, so
-/// `Lahfirs-iPhone.local:8770` works the same as a literal. One probe per
-/// call; callers that poll should resolve once and use [`tcp_ready_at`].
-#[must_use]
-pub fn tcp_ready(addr: &str) -> bool {
-    let Ok(addrs) = addr.to_socket_addrs() else {
-        return false;
-    };
-    tcp_ready_at(&addrs.collect::<Vec<_>>())
+/// SIGKILL the owned child's process group — best effort; the
+/// direct-child `Child::kill` fallback is handled by the caller.
+fn kill_group(child: &Child) {
+    let _ = kill_process_group(Pid::from_child(child), Signal::KILL);
 }
 
-/// Probe a pre-resolved address set; [`tcp_ready`] minus the per-poll DNS
-/// lookup — mDNS resolution of a `.local` name is the expensive part.
-#[must_use]
-pub fn tcp_ready_at(addrs: &[SocketAddr]) -> bool {
-    addrs
-        .iter()
-        .any(|a| TcpStream::connect_timeout(a, Duration::from_millis(500)).is_ok())
-}
+mod lifecycle;
+pub use lifecycle::{
+    BootLock, await_exit, pid_alive, process_identity, process_matches, tcp_ready, tcp_ready_at,
+    terminate, terminate_runner,
+};
 
-/// Atomic boot lockfile (KTD7): `create_new` either wins or reports the
-/// holder; the file disappears when the holder finishes. Stale locks older
-/// than `stale_after` may be reclaimed by the caller.
-pub struct BootLock {
-    path: PathBuf,
-}
+#[cfg(test)]
+mod budget_tests {
+    use super::{BOOT_BUDGET_DEFAULT, budget_from};
+    use std::time::Duration;
 
-impl BootLock {
-    /// Try to take the boot lock at `path`.
-    ///
-    /// # Errors
-    /// Returns [`Failure::Local`] on filesystem errors other than
-    /// already-exists.
-    pub fn take(path: &Path) -> Result<Option<Self>, Failure> {
-        match OpenOptions::new().write(true).create_new(true).open(path) {
-            Ok(_) => Ok(Some(Self {
-                path: path.to_path_buf(),
-            })),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
-            Err(e) => Err(Failure::from(e)),
+    #[test]
+    fn unset_or_junk_keeps_the_default() {
+        for raw in [
+            None,
+            Some(
+                "
+",
+            ),
+            Some("soon"),
+            Some("0"),
+            Some("-5"),
+        ] {
+            assert_eq!(budget_from(raw), BOOT_BUDGET_DEFAULT);
         }
     }
 
-    /// Age of an existing lockfile; `None` when absent or unreadable.
-    #[must_use]
-    pub fn age(path: &Path) -> Option<Duration> {
-        let meta = fs::metadata(path).ok()?;
-        let modified = meta.modified().ok()?;
-        Some(modified.elapsed().unwrap_or(Duration::MAX))
-    }
-
-    /// Remove the lockfile at `path` (stale reclaim).
-    pub fn clear(path: &Path) {
-        let _ = fs::remove_file(path);
+    #[test]
+    fn a_whole_number_of_seconds_wins() {
+        assert_eq!(budget_from(Some(" 600 ")), Duration::from_secs(600));
     }
 }
 
-impl Drop for BootLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
+#[cfg(test)]
+mod tests;

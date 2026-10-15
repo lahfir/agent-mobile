@@ -9,6 +9,7 @@ version.workspace      = true
 
 [dependencies]
 base64     = { workspace = true }
+rustix     = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 ureq       = { workspace = true }

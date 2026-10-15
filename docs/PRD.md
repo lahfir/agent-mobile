@@ -1,17 +1,18 @@
 # agent-mobile — Product Requirements Document
 
-Status: draft v0.2, 2026-09-20. Owner: Lahfir. Language: Rust (host), Swift (iOS driver), Kotlin (Android driver).
-Evidence base: `docs/research/` (13 tracks), `docs/experiments/RESULTS.md` (Experiments 1–8, verbatim).
+Status: draft v0.3, 2026-10-05. Owner: Lahfir. Language: Rust (host), Swift (iOS driver), Kotlin (Android driver).
+Evidence base: `docs/research/` (13 tracks), `docs/experiments/RESULTS.md` (Experiments 1–10, verbatim).
 
 ## 0. Summary
 
 agent-mobile is a CLI that lets an AI agent drive iOS and Android apps the way agent-browser drives
 the web: take a snapshot of the accessibility tree, act on an element by reference, take the next
 snapshot. The driver runs on the device or simulator and speaks plain HTTP on a local port; the Rust
-CLI is a stateless client. The loop is already proven end to end on the iOS 26 simulator and on a
-physical iPhone 14 Pro over Wi-Fi (Experiments 5–8). This document turns that probe into a product
-in four phases and names the one gate that decides whether the product should exist at all: a
-measured reliability win over Maestro MCP and mobile-mcp on identical tasks.
+CLI is a stateless client. The loop is proven end to end on the iOS simulator, a physical iPhone
+over Wi-Fi (Experiments 5–9), and the Android 17 emulator (Experiment 10). The physical Android leg
+was not run because no authorized phone was available. This document turns those probes into a
+product in four phases and names the one gate that decides whether the product should exist at all:
+a measured reliability win over Maestro MCP and mobile-mcp on identical tasks.
 
 ## 1. Problem
 
@@ -39,11 +40,12 @@ Goals
 - Fail-loud references: every action re-resolves on the device; a stale or ambiguous target is an
   error, never a guess.
 - Bounded waits: every action settles with a finite cap and reports what it saw.
-- Zero setup: one binary, one driver per platform, no Appium server, no capabilities file, no
-  WebDriverAgent build.
-- Local by default: the driver listens on a local port; nothing leaves the machine unless the
-  developer forwards the port themselves.
-- Simulator and physical device for both platforms, on the same network.
+- Minimal setup: one binary and one driver per platform, no Appium server or capabilities file;
+  Android uses only a pinned headless SDK, never Android Studio.
+- Local by default: iOS simulator and every Android endpoint are loopback; the physical-iOS LAN
+  listener is the documented P1 exception.
+- Simulator/emulator and physical devices over their supported local transports: iOS LAN and
+  authorized Android USB or wireless ADB.
 - Measured reliability, published with seed variance.
 - No hidden retry and no fuzzy match, anywhere.
 
@@ -75,7 +77,7 @@ flowchart TB
     end
 
     subgraph ANDHOST["Android host adapter (crates/android, P2)"]
-        ANDA["adb: install · enable service · forward port<br/>reach: adb forward (usb/emulator) · LAN ip (phone)"]
+        ANDA["adb: install · enable service · forward port<br/>reach: owned adb forward (emulator/USB/wireless)"]
     end
 
     TUNNEL{{"optional, never core:<br/>any port forwarder for a remote agent"}}
@@ -89,7 +91,7 @@ flowchart TB
     end
 
     IOSDEV["iOS simulator<br/>or physical iPhone<br/>(Mac stays alive; Automation Running cover on iOS 17+)"]
-    ANDDEV["Android emulator<br/>or physical phone<br/>(no host once enabled; survives reboot; no cover)"]
+    ANDDEV["Android emulator<br/>or physical phone<br/>(authorized ADB host stays connected; service survives reboot; no cover)"]
 
     AGENT --> CLI
     AGENT --> MCP
@@ -119,32 +121,31 @@ Component rules
 
 ### 5.1 Wire protocol
 
-Every call is an HTTP/1.1 `POST /<verb>` request with a JSON body, `Authorization: Bearer <token>`, and `Connection: close`. The CLI sends its protocol version as `X-Agent-Mobile-Version`; a mismatched driver refuses with `BAD_REQUEST`, the nearest fit; today's driver checks none.
+Every call is an HTTP/1.1 `POST /<verb>` request with a JSON body, `Authorization: Bearer <token>`, and `Connection: close`. The CLI sends protocol version `1` as `X-Agent-Mobile-Version`; both drivers refuse a mismatch with `BAD_REQUEST`, the nearest fit.
 
-Verbs, read from the driver's `handle(_:_:)` switch; "settled snapshot" below means `data: {app, snapshot_id, ref_count, complete, settled, reads, text, tree}`:
+“Settled snapshot” below means `data: {app, snapshot_id, ref_count, complete, settled, reads, text, tree}`:
 
 | Verb | Body params | Returns | Notes |
 |---|---|---|---|
 | `status` | none | `app, snapshot_id, device, os` | No tree, no settle step. |
 | `launch` | `bundle_id` | settled snapshot | Cold-launches the app; it becomes the active bundle. |
-| `activate` | `bundle_id` | settled snapshot | Foregrounds an already-running app; not in the P1 CLI. |
-| `terminate` | none | `terminated: bundle` | Only verb whose reply is not a settled snapshot. |
-| `snapshot` | `app?` | settled snapshot | Switches the active bundle first if `app` is given. |
+| `terminate` | none | `terminated: app id` | Only verb whose reply is not a settled snapshot. |
+| `snapshot` | `app?` | settled snapshot | iOS targets the named bundle; Android validates that the package is already foreground. |
 | `tap` | `ref`, or `x` and `y` | settled snapshot | `x,y` are points from the app frame's top-left corner, not a 0-1 fraction. |
 | `type` | `text`, `ref?` | settled snapshot | Taps `ref` first if given, else types into current focus. |
 | `swipe` | `direction`, `ref?` | settled snapshot | `direction` is one of up/down/left/right, else `BAD_REQUEST`; swipes `ref` if given, else the whole app. |
-| `home` | none | settled snapshot | Presses the hardware Home button; resets the active bundle to `com.apple.springboard`. |
+| `home` | none | settled snapshot | Goes to SpringBoard on iOS or the active launcher on Android. |
 | `doubletap` | `ref`, or `x` and `y` | settled snapshot | Target required; shapes mirror `tap`. |
 | `pinch` | `ref`, `scale`, `velocity?` | settled snapshot | `ref` required; `scale` positive, finite, `\|scale - 1\| >= 0.01`, else `BAD_REQUEST`; `velocity` defaults to sign-matched 1.0. |
 | `hold` | `ref` or `x` and `y`, `duration?` | settled snapshot | Target required; `duration` defaults to 1.0 and must satisfy 0 < d <= 10 (press plus settle must fit the wire budget), else `BAD_REQUEST`; a present-but-wrong-type duration is `BAD_REQUEST`, not the default. |
 | `back` | none | settled snapshot | System edge swipe; no target. Works in navigation stacks; web-history back is unproven. |
 | `twofinger` | `ref` | settled snapshot | `ref` required. Elements XCTest cannot address (e.g. widgets) fail as `DRIVER_ERROR`; the driver stays up. |
-| `center` | `which` | settled snapshot | `which` takes only `notification`, opening Notification Center from the SpringBoard session; any other value is `BAD_REQUEST`. The call retargets the session to SpringBoard and discards earlier refs: snapshot or retarget to return to the app. |
+| `center` | `which` | settled snapshot | `which` takes only `notification`, opening iOS Notification Center or the Android notification shade; any other value is `BAD_REQUEST`. Earlier app refs die. |
 | `screenshot` | none | `png_base64` | No settle step; not a tree snapshot. |
 
-**Envelope.** Success returns `{version, ok, command, elapsed_ms, data}`; failure returns the same shape with `ok:false` and `error:{code, message}` in place of `data`; a 401 for a bad token omits `command` and `elapsed_ms`, returned before the command dispatches. `version` is the protocol version, fixed at `1` for P1, bumped only on a breaking change; today's probe driver reports `0.1-probe`. The error object carries `code` and `message` only. Error codes: `STALE_REF, AMBIGUOUS_TARGET, BAD_REQUEST, UNKNOWN_COMMAND, UNAUTHORIZED, DRIVER_ERROR`; status and agent behavior per code are in §5.3.
+**Envelope.** Success returns `{version, ok, command, elapsed_ms, data}`; failure returns the same shape with `ok:false` and `error:{code, message}` in place of `data`; a 401 for a bad token omits `command` and `elapsed_ms`, returned before the command dispatches. `version` is fixed at `1` on both platforms and changes only with a breaking contract change. The error object carries `code` and `message` only. Error codes: `STALE_REF, AMBIGUOUS_TARGET, BAD_REQUEST, UNKNOWN_COMMAND, UNAUTHORIZED, DRIVER_ERROR`; status and agent behavior per code are in §5.3.
 
-**Node.** Every node carries a `ref_id`, because mobile trees have tappable unnamed containers; the text listing prints only named or interactive nodes, so token cost is unchanged. Every node carries `bounds` as `{x, y, width, height}`; P1 renames the driver's keys to those. `native_id.kind` is `ax_identifier` in P1 and gains `resource_id`, `test_tag`, and `test_id` with Android.
+**Node.** Every node carries a `ref_id`, because mobile trees have tappable unnamed containers; the text listing prints only named or interactive nodes, so token cost is unchanged. Every node carries `bounds` as `{x, y, width, height}`. `native_id.kind` is `ax_identifier` on iOS and `resource_id` on Android; Compose `test_tag` extraction remains Later.
 
 **Text listing.** The driver's `Accept: text/plain` path returns a header line plus one line per named or interactive node, useful directly against the driver (`am.sh`, curl). The core owns the text formatter: the CLI always requests JSON and renders the same line format itself, including for `status`, `terminate`, and `screenshot`. From a live run against Calendar:
 
@@ -159,14 +160,16 @@ app=com.apple.mobilecal snapshot=@upii2see refs=127 settled=true reads=2 elapsed
 
 ### 5.2 CLI surface
 
-The CLI is stateless per call against the long-lived driver. Fourteen of the seventeen commands below map to a same-named driver verb; `devices` and `serve` have none, and `stop` sends `terminate`.
+The CLI is stateless per call against the long-lived driver. Fourteen of the eighteen commands
+below map to a same-named driver verb; `devices`, `serve`, and `skills` have none, and `stop`
+sends `terminate`.
 
 | Command | Args | Wire call | Notes |
 |---|---|---|---|
-| `devices` | none | none | Lists reachable simulators and devices; CLI-side only. |
-| `serve` | `<device-udid>` | starts driver | Runs in the foreground; prints the token and URL for `AGENT_MOBILE_URL`/`AGENT_MOBILE_TOKEN`. `--app` pre-launches a bundle. |
+| `devices` | none | none | Lists normalized iOS simulators/phones and Android AVD/USB/wireless targets; CLI-side only. |
+| `serve` | `<device>` | starts driver | Runs in the foreground for a name, id, or `platform:id`; prints the token and URL once. `--app` pre-launches an app. |
 | `status` | none | `status` | |
-| `snapshot` | none | `snapshot` | `--app` sets `app`; the driver honors no `max_depth` today: `build()` has no depth cutoff and `complete` is hardcoded `true`. |
+| `snapshot` | none | `snapshot` | `--app` follows the platform semantics above; `--max-depth` trims client-side and marks `complete:false`. |
 | `tap` | `<ref>`, or `<x> <y>` | `tap` | One argument is read as `ref`; two are read as `x y`. |
 | `type` | `[ref] <text>` | `type` | A leading argument shaped like `@<id>:eN` is consumed as `ref`; remaining arguments join into `text`. |
 | `swipe` | `<direction> [ref]` | `swipe` | `direction`: up, down, left, or right. |
@@ -177,13 +180,14 @@ The CLI is stateless per call against the long-lived driver. Fourteen of the sev
 | `back` | none | `back` | |
 | `twofinger` | `<ref>` | `twofinger` | |
 | `center` | `<notification>` | `center` | Only `notification` exists today. |
-| `launch` | `<bundle_id>` | `launch` | |
+| `launch` | `<app_id>` | `launch` | Sends the shared wire field `bundle_id`. |
 | `screenshot` | `[output-path]` | `screenshot` | Decodes `png_base64`; writes to `output-path`, or stdout if omitted. |
 | `stop` | none | `terminate` | |
+| `skills` | none | none | Prints the bundled one-page agent guide. |
 
 Wire calls are read from the driver. `devices`, `serve`, and the argument shapes are new CLI specification.
 
-**Flags and environment.** `--app` sets the target bundle: `app` on `snapshot`, `bundle_id` on the `launch` that `serve --app` triggers. `--max-depth` applies to every settled-snapshot verb and lives in the core: the driver returns the full tree, the core drops nodes below the depth and sets `complete: false`. `AGENT_MOBILE_URL` and `AGENT_MOBILE_TOKEN` set the driver's address and token for every other command.
+**Flags and environment.** `--app` carries an app selector: iOS `snapshot` targets the bundle, Android `snapshot` only validates the foreground package, and `serve --app` launches it after binding. `--max-depth` applies to every settled-snapshot verb and lives in the core: the core drops nodes below the depth and sets `complete: false`; independently, the driver can report `complete: false` — traversal caps, cycles, or unavailable children — so the flag's presence is not the only source, and an incomplete tree cannot prove ref uniqueness (ref actions may fail closed). `--device` accepts a name, raw id, or collision-free `platform:id` key and is remembered. `AGENT_MOBILE_URL` and `AGENT_MOBILE_TOKEN` override the saved address and token.
 
 **Exit codes.** `0` ok, `1` error envelope (including a `DRIVER_ERROR` the CLI synthesizes for a transport failure with no envelope at all), `2` usage error.
 
@@ -231,18 +235,22 @@ P0 is the first phase and it is finished. What it proved:
 
 **Exit criterion** — Experiment 9: the CLI creates a Calendar event on the simulator and the phone, verbatim; the driver presses Home first on the simulator so no runner screen shows. The simulator run starts from a clean machine state with only `npm i -g agent-mobile` and no `serve` call.
 
-### 6.2 P2 — Android device driver
+### 6.2 P2 — Android device driver (emulator exit proven)
 
 **Scope**
-- Android gets a device driver: a Kotlin app with an `AccessibilityService`, using the same HTTP protocol as iOS.
-- A host adapter drives it over `adb`: install, enable the service, forward the port.
-- It runs on the emulator and a physical phone.
-- The contract types gain `native_id` kinds `resource_id`, `test_tag`, and `test_id`.
+- Android has a Kotlin `AccessibilityService` driver using protocol version 1.
+- The Rust host adapter installs/provisions it, verifies explicit accessibility consent, owns one
+  exact ADB forward plus a loopback lifecycle bridge, and cleans only those owned resources.
+- Emulator, USB, and wireless targets share the normalized discovery/session path. Experiment 10
+  proved the emulator; no authorized physical Android phone was available for that run.
+- Android nodes use `native_id.kind = resource_id`.
 
 **Out of scope**
 - Compose `testTag` support and instrumentation/Shizuku wait for Later; Play listing is permanently out (§6.5).
 
-**Exit criterion** — Experiment 10: an alarm created in the Clock app through the CLI, verbatim.
+**Exit criterion** — Experiment 10: an alarm created in the Clock app through the public CLI,
+verbatim. The emulator leg passed. The conditional phone leg is explicitly not run, with its exact
+manual procedure retained, rather than represented by a synthetic transcript.
 
 ### 6.3 P3 — Reliability gate
 
@@ -295,27 +303,22 @@ P0 is the first phase and it is finished. What it proved:
 
 ### 7.1 Workspace and layout
 
-`docs/research/`, `docs/experiments/`, and `drivers/ios/` exist. The Rust workspace is new.
-
 ```
 agent-mobile/
 ├── Cargo.toml
-├── crates/core/      # host logic; the iOS adapter is a module inside it
-├── src/              # CLI binary, one command per file
-├── scripts/          # source-rule check, used by CI and the pre-commit hook
-├── drivers/ios/      # existing Swift XCUITest driver
-└── docs/             # research tracks, experiments, this PRD
+├── crates/core/       # shared contract, wire client, state, process, iOS host adapter
+├── crates/android/    # ADB discovery, lifecycle bridge, forwarding, session ownership
+├── src/               # CLI plus normalized platform discovery/runtime
+├── scripts/           # source gates, SDK setup, fixture capture, CI emulator lifecycle
+├── drivers/ios/       # Swift XCUITest driver
+├── drivers/android/   # Kotlin AccessibilityService and checked-in Gradle wrapper
+└── docs/              # research tracks, experiments, this PRD
 ```
 
-`crates/android` arrives with the Android driver.
-
-The platform branch lives in exactly one function. Sixteen of the eighteen verbs never learn which
-platform they drive: they parse arguments, build JSON, and call the wire, because both drivers
-speak one protocol. Only `devices`, `serve`, and the lazy-start path touch a platform. When
-Android arrives, those three must not grow an `if android` at each call site. One function takes
-the device and returns what `serve` needs: the launch command, the URL, and the address. Adding a
-third platform then edits one match arm. There is never a `crates/ios`. The contract types
-live in `crates/core`.
+Platform branching is normalized under `src/platform/`. Individual verbs parse arguments, build
+JSON, and call the same wire; only discovery, `serve`, and lazy startup own platform-specific
+lifecycle work. There is no `crates/ios`; the iOS host adapter and shared contract stay in
+`crates/core`.
 
 Toolchain: Rust 1.89.0, pinned in `rust-toolchain.toml`, with clippy and rustfmt. License: Apache-2.0.
 
@@ -338,28 +341,28 @@ this repo.
 
 ### 7.3 Testing
 
-Core testing has exactly three kinds.
+Core testing has three kinds.
 
-| Kind | Proves | Needs a simulator |
+| Kind | Proves | Needs a live target |
 |---|---|---|
 | Unit tests | the text formatter and ref parsing | no |
-| Golden fixture tests (in-crate) | the core parses real driver JSON correctly | no |
-| Integration test (one) | the CLI boots a simulator, starts the driver, and reads one real snapshot | yes |
+| Golden fixture tests (in-crate) | the core parses real iOS and Android driver JSON correctly | no |
+| Platform integration tests | the public CLI starts, snapshots, and cleans a real platform session | yes |
 
-Fixtures are recorded from the driver JSON in Experiments 5 through 7, never hand-written, so the
-core stays testable with no simulator. The one integration test lives at
-`tests/integration_snapshot.rs` and doubles as driver smoke.
+Fixtures are recorded from live drivers, never hand-written, so the core stays testable without a
+device. `tests/integration_snapshot.rs` covers iOS; `tests/integration_android.rs` covers
+concurrent lazy startup, real Android verbs, screenshot decoding, exact-forward cleanup, and
+re-serve.
 
 ### 7.4 CI
 
-Day one has two CI jobs. An Android emulator job joins once its driver exists. Physical devices are
-never in CI.
+CI has three jobs. Physical devices are never in CI.
 
 | Job | Runner | Steps | Gate |
 |---|---|---|---|
-| `lint-and-test` | `ubuntu-latest` | `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings`; the source-rule script; `cargo test --lib --locked`; `cargo deny check` | any step failing blocks merge |
-| `simulator-integration` | `macos-latest` | `cargo test --test integration_snapshot --locked` (the test boots the simulator and starts the driver itself) | the snapshot assertion must pass |
-| `android-emulator` (later) | `ubuntu-latest` | boot emulator; run the Android integration equivalent | added when `crates/android` exists |
+| `lint-and-test` | `ubuntu-latest` | format, clippy, source rules, workspace tests, dependency policy | any step failing blocks merge |
+| `simulator-integration` | `macos-26` | build the iOS driver; run ignored `integration_snapshot` | the live snapshot assertion must pass |
+| `android-emulator` | `ubuntu-latest` | install only missing pinned headless SDK pieces; build/lint/test the APK; boot the disposable API 37 AVD; run ignored `integration_android`; always clean owned resources | the complete public-CLI Android rail must pass |
 
 Workflow hygiene: `permissions: {}` at the top, per-job `contents: read`, SHA-pinned actions, a
 `timeout-minutes` per job, and `--locked` on every cargo command.
@@ -377,15 +380,17 @@ driver and CLI together in one release.
 
 ### 7.6 Security policy
 
-- A token is required on every route. The driver is LAN-only by default. No tunnel logic in the code (§3 non-goals).
-- A token generates fresh per `serve` call, stored under `~/.agent-mobile/` at mode `0600`; no script carries a default.
+- A token is required on every route. iOS simulator and Android are loopback-only; physical iOS is
+  the documented P1 LAN exception. No tunnel logic lives in the core (§3 non-goals).
+- A fresh token is provisioned per `serve`, stored under `~/.agent-mobile/` at mode `0600`; no
+  script carries a default.
 - Logs may keep the command name, `elapsed_ms`, and the ok/error outcome, never the token.
 - `SECURITY.md` states the scope: the CLI, the core, and the drivers.
-- P1 cleanup: `drivers/ios/am.sh` defaults to a committed token today, and `drivers/ios/start-device.sh` writes its token to `/tmp/agent-mobile-device-token` with no `chmod` call.
+- Fixture and curl helpers pass bearer headers through private files rather than argv.
 
 ### 7.7 Definition of done for any phase
 
-1. The `lint-and-test` and `simulator-integration` CI gates (§7.4) pass.
+1. The phase-relevant `lint-and-test`, iOS simulator, and Android emulator CI gates (§7.4) pass.
 2. An Experiment entry in `docs/experiments/RESULTS.md` records verbatim output.
 3. No token or secret appears in logs, diffs, or committed scripts.
 4. `README.md` and the relevant `docs/` file reflect any command or protocol change.
@@ -456,6 +461,9 @@ Kill criterion, verbatim: "if agent-mobile is not measurably more reliable than 
   P3 replaces it with a loopback bind and a pairing-channel forward.
 - Canvas, games, and opaque WebViews expose no tree. Vision is out of scope.
 - Android: the agent app is sideload only. Play policy bans this use of the accessibility API.
+- Physical Android requires user-authorized USB or wireless ADB plus explicit Accessibility and,
+  on affected releases, Restricted Settings consent. Experiment 10's physical leg remains not run
+  until an authorized phone is available.
 
 ## 12. Open question
 
@@ -471,6 +479,9 @@ License: Apache-2.0 is assumed. Owner's call.
 | Driver through a cloudflared tunnel, 0.45 s status, 0.51 s snapshot | Exp 6 |
 | Physical iPhone 14 Pro over Wi-Fi and public URL; STALE_REF fired and held | Exp 7 |
 | Full loop on the phone over the LAN, event created, no STALE_REF; trust lapse observed | Exp 8 |
+| Shipped iOS CLI exits P1 on simulator and phone | Exp 9 |
+| Android 17 emulator creates and verifies a Clock alarm through the public CLI | Exp 10 |
+| Physical Android Experiment 10 leg was unavailable, with no synthetic evidence | Exp 10 |
 | Physical iOS cannot be zero-host | `docs/research/02-ios-connectivity.md` §7 |
 | Settle and ref stability unsolved industry-wide | `docs/research/09` §8, `docs/research/11` |
 | Android rail: AccessibilityService companion, survives reboot | `docs/research/05`, `docs/research/09` |

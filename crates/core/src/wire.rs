@@ -24,11 +24,21 @@ pub const LONG_TIMEOUT: Duration = Duration::from_secs(120);
 /// this is a malfunction, not a payload.
 const MAX_REPLY: u64 = 64 << 20;
 
+/// Total attempts for one call while the driver reports busy; a 503
+/// means the verb never ran, so resending is safe — but the wait stays
+/// bounded instead of queueing behind a long verb.
+const BUSY_ATTEMPTS: u32 = 5;
+
+/// Pause between busy attempts — long enough for a short verb to clear,
+/// short enough that a persistently busy driver fails fast.
+const BUSY_WAIT: Duration = Duration::from_millis(200);
+
 /// Configured client bound to one driver base URL and bearer token.
 pub struct Wire {
     agent: ureq::Agent,
     base: String,
     token: String,
+    android: bool,
 }
 
 impl Wire {
@@ -50,12 +60,31 @@ impl Wire {
             agent,
             base: base.trim_end_matches('/').to_owned(),
             token: token.to_owned(),
+            android: false,
+        }
+    }
+
+    /// Target the Android bridge: transport failures render the
+    /// bridge/`adb` checklist instead of the iOS trust/Wi-Fi one.
+    #[must_use]
+    pub fn for_android(mut self) -> Self {
+        self.android = true;
+        self
+    }
+
+    /// The transport failure for this client's platform.
+    fn transport_failure(&self, message: String) -> Failure {
+        if self.android {
+            Failure::transport_android(message)
+        } else {
+            Failure::transport(message)
         }
     }
 
     /// `POST /<verb>` with a JSON body. Any well-formed envelope — success or
     /// error — comes back `Ok`; only transport failures, unparseable bodies,
-    /// and version mismatches are `Err`.
+    /// and version mismatches are `Err`. A 503 busy verdict is retried
+    /// boundedly since the verb never ran; anything else returns at once.
     ///
     /// # Errors
     /// [`Failure::Transport`] on refused, timed-out, or other transport
@@ -63,21 +92,29 @@ impl Wire {
     /// [`ErrorCode::DriverError`] on an unparseable reply body.
     pub fn call(&self, verb: &str, body: &Value) -> Result<Envelope, Failure> {
         let url = format!("{}/{verb}", self.base);
-        let mut resp = self
-            .agent
-            .post(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Connection", "close")
-            .header("X-Agent-Mobile-Version", PROTOCOL_VERSION)
-            .header("Content-Type", "application/json")
-            .send_json(body)
-            .map_err(|e| Failure::transport(e.to_string()))?;
+        let send = || {
+            self.agent
+                .post(&url)
+                .header("Authorization", &format!("Bearer {}", self.token))
+                .header("Connection", "close")
+                .header("X-Agent-Mobile-Version", PROTOCOL_VERSION)
+                .header("Content-Type", "application/json")
+                .send_json(body)
+                .map_err(|e| self.transport_failure(e.to_string()))
+        };
+        let mut attempt = 0;
+        let mut resp = send()?;
+        while resp.status().as_u16() == 503 && attempt + 1 < BUSY_ATTEMPTS {
+            attempt += 1;
+            std::thread::sleep(BUSY_WAIT);
+            resp = send()?;
+        }
         let mut buf = Vec::new();
         resp.body_mut()
             .as_reader()
             .take(MAX_REPLY)
             .read_to_end(&mut buf)
-            .map_err(|e| Failure::transport(e.to_string()))?;
+            .map_err(|e| self.transport_failure(e.to_string()))?;
         let raw = String::from_utf8(buf)
             .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
         let envelope = Envelope::from_json(&raw).map_err(|e| {
