@@ -117,7 +117,7 @@ fn legacy_initialize_list_ping_and_eof() -> Result<(), Failure> {
         .iter()
         .map(|t| t["name"].as_str().unwrap_or_default())
         .collect();
-    let expected = "devices status snapshot tap type swipe home doubletap pinch hold back twofinger center launch screenshot stop skills";
+    let expected = "devices status snapshot tap type swipe scroll_until_visible home doubletap pinch hold back twofinger center launch screenshot stop skills";
     assert_eq!(names, expected.split_whitespace().collect::<Vec<_>>());
     check_catalog(tools);
     assert_eq!(client.request(2, "ping", &json!({}))?["result"], json!({}));
@@ -171,7 +171,7 @@ fn modern_discovery_and_metadata_validation() -> Result<(), Failure> {
         client.request(5, "tools/list", &json!({"_meta":modern()}))?["result"]["tools"]
             .as_array()
             .map(Vec::len),
-        Some(17)
+        Some(18)
     );
     client.finish()
 }

@@ -13,6 +13,7 @@ pub mod lazy;
 pub mod pinch;
 pub mod reply;
 pub mod screenshot;
+pub mod scroll;
 pub mod serve;
 pub mod skills;
 pub mod snapshot;
@@ -134,6 +135,11 @@ impl Ctx {
         })
     }
 
+    /// The app selector, for multi-call host-side verbs.
+    pub fn app_selector(&self) -> Option<&str> {
+        self.app.as_deref()
+    }
+
     /// Resolve this invocation's endpoint, or lazy-start a driver first
     /// when nothing is running (KTD7).
     pub fn session(&self) -> Result<Session, Failure> {
@@ -240,6 +246,8 @@ fn ctx_dispatch(cli: &Cli) -> Result<i32, Failure> {
         Command::Swipe { direction, target } => {
             Ctx::new(cli).and_then(|ctx| swipe::run(&ctx, direction, target.as_deref()))
         }
+        Command::ScrollUntilVisible { text, direction } => Ctx::new(cli)
+            .and_then(|ctx| scroll::run(&ctx, text, direction.as_deref().unwrap_or("up"))),
         Command::Home => Ctx::new(cli).and_then(|ctx| home::run(&ctx)),
         Command::Launch { bundle_id } => Ctx::new(cli).and_then(|ctx| launch::run(&ctx, bundle_id)),
         Command::Screenshot { output } => {

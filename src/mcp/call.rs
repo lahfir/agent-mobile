@@ -54,6 +54,19 @@ fn execute(job: Job, events: &Sender<Event>, options: &Options) -> Result<Value,
     )?;
     let session = ctx.session()?;
     let _ = events.send(Event::Boot(job.sequence, false));
+    if call.name == "scroll_until_visible" {
+        let request = call
+            .request
+            .ok_or_else(|| Failure::usage("missing request"))?;
+        let text = request.body["text"]
+            .as_str()
+            .ok_or_else(|| Failure::usage("missing text"))?;
+        let direction = request.body["direction"].as_str().unwrap_or("up");
+        return Ok(frame::text(
+            &frame::redact(cmd::scroll::reply(&ctx, text, direction)?),
+            false,
+        ));
+    }
     let mut request = call
         .request
         .ok_or_else(|| Failure::usage("missing request"))?;
