@@ -1,11 +1,12 @@
 //! Shared harness for CLI integration tests: stub HTTP driver, isolated
 //! HOME, and output helpers.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
 use agent_mobile_core::error::Failure;
@@ -112,6 +113,27 @@ pub fn run_wired(args: &[&str], home: &PathBuf, s: &Stub) -> Result<Output, Fail
     )
 }
 
+/// Spawn a CLI with all three standard streams piped for protocol tests.
+#[allow(dead_code, reason = "only protocol suites need piped stdio")]
+pub fn spawn_stdio(
+    args: &[&str],
+    home: &PathBuf,
+    envs: &[(&str, &str)],
+) -> Result<std::process::Child, Failure> {
+    Command::new(env!("CARGO_BIN_EXE_agent-mobile"))
+        .args(args)
+        .env("HOME", home)
+        .env_remove("AGENT_MOBILE_URL")
+        .env_remove("AGENT_MOBILE_TOKEN")
+        .env_remove("AGENT_MOBILE_MCP_CALL_SECS")
+        .envs(envs.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(Failure::from)
+}
+
 pub fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -141,3 +163,54 @@ pub const SNAPSHOT: &str = r#"{"version":"1","ok":true,"command":"snapshot","ela
     reason = "shared fixture; only some test binaries replay it"
 )]
 pub const STALE: &str = r#"{"version":"1","ok":false,"command":"tap","elapsed_ms":4,"error":{"code":"STALE_REF","message":"ref gone"}}"#;
+
+/// A channel-controlled HTTP driver: no clock sleeps and no early second reply.
+#[allow(dead_code, reason = "only MCP recovery tests hold driver replies")]
+pub fn held_driver() -> Result<(String, Receiver<String>, Sender<&'static str>), Failure> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let (started, observed) = mpsc::channel();
+    let (release, responses) = mpsc::channel::<&'static str>();
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let request = read_http(&mut stream);
+            let Ok(request) = request else { return };
+            if started.send(request).is_err() {
+                return;
+            }
+            let Ok(body) = responses.recv() else { return };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    Ok((url, observed, release))
+}
+
+fn read_http(stream: &mut std::net::TcpStream) -> std::io::Result<String> {
+    let mut reader = BufReader::new(stream);
+    let mut request = String::new();
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        request.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    request.push_str(&String::from_utf8_lossy(&body));
+    Ok(request)
+}
