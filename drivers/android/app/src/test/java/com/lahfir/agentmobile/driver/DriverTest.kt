@@ -217,9 +217,9 @@ class DriverTest {
             platform,
             Settler(clock = { now }, sleeper = { now += it }),
         )
-        assertEquals(2, driver.handle("snapshot", JSONObject()).getInt("reads"))
+        assertEquals(3, driver.handle("snapshot", JSONObject()).getInt("reads"))
         now += 200_000_000L
-        assertEquals(2, driver.handle("snapshot", JSONObject()).getInt("reads"))
+        assertEquals(3, driver.handle("snapshot", JSONObject()).getInt("reads"))
     }
 
     @Test
