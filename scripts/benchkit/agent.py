@@ -2,11 +2,12 @@
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import tempfile
 import time
 
-from scripts.benchkit.cold import android_sdk
+from scripts.benchkit.cold import android_sdk, android_serial
 from scripts.benchkit.config import OUT
 from scripts.benchkit.tasks import TASKS, task_variant
 
@@ -65,21 +66,25 @@ def run_claude(goal, label, server, cwd, timeout=TIMEOUT):
         command = ["claude", "-p", "--safe-mode", "--model", CLAUDE_MODEL, "--mcp-config", str(config),
                    "--strict-mcp-config", "--tools", "", "--allowedTools", f"mcp__{label}",
                    "--no-session-persistence", "--output-format", "stream-json", "--verbose", goal]
+        proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
         try:
-            proc = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
-            elapsed = (time.monotonic() - start) * 1000
-            parsed = parse_stream(proc.stdout.splitlines(), label)
-            final = parsed["final"]
-            cause = ("server failed to start: " + ", ".join(parsed["failed"]) if parsed["failed"] else
-                     "claude CLI error" if proc.returncode or not final else
-                     f"model error: {final.get('result')}" if final.get("is_error") else None)
-            if cause:
-                return {"status": "invalid", "cause": cause, "wall_ms": elapsed, **parsed}
-            return {"status": "agent_finished", "reason": final.get("result"), "wall_ms": elapsed, **parsed}
+            stdout, _ = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout or ""
+            os.killpg(proc.pid, signal.SIGKILL)
+            stdout, _ = proc.communicate()
+            out = stdout or (exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout) or ""
             return {"status": "success_false", "reason": "timeout", "wall_ms": timeout * 1000,
                     **parse_stream(out.splitlines(), label)}
+        elapsed = (time.monotonic() - start) * 1000
+        parsed = parse_stream(stdout.splitlines(), label)
+        final = parsed["final"]
+        cause = ("server failed to start: " + ", ".join(parsed["failed"]) if parsed["failed"] else
+                 "claude CLI error" if proc.returncode or not final else
+                 f"model error: {final.get('result')}" if final.get("is_error") else None)
+        if cause:
+            return {"status": "invalid", "cause": cause, "wall_ms": elapsed, **parsed}
+        return {"status": "agent_finished", "reason": final.get("result"), "wall_ms": elapsed, **parsed}
 
 
 
@@ -88,7 +93,14 @@ def fill(command, values, device):
     fmt = {key: str(value) for key, value in values.items()}
     fmt["device"] = device.rsplit(":", 1)[-1] if device else ""
     argv = [part.format(**fmt) for part in command]
-    return [android_sdk()[0] if argv[0] == "adb" else argv[0], *argv[1:]]
+    if argv[0] != "adb":
+        return argv
+    adb = android_sdk()[0]
+    avd = device.rsplit(":", 1)[-1] if device and device.startswith("android:avd:") else None
+    serial = android_serial(adb, avd) if avd else None
+    if not serial:
+        raise OSError(f"could not resolve Android device serial for {device}")
+    return [adb, "-s", serial, *argv[1:]]
 
 
 def reset_device(task, platform, values, device, run=subprocess.run):
@@ -104,7 +116,7 @@ def host_check(check, values, device=None, run=subprocess.run):
     try:
         result = run(fill(check["command"], values, device), capture_output=True, text=True, timeout=30, check=True)
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, str(exc)
+        return None, str(exc)
     evidence = (result.stdout or "").strip()
     return evidence == check["expected"].format(**values), evidence or (result.stderr or "").strip()
 
@@ -113,6 +125,8 @@ def checked_outcome(outcome, check, values, device=None, run=subprocess.run):
     if outcome["status"] != "agent_finished":
         return outcome
     passed, evidence = host_check(check, values, device, run)
+    if passed is None:
+        return {**outcome, "status": "invalid", "cause": evidence}
     return {**outcome, "status": "success" if passed else "success_false",
             "reason": "host check passed" if passed else evidence}
 
@@ -145,6 +159,7 @@ def run_one(label, server, task, platform, seed, device):
     """One measured run: reset, agent, host check. A harness fault is invalid and re-runs once."""
     goal, values = task_variant(task, seed)
     row = {"task": task["id"], "platform": platform, "seed": seed, "server": label}
+    invalid_causes = []
     for attempt in (1, 2):
         fault = reset_device(task, platform, values, device)
         if fault:
@@ -155,9 +170,12 @@ def run_one(label, server, task, platform, seed, device):
             outcome = checked_outcome(outcome, task["checks"][platform], values, device)
         outcome.pop("final", None)
         outcome.pop("failed", None)
+        if outcome["status"] == "invalid":
+            invalid_causes.append(outcome.get("cause", "invalid attempt"))
         if outcome["status"] != "invalid":
             break
-    return {**row, **outcome, "attempts": attempt}
+    return {**row, **outcome, "attempts": attempt, "invalid_attempts": len(invalid_causes),
+            "invalid_causes": invalid_causes}
 
 
 def run_agent(servers_path, binary=AGENT_BINARY, tasks=None, seeds=2, platforms=None, device=None):
