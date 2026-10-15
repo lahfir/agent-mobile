@@ -20,10 +20,10 @@ pub fn request(direction: &str) -> Result<Request, Failure> {
     super::swipe::request(direction, None)
 }
 
-fn names(node: &Node, list: &mut Vec<(String, String)>) {
-    list.push((node.role.clone(), node.name.clone()));
-    for child in &node.children {
-        names(child, list);
+fn without_refs(node: &mut Node) {
+    node.ref_id.clear();
+    for child in &mut node.children {
+        without_refs(child);
     }
 }
 
@@ -46,8 +46,12 @@ fn contains(node: &Node, target: &str) -> bool {
     node.name == target || node.children.iter().any(|child| contains(child, target))
 }
 
-/// Run the bounded loop and return the rendered final snapshot.
-pub fn reply(ctx: &Ctx, text: &str, direction: &str) -> Result<String, Failure> {
+/// Run the bounded loop and return the final snapshot envelope.
+pub fn reply(
+    ctx: &Ctx,
+    text: &str,
+    direction: &str,
+) -> Result<agent_mobile_core::contract::Envelope, Failure> {
     let request = request(direction)?;
     let session = ctx.session()?;
     let deadline = Instant::now() + TIME_BOUND;
@@ -55,7 +59,7 @@ pub fn reply(ctx: &Ctx, text: &str, direction: &str) -> Result<String, Failure> 
     initial.timeout = Some(TIME_BOUND);
     let mut current = initial.call(&session)?;
     if contains(&snapshot(&current)?.tree, text) {
-        return ctx.reply(current);
+        return Ok(current);
     }
     for _ in 0..MAX_SWIPES {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -66,18 +70,18 @@ pub fn reply(ctx: &Ctx, text: &str, direction: &str) -> Result<String, Failure> 
             ));
         }
         let before = snapshot(&current)?;
-        let mut node_list = Vec::new();
-        names(&before.tree, &mut node_list);
+        let mut previous_tree = before.tree.clone();
+        without_refs(&mut previous_tree);
         let mut step = Request::new(request.verb, request.body.clone());
         step.timeout = Some(remaining);
         current = step.call(&session)?;
         let after = snapshot(&current)?;
         if contains(&after.tree, text) {
-            return ctx.reply(current);
+            return Ok(current);
         }
-        let mut next_list = Vec::new();
-        names(&after.tree, &mut next_list);
-        if node_list == next_list {
+        let mut next_tree = after.tree.clone();
+        without_refs(&mut next_tree);
+        if previous_tree == next_tree {
             return Err(Failure::driver(
                 ErrorCode::DriverError,
                 "not found before end of list",
@@ -92,7 +96,5 @@ pub fn reply(ctx: &Ctx, text: &str, direction: &str) -> Result<String, Failure> 
 
 /// CLI wrapper.
 pub fn run(ctx: &Ctx, text: &str, direction: &str) -> Result<i32, Failure> {
-    let rendered = reply(ctx, text, direction)?;
-    super::emit(&rendered);
-    Ok(0)
+    Ok(ctx.finish(reply(ctx, text, direction)?))
 }

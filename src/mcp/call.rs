@@ -62,10 +62,8 @@ fn execute(job: Job, events: &Sender<Event>, options: &Options) -> Result<Value,
             .as_str()
             .ok_or_else(|| Failure::usage("missing text"))?;
         let direction = request.body["direction"].as_str().unwrap_or("up");
-        return Ok(frame::text(
-            &frame::redact(cmd::scroll::reply(&ctx, text, direction)?),
-            false,
-        ));
+        let env = cmd::scroll::reply(&ctx, text, direction)?;
+        return Ok(frame::text(&frame::redact(ctx.reply(env)?), false));
     }
     let mut request = call
         .request
@@ -87,15 +85,36 @@ fn execute(job: Job, events: &Sender<Event>, options: &Options) -> Result<Value,
 
 /// Timeout recovery depends on whether the worker is booting or executing.
 pub fn timeout(name: &str, boot: bool) -> Value {
-    let next = if boot {
-        "driver is starting; call again"
-    } else if tools::read_only(name) {
-        "call timed out; take a fresh snapshot and call again"
-    } else {
+    let next = if !tools::read_only(name) {
         "the action may already have run; take a snapshot before repeating it"
+    } else if boot {
+        "driver is starting; call again"
+    } else {
+        "call timed out; take a fresh snapshot and call again"
     };
     frame::text(
         &format!("DRIVER_ERROR: call budget exceeded\nnext: {next}"),
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_timeout_does_not_retry_actions() {
+        let action = timeout("tap", true);
+        assert!(
+            action["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("action may already have run"))
+        );
+        let read = timeout("snapshot", true);
+        assert!(
+            read["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("driver is starting; call again"))
+        );
+    }
 }

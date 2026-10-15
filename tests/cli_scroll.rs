@@ -12,11 +12,15 @@ use serde_json::{Value, json};
 use common::{code, run_wired, stderr, stdout, stub, tmp_home};
 
 fn snapshot(id: &str, names: &[&str]) -> String {
+    snapshot_with_value(id, names, "")
+}
+
+fn snapshot_with_value(id: &str, names: &[&str], value: &str) -> String {
     let children: Vec<Value> = names
         .iter()
         .map(|name| {
             json!({
-                "role":"button", "name":name, "value":"", "ref_id":format!("@{id}:e2"),
+                "role":"button", "name":name, "value":value, "ref_id":format!("@{id}:e2"),
                 "states":[], "available_actions":["Tap"],
                 "bounds":{"x":0.0,"y":0.0,"width":100.0,"height":50.0}, "children":[]
             })
@@ -64,6 +68,36 @@ fn unchanged_tree_fails_after_one_swipe() -> Result<(), Failure> {
     assert_eq!(code(&out), 1, "{}", stdout(&out));
     assert!(stderr(&out).contains("DRIVER_ERROR"));
     assert!(stderr(&out).contains("not found before end of list"));
+    assert_eq!(stub.captured()?.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn changed_value_continues_scrolling_despite_renumbered_refs() -> Result<(), Failure> {
+    let first = snapshot_with_value("s1", &[""], "first item");
+    let second = snapshot_with_value("s2", &[""], "second item");
+    let third = snapshot("s3", &["About"]);
+    let stub = stub(&[&first, &second, &third])?;
+    let home = tmp_home("scroll-content-change")?;
+    let out = run_wired(&["scroll_until_visible", "About"], &home, &stub)?;
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("About"));
+    assert_eq!(stub.captured()?.len(), 3);
+    Ok(())
+}
+
+#[test]
+fn json_flag_returns_snapshot_envelope_after_scroll() -> Result<(), Failure> {
+    let first = snapshot("s1", &["Top"]);
+    let second = snapshot("s2", &["About"]);
+    let stub = stub(&[&first, &second])?;
+    let home = tmp_home("scroll-json")?;
+    let out = run_wired(&["--json", "scroll_until_visible", "About"], &home, &stub)?;
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let value: Value =
+        serde_json::from_slice(&out.stdout).map_err(|error| common::fail(&error.to_string()))?;
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["snapshot_id"], "s2");
     assert_eq!(stub.captured()?.len(), 2);
     Ok(())
 }
