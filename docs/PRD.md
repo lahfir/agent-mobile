@@ -1,29 +1,30 @@
 # agent-mobile — Product Requirements Document
 
-Status: draft v0.3, 2026-10-05. Owner: Lahfir. Language: Rust (host), Swift (iOS driver), Kotlin (Android driver).
+Status: draft v0.4, 2026-10-15. Owner: Lahfir. Language: Rust (host), Swift (iOS driver), Kotlin (Android driver).
 Evidence base: `docs/research/` (13 tracks), `docs/experiments/RESULTS.md` (Experiments 1–10, verbatim).
 
 ## 0. Summary
 
-agent-mobile is a CLI that lets an AI agent drive iOS and Android apps the way agent-browser drives
-the web: take a snapshot of the accessibility tree, act on an element by reference, take the next
+agent-mobile is a CLI that lets an AI agent drive iOS and Android apps: take a snapshot of the
+accessibility tree, act on an element by reference, take the next
 snapshot. The driver runs on the device or simulator and speaks plain HTTP on a local port; the Rust
 CLI is a stateless client. The loop is proven end to end on the iOS simulator, a physical iPhone
 over Wi-Fi (Experiments 5–9), and the Android 17 emulator (Experiment 10). The physical Android leg
 was not run because no authorized phone was available. This document turns those probes into a
 product in four phases and names the one gate that decides whether the product should exist at all:
-a measured reliability win over Maestro MCP and mobile-mcp on identical tasks.
+a measured reliability win over two existing mobile MCP servers on identical tasks. P3 adds the
+MCP server and runs the reliability gate; P4 publishes the packages and registry listing.
 
 ## 1. Problem
 
-Agents can already drive a phone. Maestro ships an MCP server, mobile-mcp exists, and Appium has
-MCP wrappers. What none of them ships is a contract an agent can rely on: element references that
+Agents can already drive a phone through two existing mobile MCP servers and MCP wrappers for
+existing frameworks. What none of them ships is a contract an agent can rely on: element references that
 fail loudly when stale instead of tapping the wrong thing, a bounded settle check instead of an
 unbounded "wait for idle", and one action that returns the next tree instead of a find-then-act
 round trip. The research track on prior art lists settle detection and reference stability as
 unsolved industry-wide, and every published reliability number in the space is an unaudited
 self-report (docs/research/09 §8, docs/research/11). Physical iOS is the weakest link everywhere:
-Maestro states it is not supported; mobile-mcp needs a USB-trusted device (docs/research/09). We did
+one comparison server states it is not supported; the other needs a USB-trusted device (docs/research/09). We did
 the full loop over Wi-Fi with one script (Experiments 7 and 8).
 
 ## 2. Users
@@ -40,17 +41,18 @@ Goals
 - Fail-loud references: every action re-resolves on the device; a stale or ambiguous target is an
   error, never a guess.
 - Bounded waits: every action settles with a finite cap and reports what it saw.
-- Minimal setup: one binary and one driver per platform, no Appium server or capabilities file;
+- Minimal setup: one binary and one driver per platform, no separate framework server or capabilities file;
   Android uses only a pinned headless SDK, never Android Studio.
 - Local by default: iOS simulator and every Android endpoint are loopback; the physical-iOS LAN
   listener is the documented P1 exception.
 - Simulator/emulator and physical devices over their supported local transports: iOS LAN and
   authorized Android USB or wireless ADB.
 - Measured reliability, published with seed variance.
+- An MCP server in P3 lets the same agent harness drive all three tools over MCP.
 - No hidden retry and no fuzzy match, anywhere.
 
 Non-goals
-- Replacing Appium or Maestro for scripted regression suites. Breadth is theirs.
+- Replacing existing frameworks for scripted regression suites. Breadth is theirs.
 - Cloud device farms, WebView/CDP bridging, games and canvas UIs (vision-only territory).
 - Tunnels, relays, and QR pairing as product code. A tunnel is a documented adapter script.
 - Self-healing locators. No production framework ships them and none publishes accuracy (docs/research/11).
@@ -66,7 +68,7 @@ flowchart TB
     subgraph CORE["CORE — Rust, host side, stateless per invocation"]
         direction TB
         CLI["CLI (P1)"]
-        MCP["MCP server (P4)"]
+        MCP["MCP server (P3)"]
         ENGINE["Engine<br/>verbs · envelope + node schema + ref format<br/>compact text formatter · --json · error registry<br/>device discovery · serve = start a driver · token store<br/>wire client: POST http://driver/verb + bearer token"]
         CLI --> ENGINE
         MCP --> ENGINE
@@ -204,6 +206,52 @@ HTTP status per code is read from the driver's response builder.
 | `UNAUTHORIZED` | 401 | The bearer token is missing or wrong. | Fix `AGENT_MOBILE_TOKEN`; do not retry unchanged. |
 | `DRIVER_ERROR` | 500 | An error the driver did not anticipate. | Retry once; escalate if it recurs. |
 
+### 5.4 MCP server
+
+Spec revisions: `2026-07-28` (current) and `2025-11-25` (legacy), at modelcontextprotocol.io/specification.
+
+- `agent-mobile mcp` serves stdio only. No HTTP listener.
+- Hand-rolled newline-delimited JSON-RPC over `serde_json`, with no async runtime.
+  The official Rust SDK requires `tokio`, so it does not fit the core's dependency rule.
+- Support stateless `2026-07-28`: `server/discover`, per-request protocol version and client
+  capabilities in `_meta`, `resultType: "complete"`, and server identity in result `_meta`.
+- Also support the `2025-11-25` `initialize` / `notifications/initialized` / `ping` handshake.
+  Claude Code's v2 client probes the stateless revision first and falls back to the legacy handshake;
+  other stock clients' protocol eras are unconfirmed, so both are needed.
+- Advertise both revisions and only `tools: {}`. Keep the tool list static and deterministic;
+  discovery and list results carry `ttlMs` and `cacheScope: "public"`.
+- One tool per CLI verb in §5.2, with the same argument shapes and short names matching the verbs.
+  `mcp` and `serve` are not tools: `mcp` is the transport, and `serve` blocks for the driver's
+  lifetime. The first tool call starts the driver lazily, as the CLI does. Input schemas are plain JSON Schema 2020-12
+  objects with `additionalProperties:false`, no root `anyOf` or `oneOf`.
+- Set all four annotation hints explicitly per tool:
+
+| Tools | readOnlyHint | destructiveHint | idempotentHint | openWorldHint |
+|---|---|---|---|---|
+| `devices`, `status`, `snapshot`, `screenshot`, `skills` | true | false | true | false |
+| `launch` | false | true | false | true |
+| `stop` | false | true | true | true |
+| `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`, `hold`, `back`, `twofinger`, `center` | false | true | false | true |
+
+`launch` force-stops and restarts the app, so it is destructive and not idempotent. Action tools
+act on any target, a Delete button included, so they are destructive too (2025-11-25 ToolAnnotations).
+
+- Snapshot and action replies return the compact text listing as one text content item.
+  `screenshot` returns base64 image content with `mimeType: "image/png"`. No structured output initially.
+- Typed driver errors (`STALE_REF`, etc.) return `isError:true` with the code and next action (§5.3).
+  Unknown tool or malformed arguments return JSON-RPC `-32602`; unknown method returns `-32601`.
+  Missing modern request metadata returns `-32602`; unsupported version returns `-32022` with supported versions.
+- Stdout carries only flushed JSON-RPC lines. Logs and panics go to stderr; exit on stdin EOF.
+- Handle `notifications/cancelled` without replying; abandon the pending call and drop its response.
+  A reader thread and channel allow cancellation during blocking driver work.
+- App UI text is untrusted data. Frame output as untrusted, strip control characters, prevent
+  forged content boundaries, and bound node and reply sizes. Server instructions stay static.
+- Validate every argument, including types, ranges, refs and IDs; reject unknown properties.
+  Driver URL comes only from local discovery or configuration, token only from environment/configuration;
+  neither comes from tool arguments or appears in replies or logs. Serialize calls and rate-limit them.
+- Keep every verb, including startup, under the 60 s client tool timeout; return a typed error before it expires.
+- Testing: black-box stdio tests for both protocol eras, plus an MCP Inspector smoke check.
+
 ## 6. Phases
 
 ### 6.0 P0 — Research and probes (complete)
@@ -226,12 +274,12 @@ P0 is the first phase and it is finished. What it proved:
 - Driver cleanups: envelope version `1`, `X-Agent-Mobile-Version` check, `bounds` keys renamed to `{x,y,width,height}`, Home press at start on the simulator, no default token in any script.
 - `serve` recognizes the "certificate is not trusted" launch failure and prints the re-trust steps (Experiment 8).
 - Developer experience, the P1 acceptance bar: `npm i -g agent-mobile` then `agent-mobile snapshot` is the whole start. The first verb starts the driver if none runs (lazy start), boots the default simulator, saves the session under `~/.agent-mobile/`, and then runs the verb. `serve` stays as the explicit form.
-- The npm package ships a prebuilt simulator runner, so the simulator path builds nothing on the user's Mac (Maestro's pattern, docs/research/09 §5). A physical iPhone builds and signs once with the Xcode account on that Mac; `--device <name>` is remembered.
+- The npm package ships a prebuilt simulator runner, so the simulator path builds nothing on the user's Mac (the prebuilt runner pattern, docs/research/09 §5). A physical iPhone builds and signs once with the Xcode account on that Mac; `--device <name>` is remembered.
 - Every error names the next action: a stale ref says re-snapshot, a missing Xcode says the install step, a missing simulator says the create command, a trust refusal says the three Settings steps.
 - `agent-mobile skills` prints the one-page agent guide.
 
 **Out of scope**
-- Android, the in-app SDK, the benchmark, and the MCP wrapper wait for later phases.
+- Android waits for P2; the benchmark and MCP server wait for P3; the in-app SDK stays Later.
 
 **Exit criterion** — Experiment 9: the CLI creates a Calendar event on the simulator and the phone, verbatim; the driver presses Home first on the simulator so no runner screen shows. The simulator run starts from a clean machine state with only `npm i -g agent-mobile` and no `serve` call.
 
@@ -255,34 +303,42 @@ manual procedure retained, rather than represented by a synthetic transcript.
 ### 6.3 P3 — Reliability gate
 
 **Scope**
-- The §9 benchmark runs agent-mobile against Maestro MCP and mobile-mcp.
-- A third read or a minimum settle window fixes the early-settle case in §8.
-- A springboard/system-alert surface handles permission dialogs; `scroll_until_visible` ships.
-- Physical-iOS hardening moves the bind to loopback plus a pairing-channel port forward.
+- MCP server (§5.4).
+- Agent-task benchmark (§10): one fixed model, 10 tasks, at least 5 seeds per task per tool on
+  an iOS simulator and Android emulator. Programmatic host-side success checks use no tool under
+  test. Reset the device between runs, pin versions of every component, and report §10's metrics.
+  The comparison servers' launch commands come from a local untracked config file, not the repo.
+- Settle fix: a third read or minimum settle window for the early-settle case (§9).
+  The post-action two-read rule already landed in #7.
+- System-alert surface for permission dialogs.
+- `scroll_until_visible`.
+- Physical-iOS loopback bind plus pairing-channel port forward.
 
-**Benchmark report** — `scripts/bench.py` (runner) and `scripts/bench.html` (template) are the base for the §9 run and every later benchmark. Extend them; do not fork them. Keep the report standard:
+The comparison servers are MCP servers, so all three tools must use MCP through the same agent harness; otherwise the comparison mixes the contract with the calling interface.
+
+**Benchmark report** — `scripts/bench.py` (runner) and `scripts/bench.html` (template) are the base for the §10 run and every later benchmark. Extend them; do not fork them. Keep the report standard:
 - One question per 1280×720 slide, each a white card on the patterned ground that can be posted as a screenshot. Nothing may overflow the card.
 - Numbers left, one chart right. The footer on every slide carries version, device, OS, SHA, runs, and date.
 - Charts use the reference shapes only: rounded stacked bars, rounded columns with one saturated highlight, the ribbon waterfall, the gapped donut, and thin spark bars. The key value sits in a black chip.
 - Palette in fixed order: `#4F55F0`, `#E0584F`, `#8B5CF6`, `#D4861A`, `#D946C8`. Text stays in ink or muted grey, never the series color.
 - Titles are short questions. No paragraphs. Every value also appears in the "All numbers" table.
-- A competitor run adds its series to the existing slides; it does not add new slide types.
+- A comparison-server run adds its series to the existing slides; it does not add new slide types.
 
 **Out of scope**
 - Everything in §6.5's Later and Never lists.
 
-**Exit criterion** — Experiment 11: the benchmark completes across all tasks and seeds against both competitors, and §9's kill criterion applies to the pooled result.
+**Exit criterion** — Experiment 11: the benchmark completes across all tasks and seeds against both comparison servers, and §10's kill criterion applies to the pooled result.
 
-### 6.4 P4 — MCP server and release
+### 6.4 P4 — Release
 
 **Scope**
-- An MCP server wraps the same verbs over the same core; nothing new.
+- Publish to npm and cargo, and add the MCP Registry listing.
 - The skills doc ships bundled.
 
 **Out of scope**
 - Any verb the CLI does not already expose.
 
-**Exit criterion** — Experiment 12: after publishing to npm and cargo, a stock MCP client repeats Experiment 9's Calendar event through the MCP server.
+**Exit criterion** — Experiment 12: a stock MCP client repeats Experiment 9's Calendar event through the published package.
 
 ### 6.5 Later / Never
 
@@ -409,7 +465,7 @@ the wire is not the cost. One `XCUIElement.snapshot()` costs about 205 ms on the
 | settle: two snapshots | 410 | two full tree reads |
 | settle: fixed `usleep` | 150 | the driver's own pause between reads |
 
-P1 fixes, in payoff order: turn off the quiescence wait as WebDriverAgent does
+P1 fixes, in payoff order: turn off the quiescence wait using the existing runner pattern
 (docs/research/01); resolve from one snapshot and tap the matched frame by coordinate instead of
 evaluating the query twice; drop the fixed pause, since a snapshot already takes longer than it;
 reuse the post-action read as the first settle read. Target: about 700 ms per action on a device
@@ -438,16 +494,17 @@ The P3 benchmark is the reliability gate: ship or stop turns on its result.
 
 | Parameter | Value |
 |---|---|
-| Platform | Simulator and emulator only. Maestro's own README states plainly that physical iOS devices are not yet supported, including through its MCP server. A shared task set needs every tool able to attempt every task, so physical iOS is out of the comparison even though agent-mobile itself can run it (§6.0). |
+| Platform | Simulator and emulator only. One comparison server's README states plainly that physical iOS devices are not yet supported, including through its MCP server. A shared task set needs every tool able to attempt every task, so physical iOS is out of the comparison even though agent-mobile itself can run it (§6.0). |
 | Tasks | 10, identical across all three tools |
 | Seeds | at least 5 per task per tool |
-| Model | one fixed model, held constant across agent-mobile, Maestro MCP, and mobile-mcp |
-| Tools compared | agent-mobile vs. Maestro MCP vs. mobile-mcp |
+| Model | one fixed model, held constant across agent-mobile and both comparison servers |
+| Tools compared | agent-mobile vs. server A vs. server B (two existing mobile MCP servers) |
+| Interface | all three tools over MCP stdio, same harness and system prompt |
 | Metrics | task success rate, steps per task, STALE_REF count, wall time |
 
 Report each metric as a mean and spread across seeds, per task and pooled.
 
-Kill criterion, verbatim: "if agent-mobile is not measurably more reliable than both competitors on the same tasks, stop the product and contribute the ref and settle contract upstream."
+Kill criterion: if agent-mobile is not measurably more reliable than both comparison servers on the same tasks, stop the product and contribute the ref and settle contract upstream.
 
 ## 11. Known limitations
 
@@ -482,6 +539,8 @@ License: Apache-2.0 is assumed. Owner's call.
 | Shipped iOS CLI exits P1 on simulator and phone | Exp 9 |
 | Android 17 emulator creates and verifies a Clock alarm through the public CLI | Exp 10 |
 | Physical Android Experiment 10 leg was unavailable, with no synthetic evidence | Exp 10 |
+| P3 MCP protocol and tool decisions | §5.4; modelcontextprotocol.io/specification revisions `2026-07-28`, `2025-11-25` |
+| P3 agent-task benchmark design and comparison constraints | §6.3, §10 |
 | Physical iOS cannot be zero-host | `docs/research/02-ios-connectivity.md` §7 |
 | Settle and ref stability unsolved industry-wide | `docs/research/09` §8, `docs/research/11` |
 | Android rail: AccessibilityService companion, survives reboot | `docs/research/05`, `docs/research/09` |
