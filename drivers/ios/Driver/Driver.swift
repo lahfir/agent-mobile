@@ -7,6 +7,7 @@ final class Driver {
     var bundle = "com.apple.springboard"
     var snapId = ""
     var refs: [String: Ident] = [:]
+    var alertTarget: XCUIElement?
     var seq = 0
     var lastRead: (h: Int, at: Date)?
     var appCache: [String: XCUIApplication] = [:]
