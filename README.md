@@ -206,11 +206,13 @@ Accessibility approval is the second consent boundary:
 cargo build --release --locked
 python3 scripts/bench.py                     # ~25 min: 3 cold boots, 30 iterations, soak, scenario
 python3 scripts/bench.py --quick             # ~5 min smoke run
+python3 scripts/bench.py --device android:avd:<name>   # same suite against Android
 python3 scripts/bench.py --compare bench-results/<old>.json
 python3 scripts/bench.py --render bench-results/<run>.json   # rebuild the HTML only
 ```
 
-It drives the release binary against the iOS simulator and writes `bench-results/<stamp>.json`
+It drives the release binary against the iOS simulator (or an Android emulator via
+`--device`) and writes `bench-results/<stamp>.json`
 plus a self-contained HTML report: 1280×720 slides, one question each, ready to screenshot. It
 covers cold start, per-verb p50/p95, the CLI/driver/settle split, snapshot cost against tree
 size, typing speed, settle rate, stale-ref refusals, error rate, tokens per snapshot, drift,

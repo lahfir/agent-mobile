@@ -6,6 +6,8 @@ import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
+private const val NO_ACTIVE_WINDOW = "no active accessibility window; focus a foreground app and retry"
+
 internal interface DriverPlatform {
     fun status(): PlatformStatus
     fun readTree(): TreeRead
@@ -34,7 +36,7 @@ private class AndroidDriverPlatform(private val service: AgentMobileAccessibilit
 
     override fun readTree(): TreeRead = service.onMain {
         val node = service.rootInActiveWindow
-            ?: throw DriverException("DRIVER_ERROR", "no active accessibility window; focus a foreground app and retry")
+            ?: throw DriverException("DRIVER_ERROR", NO_ACTIVE_WINDOW)
         val density = service.resources.displayMetrics.density.toDouble()
         reader.read(
             TreeReader.createPlatformSource(node),
@@ -80,7 +82,6 @@ internal class Driver internal constructor(
     )
 
     internal val ledger = RefLedger()
-    private var lastRead: TreeRead? = null
     private val admission = AtomicBoolean(false)
 
     fun handle(
@@ -127,7 +128,7 @@ internal class Driver internal constructor(
     private fun status(cancellation: RequestCancellation): JSONObject {
         val current = checked(cancellation) { platform.status() }
         if (current.app.isBlank()) {
-            throw DriverException("DRIVER_ERROR", "no active accessibility window; focus a foreground app and retry")
+            throw DriverException("DRIVER_ERROR", NO_ACTIVE_WINDOW)
         }
         ledger.invalidateIfAppChanged(current.app)
         return JSONObject()
@@ -148,19 +149,18 @@ internal class Driver internal constructor(
                 }
             }
         }
-        val result = settler.settle(lastRead) { checked(cancellation) { platform.readTree() } }
+        val result = settler.settle { checked(cancellation) { platform.readTree() } }
         if (requestedApp != null && requestedApp != result.read.app) {
             throw DriverException("BAD_REQUEST", "app $requestedApp is not the foreground package ${result.read.app}")
         }
         val out = ledger.mint(result.read, result.settled, result.reads, result.settleMs)
-        lastRead = result.read
         return out
     }
 
-    private fun mutate(baseline: TreeRead?, cancellation: RequestCancellation): JSONObject {
-        val result = settler.settle(baseline ?: lastRead) { checked(cancellation) { platform.readTree() } }
+    private fun mutate(cancellation: RequestCancellation, awaitWindow: Boolean = false): JSONObject {
+        val tolerate = { e: DriverException -> awaitWindow && e.message == NO_ACTIVE_WINDOW }
+        val result = settler.settle(tolerate) { checked(cancellation) { platform.readTree() } }
         val out = ledger.mint(result.read, result.settled, result.reads, result.settleMs)
-        lastRead = result.read
         return out
     }
 
@@ -224,7 +224,7 @@ internal class Driver internal constructor(
         if (point != null) {
             val live = checked(cancellation) { platform.readTree() }
             checked(cancellation) { platform.dispatchGesture(Gestures.tap(checkedPoint(point, live))) }
-            return mutate(live, cancellation)
+            return mutate(cancellation)
         }
         val result = checked(cancellation) {
             platform.performNodeAction(ledger.lookup(params.opt("ref")), NodeAction.Click, cancellation)
@@ -237,7 +237,7 @@ internal class Driver internal constructor(
                 )
             }
         }
-        return mutate(result.read, cancellation)
+        return mutate(cancellation)
     }
 
     private fun doubletap(params: JSONObject, cancellation: RequestCancellation): JSONObject {
@@ -245,7 +245,7 @@ internal class Driver internal constructor(
         if (point != null) {
             val live = checked(cancellation) { platform.readTree() }
             checked(cancellation) { platform.dispatchGesture(Gestures.doubleTap(checkedPoint(point, live))) }
-            return mutate(live, cancellation)
+            return mutate(cancellation)
         }
         val resolved = resolveRef(params.opt("ref"), cancellation)
         val spec = checkedRefGesture(
@@ -253,7 +253,7 @@ internal class Driver internal constructor(
             Gestures.doubleTap(Gestures.rawCenter(resolved.node.identity.rawBounds)),
         )
         checked(cancellation) { platform.dispatchGesture(spec) }
-        return mutate(resolved.baseline, cancellation)
+        return mutate(cancellation)
     }
 
     private fun hold(params: JSONObject, cancellation: RequestCancellation): JSONObject {
@@ -272,7 +272,7 @@ internal class Driver internal constructor(
             checked(cancellation) {
                 platform.dispatchGesture(Gestures.hold(checkedPoint(point, live), (seconds * 1000).toLong()))
             }
-            return mutate(live, cancellation)
+            return mutate(cancellation)
         }
         val resolved = resolveRef(params.opt("ref"), cancellation)
         val spec = checkedRefGesture(
@@ -280,7 +280,7 @@ internal class Driver internal constructor(
             Gestures.hold(Gestures.rawCenter(resolved.node.identity.rawBounds), (seconds * 1000).toLong()),
         )
         checked(cancellation) { platform.dispatchGesture(spec) }
-        return mutate(resolved.baseline, cancellation)
+        return mutate(cancellation)
     }
 
     private fun pinch(params: JSONObject, cancellation: RequestCancellation): JSONObject {
@@ -298,7 +298,7 @@ internal class Driver internal constructor(
                 checkedRefGesture(resolved, Gestures.pinch(resolved.node.identity.rawBounds, scale.toDouble(), velocity)),
             )
         }
-        return mutate(resolved.baseline, cancellation)
+        return mutate(cancellation)
     }
 
     /** Omitted velocity defaults to +1 for spread and -1 for converge —
@@ -321,7 +321,7 @@ internal class Driver internal constructor(
                 checkedRefGesture(resolved, Gestures.twoFinger(resolved.node.identity.rawBounds)),
             )
         }
-        return mutate(resolved.baseline, cancellation)
+        return mutate(cancellation)
     }
 
     private fun type(params: JSONObject, cancellation: RequestCancellation): JSONObject {
@@ -339,7 +339,7 @@ internal class Driver internal constructor(
         if (!result.accepted) {
             throw DriverException("DRIVER_ERROR", "type action not accepted by target")
         }
-        return mutate(result.read, cancellation)
+        return mutate(cancellation)
     }
 
     private fun swipe(params: JSONObject, cancellation: RequestCancellation): JSONObject {
@@ -359,20 +359,20 @@ internal class Driver internal constructor(
                     )
                 }
             }
-            return mutate(result.read, cancellation)
+            return mutate(cancellation)
         }
         val live = checked(cancellation) { platform.readTree() }
         checked(cancellation) {
             platform.dispatchGesture(checkedRootGesture(Gestures.swipe(live.origin, direction, 0.5), live))
         }
-        return mutate(live, cancellation)
+        return mutate(cancellation)
     }
 
     private fun global(action: GlobalAction, cancellation: RequestCancellation): JSONObject {
         if (!checked(cancellation) { platform.performGlobal(action) }) {
             throw DriverException("DRIVER_ERROR", "${action.name.lowercase()} action refused")
         }
-        return mutate(null, cancellation)
+        return mutate(cancellation, awaitWindow = true)
     }
 
     private fun center(params: JSONObject, cancellation: RequestCancellation): JSONObject {

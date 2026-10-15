@@ -50,6 +50,10 @@ internal fun appendWithReturn(
     return true
 }
 
+// getText() returns the hint while a field is empty; that is not content.
+internal fun textExcludingHint(text: String?, showingHint: Boolean): String =
+    if (showingHint) "" else text ?: ""
+
 internal interface NodeSource {
     val className: String
     val packageName: String?
@@ -57,6 +61,7 @@ internal interface NodeSource {
     val text: String?
     val contentDescription: String?
     val hintText: String?
+    val isShowingHintText: Boolean get() = false
     val isPassword: Boolean
     val isEditable: Boolean
     val isEnabled: Boolean
@@ -96,6 +101,7 @@ private class AndroidNodeSource(private val node: AccessibilityNodeInfo) : NodeS
     override val text: String? get() = node.text?.toString()
     override val contentDescription: String? get() = node.contentDescription?.toString()
     override val hintText: String? get() = node.hintText?.toString()
+    override val isShowingHintText: Boolean get() = node.isShowingHintText
     override val isPassword: Boolean get() = node.isPassword
     override val isEditable: Boolean get() = node.isEditable
     override val isEnabled: Boolean get() = node.isEnabled
@@ -145,7 +151,7 @@ private class AndroidNodeSource(private val node: AccessibilityNodeInfo) : NodeS
         }
         return appendWithReturn(
             text,
-            currentValue = { node.text?.toString() ?: "" },
+            currentValue = { textExcludingHint(node.text?.toString(), node.isShowingHintText) },
             setText = { value ->
                 val args = Bundle()
                 args.putCharSequence(
@@ -156,7 +162,7 @@ private class AndroidNodeSource(private val node: AccessibilityNodeInfo) : NodeS
             },
             imeEnter = imeEnter,
             afterImeValue = {
-                if (node.refresh()) node.text?.toString() ?: "" else null
+                if (node.refresh()) textExcludingHint(node.text?.toString(), node.isShowingHintText) else null
             },
             check = cancellation::check,
         )
@@ -347,7 +353,7 @@ internal class TreeReader(
         val editable = source.isEditable || className.endsWith("EditText")
         val role = roleFor(className, editable, password)
         val contentDescription = if (password) "" else (source.contentDescription?.toString() ?: "")
-        val text = if (password) "" else (source.text?.toString() ?: "")
+        val text = if (password) "" else textExcludingHint(source.text?.toString(), source.isShowingHintText)
         val hint = if (password) "" else (source.hintText?.toString() ?: "")
         val name = when {
             password -> ""

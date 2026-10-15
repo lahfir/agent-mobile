@@ -155,7 +155,7 @@ function delta(now, then, lowerIsBetter = true) {
 }
 
 const S = all(RUN), B = BASE ? all(BASE) : null, M = RUN.meta || {};
-const FOOT = `<div class="foot"><span><b>agent-mobile</b> ${M.cli?.replace("agent-mobile ", "v") ?? ""} · ${M.device ?? "—"} · iOS ${M.os ?? "—"}</span>
+const FOOT = `<div class="foot"><span><b>agent-mobile</b> ${M.cli?.replace("agent-mobile ", "v") ?? ""} · ${M.device ?? "—"} · ${M.platform === "android" ? "Android" : "iOS"} ${M.os ?? "—"}</span>
   <span>${M.sha ?? ""}${M.dirty ? "+dirty" : ""} · ${M.runs ?? "—"} runs · ${M.stamp ?? ""}${BASE ? ` · vs ${BASE.meta?.sha ?? "base"}` : ""}</span></div>`;
 const slide = (title, unit, color, body) => `<section class="slide"><div class="card">
   <div class="head"><div class="icon" style="background:${solid(color)}"></div><h2>${title}</h2><span class="unit">${unit}</span></div>
@@ -365,7 +365,7 @@ function table() {
     return `<tr><td>${v}</td><td>${s.n}</td><td>${ms(s.p50)}</td><td>${ms(s.p95)}</td><td>${ms(s.max)}</td><td>${ms(s.driver)}</td><td>${ms(s.settle)}</td>
       <td>${ms(s.over)}</td><td>${s.reads?.toFixed(2) ?? "—"}</td><td>${s.settled == null ? "—" : `${(s.settled * 100).toFixed(0)} %`}</td><td>${s.errors}</td><td>${B ? delta(s.p50, B[v]?.p50) : ""}</td></tr>`;
   }).join("");
-  const cold = (RUN.cold || []).map((c, k) => `<tr><td>cold #${k + 1}</td><td colspan="3">simulator ${ms(c.boot)}</td><td colspan="3">driver ${ms(c.driver)}</td><td colspan="5">first snapshot ${ms(c.snapshot)}</td></tr>`).join("");
+  const cold = (RUN.cold || []).map((c, k) => `<tr><td>cold #${k + 1}</td><td colspan="3">${M.platform === "android" ? "emulator" : "simulator"} ${ms(c.boot)}</td><td colspan="3">driver ${ms(c.driver)}</td><td colspan="5">first snapshot ${ms(c.snapshot)}</td></tr>`).join("");
   const pay = Object.entries(RUN.payload || {}).map(([a, p]) => `<tr><td>bytes · ${a}</td><td colspan="3">text ${p.text}</td><td colspan="3">json ${p.json}</td><td colspan="5">depth 3: ${p.d3} · depth 6: ${p.d6}</td></tr>`).join("");
   return `<details><summary>All numbers</summary><table><tr>${["verb", ...cols].map((c) => `<th>${c}</th>`).join("")}</tr>${rows}${cold}${pay}</table></details>`;
 }

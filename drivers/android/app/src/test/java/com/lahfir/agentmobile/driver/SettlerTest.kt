@@ -38,22 +38,11 @@ class SettlerTest {
         )
 
     @Test
-    fun oldMatchingBaselineIsDonated() {
+    fun firstReadEqualToEarlierTreeDoesNotSettleAlone() {
         val clock = Clock()
         clock.now = 200_000_000
-        val baseline = read("S", atNanos = 0)
-        val result = settler(clock).settle(baseline) { read("S", clock.time()) }
-        assertTrue(result.settled)
-        assertEquals(1, result.reads)
-    }
-
-    @Test
-    fun tooYoungBaselineIsNotDonated() {
-        val clock = Clock()
-        clock.now = 50_000_000
-        val baseline = read("S", atNanos = 0)
         var reads = 0
-        val result = settler(clock).settle(baseline) {
+        val result = settler(clock).settle {
             reads += 1
             read("S", clock.time())
         }
@@ -63,9 +52,58 @@ class SettlerTest {
     }
 
     @Test
+    fun missingWindowMidSettleIsWaitedOutAndBreaksStability() {
+        val clock = Clock()
+        var calls = 0
+        val result = settler(clock).settle({ true }) {
+            calls += 1
+            if (calls == 2) throw DriverException("DRIVER_ERROR", "no window")
+            read("S", clock.time())
+        }
+        assertTrue(result.settled)
+        assertEquals(4, calls)
+        assertEquals(3, result.reads)
+    }
+
+    @Test
+    fun missingWindowIsWaitedOutWhenTolerated() {
+        val clock = Clock()
+        var calls = 0
+        val result = settler(clock).settle({ true }) {
+            calls += 1
+            if (calls == 1) throw DriverException("DRIVER_ERROR", "no window")
+            read("S", clock.time())
+        }
+        assertTrue(result.settled)
+        assertEquals(3, calls)
+        assertEquals(2, result.reads)
+    }
+
+    @Test
+    fun missingWindowFailsAtDeadline() {
+        val clock = Clock()
+        val e = runCatching {
+            settler(clock).settle({ true }) { throw DriverException("DRIVER_ERROR", "no window") }
+        }.exceptionOrNull()
+        assertTrue(e is DriverException)
+        assertTrue(clock.time() >= timeoutNanos)
+    }
+
+    @Test
+    fun missingWindowFailsFastWhenNotTolerated() {
+        val clock = Clock()
+        var calls = 0
+        val e = runCatching {
+            settler(clock).settle { calls += 1; throw DriverException("DRIVER_ERROR", "no window") }
+        }.exceptionOrNull()
+        assertTrue(e is DriverException)
+        assertEquals(1, calls)
+    }
+
+    @Test
     fun twoEqualReadsAtLeastGapApartSettle() {
         val clock = Clock()
-        val result = settler(clock).settle(null) { read("S", clock.time()) }
+        val result = settler(clock).settle { read("S", clock.time()) }
         assertTrue(result.settled)
         assertEquals(2, result.reads)
         assertTrue(result.settleMs >= 150)
@@ -76,7 +114,7 @@ class SettlerTest {
         val clock = Clock()
         var sleepCalls = 0
         val readTimes = mutableListOf<Long>()
-        val result = settler(clock) { clock.advance(50_000_000); sleepCalls += 1 }.settle(null) {
+        val result = settler(clock) { clock.advance(50_000_000); sleepCalls += 1 }.settle {
             readTimes += clock.time()
             read("S", clock.time())
         }
@@ -95,7 +133,7 @@ class SettlerTest {
         var platformTime = 0L
         val readTimes = mutableListOf<Long>()
         val sleeper = { nanos: Long -> wall.advance(nanos) }
-        val result = settler(wall, sleeper).settle(null) {
+        val result = settler(wall, sleeper).settle {
             readTimes += wall.time()
             read("S", platformTime)
         }
@@ -107,7 +145,7 @@ class SettlerTest {
     fun nonAdvancingSleeperFailsBoundedly() {
         val clock = Clock()
         val e = runCatching {
-            settler(clock) { }.settle(null) { read("S", clock.time()) }
+            settler(clock) { }.settle { read("S", clock.time()) }
         }.exceptionOrNull()
         assertTrue(e is DriverException)
         assertEquals("DRIVER_ERROR", (e as DriverException).code)
@@ -118,7 +156,7 @@ class SettlerTest {
         val clock = Clock()
         var i = 0
         val readTimes = mutableListOf<Long>()
-        val result = settler(clock).settle(null) {
+        val result = settler(clock).settle {
             i += 1
             readTimes += clock.time()
             read("sig$i", clock.time())
@@ -136,7 +174,7 @@ class SettlerTest {
     fun interruptedSleepMapsDriverErrorAndPreservesInterrupt() {
         val clock = Clock()
         val result = runCatching {
-            settler(clock) { throw InterruptedException("stop") }.settle(null) { read("S", clock.time()) }
+            settler(clock) { throw InterruptedException("stop") }.settle { read("S", clock.time()) }
         }
         val e = result.exceptionOrNull()
         assertTrue(e is DriverException)
