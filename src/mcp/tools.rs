@@ -5,13 +5,14 @@ use serde_json::{Value, json};
 
 use crate::cmd::{self, reply::Request};
 
-pub const NAMES: [&str; 17] = [
+pub const NAMES: [&str; 18] = [
     "devices",
     "status",
     "snapshot",
     "tap",
     "type",
     "swipe",
+    "scroll_until_visible",
     "home",
     "doubletap",
     "pinch",
@@ -67,6 +68,12 @@ fn schema(name: &str) -> Value {
             properties = json!({"ref":reference, "direction":{"type":"string", "enum":["up","down","left","right"]}});
             required.push("direction");
         }
+        "scroll_until_visible" => {
+            properties["text"] = json!({"type":"string", "minLength":1, "maxLength":1024});
+            properties["direction"] =
+                json!({"type":"string", "enum":["up","down","left","right"], "default":"up"});
+            required.push("text");
+        }
         "pinch" => {
             properties = json!({"ref":reference, "scale":{"type":"number", "exclusiveMinimum":0}, "velocity":number});
             required.extend(["ref", "scale"]);
@@ -98,6 +105,9 @@ fn description(name: &str) -> String {
         "tap" => "Tap a ref or x,y point in app-frame coordinates. Supply ref OR both x and y.",
         "type" => "Append text to a ref or the focused field; returns the next snapshot.",
         "swipe" => "Swipe in a direction on a ref or the whole app; returns the next snapshot.",
+        "scroll_until_visible" => {
+            "Swipe until an exact node name appears; direction defaults to up."
+        }
         "home" => "Go to the launcher/home and return its snapshot.",
         "doubletap" => "Tap twice on a ref or x,y app-frame point. Supply ref OR both x and y.",
         "pinch" => {
@@ -246,6 +256,12 @@ pub fn prepare(params: &Value) -> Result<Call, Failure> {
             args["direction"].as_str().ok_or_else(invalid)?,
             reference,
         )?),
+        "scroll_until_visible" => {
+            let direction = args["direction"].as_str().unwrap_or("up");
+            let mut request = cmd::scroll::request(direction)?;
+            request.body["text"] = args["text"].clone();
+            Some(request)
+        }
         "pinch" => {
             let scale = args["scale"].as_f64().ok_or_else(invalid)?;
             if (scale - 1.0).abs() < 0.01 {

@@ -61,6 +61,15 @@ pub enum Command {
         /// Optional `@<snapshot>:e<N>` ref to swipe on.
         target: Option<String>,
     },
+    /// Swipe until an exact node name appears in the snapshot.
+    #[command(name = "scroll_until_visible")]
+    ScrollUntilVisible {
+        /// Exact accessibility node name to find.
+        text: String,
+        /// Swipe direction; defaults to up.
+        #[arg(value_parser = ["up", "down", "left", "right"])]
+        direction: Option<String>,
+    },
     /// Go to the launcher/home; returns that tree.
     Home,
     /// Double-tap a ref, or an x y point from the app frame's top-left.
@@ -139,6 +148,7 @@ impl Command {
             Self::Tap { .. } => "tap",
             Self::Type { .. } => "type",
             Self::Swipe { .. } => "swipe",
+            Self::ScrollUntilVisible { .. } => "scroll_until_visible",
             Self::Home => "home",
             Self::Doubletap { .. } => "doubletap",
             Self::Pinch { .. } => "pinch",

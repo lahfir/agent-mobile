@@ -162,7 +162,7 @@ app=com.apple.mobilecal snapshot=@upii2see refs=127 settled=true reads=2 elapsed
 
 ### 5.2 CLI surface
 
-The CLI is stateless per call against the long-lived driver. Fourteen of the eighteen commands
+The CLI is stateless per call against the long-lived driver. Fourteen of the nineteen commands
 below map to a same-named driver verb; `devices`, `serve`, and `skills` have none, and `stop`
 sends `terminate`.
 
@@ -175,6 +175,7 @@ sends `terminate`.
 | `tap` | `<ref>`, or `<x> <y>` | `tap` | One argument is read as `ref`; two are read as `x y`. |
 | `type` | `[ref] <text>` | `type` | A leading argument shaped like `@<id>:eN` is consumed as `ref`; remaining arguments join into `text`. |
 | `swipe` | `<direction> [ref]` | `swipe` | `direction`: up, down, left, or right. |
+| `scroll_until_visible` | `<text> [direction]` | `snapshot`, `swipe` | Exact node-name match; direction defaults to up; stops at the list end or bound. |
 | `home` | none | `home` | |
 | `doubletap` | `<ref>`, or `<x> <y>` | `doubletap` | One argument is read as `ref`; two are read as `x y`. |
 | `pinch` | `<ref> <scale> [--velocity <V>]` | `pinch` | `scale` above 1 zooms out, below 1 zooms in; near-1 or non-positive scales are `BAD_REQUEST` driver-side; non-finite scale/velocity fail client-side. Unaddressable elements fail as `DRIVER_ERROR`; the driver stays up. |
@@ -232,6 +233,7 @@ Spec revisions: `2026-07-28` (current) and `2025-11-25` (legacy), at modelcontex
 | `launch` | false | true | false | true |
 | `stop` | false | true | true | true |
 | `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`, `hold`, `back`, `twofinger`, `center` | false | true | false | true |
+| `scroll_until_visible` | false | true | false | true |
 
 `launch` force-stops and restarts the app, so it is destructive and not idempotent. Action tools
 act on any target, a Delete button included, so they are destructive too (2025-11-25 ToolAnnotations).
