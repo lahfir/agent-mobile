@@ -6,18 +6,21 @@ use agent_mobile_core::contract::Ref;
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::wire::LONG_TIMEOUT;
 
-use super::{Ctx, round_trip_within};
+use super::{Ctx, reply::Request};
 
-/// Run `type`; text is required, the leading ref is not. Key events for a
+/// Build the `type` wire request without session lookup or I/O.
 /// long payload can outrun the default wire timeout.
-pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
+pub fn request(args: &[String]) -> Result<Request, Failure> {
     let (target, text) = split(args)?;
     let mut body = serde_json::json!({ "text": text });
     if let Some(r) = &target {
         body["ref"] = serde_json::json!(r.to_string());
     }
-    let session = ctx.session()?;
-    round_trip_within(ctx, &session, "type", &body, LONG_TIMEOUT)
+    Ok(Request {
+        verb: "type",
+        body,
+        timeout: Some(LONG_TIMEOUT),
+    })
 }
 
 fn split(args: &[String]) -> Result<(Option<Ref>, String), Failure> {
@@ -33,4 +36,9 @@ fn split(args: &[String]) -> Result<(Option<Ref>, String), Failure> {
         ));
     }
     Ok((Some(r), rest.join(" ")))
+}
+
+/// CLI printing wrapper.
+pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
+    request(args)?.run(ctx)
 }

@@ -2,10 +2,14 @@
 
 use agent_mobile_core::error::Failure;
 
-use super::{Ctx, round_trip};
+use super::{Ctx, reply::Request};
 
-/// Run `back`; one round trip.
+/// Build the `back` wire request without session lookup or I/O.
+pub fn request() -> Request {
+    Request::new("back", serde_json::json!({}))
+}
+
+/// CLI printing wrapper.
 pub fn run(ctx: &Ctx) -> Result<i32, Failure> {
-    let session = ctx.session()?;
-    round_trip(ctx, &session, "back", &serde_json::json!({}))
+    request().run(ctx)
 }

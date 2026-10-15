@@ -4,16 +4,16 @@
 
 use agent_mobile_core::error::Failure;
 
-use super::{Ctx, ref_or_point_body, round_trip_within};
+use super::{Ctx, ref_or_point_body, reply::Request};
 
-/// Run `hold` with the one-or-two positional split plus a duration.
+/// Build the `hold` wire request without session lookup or I/O.
 /// Non-finite durations are rejected here: JSON cannot carry them, so
 /// `serde_json` would silently encode null and the driver would fall back
 /// to the default. The wire budget scales with duration (press + settle +
 /// headroom) because a fixed 30 s ceiling abandons long presses mid-touch
 /// while the driver keeps holding; it is clamped so a huge duration cannot
 /// wedge the client, and the driver caps accepted holds far below anyway.
-pub fn run(ctx: &Ctx, args: &[String], duration: f64) -> Result<i32, Failure> {
+pub fn request(args: &[String], duration: f64) -> Result<Request, Failure> {
     if !duration.is_finite() {
         return Err(Failure::usage(
             "hold duration must be a finite number of seconds",
@@ -21,8 +21,16 @@ pub fn run(ctx: &Ctx, args: &[String], duration: f64) -> Result<i32, Failure> {
     }
     let mut body = ref_or_point_body(args, "hold")?;
     body["duration"] = serde_json::json!(duration);
-    let session = ctx.session()?;
     let wait = duration.clamp(0.0, 60.0);
     let budget = std::time::Duration::from_secs(30) + std::time::Duration::from_secs_f64(wait);
-    round_trip_within(ctx, &session, "hold", &body, budget)
+    Ok(Request {
+        verb: "hold",
+        body,
+        timeout: Some(budget),
+    })
+}
+
+/// CLI printing wrapper.
+pub fn run(ctx: &Ctx, args: &[String], duration: f64) -> Result<i32, Failure> {
+    request(args, duration)?.run(ctx)
 }

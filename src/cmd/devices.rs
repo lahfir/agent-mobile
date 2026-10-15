@@ -13,18 +13,28 @@ pub fn run(json: bool) -> Result<i32, Failure> {
         eprintln!("note: {note}");
     }
     let state = StateStore::new().map(|s| s.load()).unwrap_or_default();
-    if json {
-        let out: Vec<serde_json::Value> =
-            scan.devices.iter().map(|d| row_json(&state, d)).collect();
-        let line = serde_json::to_string(&serde_json::json!({ "devices": out }))
-            .map_err(|e| Failure::local(e.to_string(), "report a bug"))?;
-        super::emit(&line);
-        return Ok(0);
-    }
-    for d in &scan.devices {
-        super::emit(&row_text(&state, d));
+    let text = reply(&scan.devices, &state, json)?;
+    if !text.is_empty() {
+        super::emit(&text);
     }
     Ok(0)
+}
+
+/// Render discovered devices without writing to stdout or starting a driver.
+pub fn reply(devices: &[PlatformDevice], state: &State, json: bool) -> Result<String, Failure> {
+    if json {
+        let out: Vec<serde_json::Value> = devices
+            .iter()
+            .map(|device| row_json(state, device))
+            .collect();
+        return serde_json::to_string(&serde_json::json!({ "devices": out }))
+            .map_err(|error| Failure::local(error.to_string(), "report a bug"));
+    }
+    Ok(devices
+        .iter()
+        .map(|device| row_text(state, device))
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// One device's JSON row: `udid` is the deprecated alias for `id` kept so

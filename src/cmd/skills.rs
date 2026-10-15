@@ -166,6 +166,12 @@ LAUNCH
 
 /// Run `skills`; prints the guide, no wire involved.
 pub fn run() -> i32 {
-    super::emit(GUIDE.trim_end_matches('\n'));
+    super::emit(reply());
     0
+}
+
+/// The guide reply without any output or session lookup.
+#[must_use]
+pub fn reply() -> &'static str {
+    GUIDE.trim_end_matches('\n')
 }

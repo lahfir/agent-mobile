@@ -4,14 +4,18 @@
 use agent_mobile_core::contract::Ref;
 use agent_mobile_core::error::Failure;
 
-use super::{Ctx, round_trip};
+use super::{Ctx, reply::Request};
 
-/// Run `swipe` with an optional ref target.
-pub fn run(ctx: &Ctx, direction: &str, target: Option<&str>) -> Result<i32, Failure> {
+/// Build the `swipe` wire request without session lookup or I/O.
+pub fn request(direction: &str, target: Option<&str>) -> Result<Request, Failure> {
     let mut body = serde_json::json!({ "direction": direction });
     if let Some(r) = target {
         body["ref"] = serde_json::json!(Ref::parse(r)?.to_string());
     }
-    let session = ctx.session()?;
-    round_trip(ctx, &session, "swipe", &body)
+    Ok(Request::new("swipe", body))
+}
+
+/// CLI printing wrapper.
+pub fn run(ctx: &Ctx, direction: &str, target: Option<&str>) -> Result<i32, Failure> {
+    request(direction, target)?.run(ctx)
 }
