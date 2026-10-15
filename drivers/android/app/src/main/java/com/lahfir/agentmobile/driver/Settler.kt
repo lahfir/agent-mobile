@@ -42,6 +42,7 @@ internal class Settler(
         }
         var previous = attempt()
         var reads = 1
+        var consecutiveMatches = 1
         var lastReadWall = clock()
         while (true) {
             val wakeAt = (maxOf(previous.readAtNanos, lastReadWall) + gapNanos).coerceAtMost(deadline)
@@ -57,7 +58,12 @@ internal class Settler(
                 next.signature == previous.signature &&
                 next.readAtNanos - previous.readAtNanos >= gapNanos
             ) {
-                return SettleResult(next, true, reads, elapsedMs(start))
+                consecutiveMatches += 1
+                if (consecutiveMatches >= 3) {
+                    return SettleResult(next, true, reads, elapsedMs(start))
+                }
+            } else {
+                consecutiveMatches = 1
             }
             previous = next
         }
