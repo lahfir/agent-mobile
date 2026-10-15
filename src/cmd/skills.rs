@@ -7,6 +7,7 @@ const GUIDE: &str = "\
 agent-mobile — drive an iOS or Android app through a snapshot -> act loop
 
 COMMANDS
+  mcp                            serve tools over JSON-RPC stdio
   devices                        list iOS simulators/phones and Android
                                  AVD/USB/wireless targets
   serve <device> [--app <id>]    start a driver in the foreground; <device>

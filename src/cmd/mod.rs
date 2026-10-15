@@ -206,6 +206,7 @@ fn warn_unused_globals(cli: &Cli, app_ok: bool, device_ok: bool) {
 /// Run `cli` to completion; the process exit code is the return value.
 pub fn dispatch(cli: &Cli) -> Result<i32, Failure> {
     match &cli.command {
+        Command::Mcp => crate::mcp::run(cli),
         Command::Devices => {
             warn_unused_globals(cli, false, false);
             devices::run(cli.json)
@@ -260,6 +261,7 @@ fn ctx_dispatch(cli: &Cli) -> Result<i32, Failure> {
         Command::Center { which } => Ctx::new(cli).and_then(|ctx| center::run(&ctx, which)),
         Command::Devices => devices::run(cli.json),
         Command::Skills => Ok(skills::run()),
+        Command::Mcp => crate::mcp::run(cli),
     }
 }
 

@@ -27,6 +27,8 @@ pub struct Cli {
 /// One CLI verb per variant; `devices` is CLI-side only.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Serve tools over newline-delimited JSON-RPC on stdio.
+    Mcp,
     /// List reachable simulators, devices, and AVDs.
     Devices,
     /// Start a driver for one device in the foreground; prints the token once.
@@ -129,6 +131,7 @@ impl Command {
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Mcp => "mcp",
             Self::Devices => "devices",
             Self::Serve { .. } => "serve",
             Self::Status => "status",
