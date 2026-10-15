@@ -188,6 +188,9 @@ impl AdbLifecycle {
 }
 
 impl LifecycleControl for AdbLifecycle {
+    /// `--activity-clear-task`: force-stop leaves other packages' activities
+    /// in the app's task (Settings search lives in settings.intelligence), and
+    /// a plain `am start` would resume that foreign top activity.
     fn launch(&self, package: &str) -> Result<(), LifecycleError> {
         if !valid_package(package) {
             return Err(LifecycleError::BadRequest(format!(
@@ -196,9 +199,6 @@ impl LifecycleControl for AdbLifecycle {
         }
         let component = self.resolve(Some(package), CAT_LAUNCHER)?;
         self.shell("force-stop", &["am", "force-stop", package])?;
-        // force-stop leaves other packages' activities in the app's task
-        // (Settings search lives in settings.intelligence); without
-        // clear-task `am start` resumes that foreign top activity.
         self.shell_with(
             "start",
             &[
