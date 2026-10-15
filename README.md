@@ -110,6 +110,39 @@ already-foreground package, so use `launch` to change apps), `--max-depth <n>` (
 client-side; `complete=false` follows), `--device <device>` (name, id, or `platform:id`;
 remembered for later calls).
 
+## MCP server
+
+`agent-mobile mcp` is a stdio MCP server (newline-delimited JSON-RPC). One server process drives one
+device: the one fixed by `--device`, or else the remembered default.
+
+```sh
+claude mcp add agent-mobile -- agent-mobile mcp --device "iPhone 16"
+```
+
+Other clients accept a generic `mcpServers` block:
+
+```json
+{ "mcpServers": { "agent-mobile": { "command": "agent-mobile", "args": ["mcp", "--device", "iPhone 16"] } } }
+```
+
+Tools (18): `devices`, `status`, `snapshot`, `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`,
+`hold`, `back`, `twofinger`, `center`, `launch`, `screenshot`, `stop`, `skills`, `scroll_until_visible`.
+Tools take the CLI's argument shapes. `screenshot` takes no arguments and returns an image.
+
+What an agent must know:
+
+- Refs die after every action. On `STALE_REF`, run `snapshot` again and use the new refs.
+- The first call while a driver boots returns "driver is starting; call again" within about 45 s.
+  The boot continues in the background, so call again.
+- A call that times out may already have run. `snapshot` before you repeat the action.
+- `AGENT_MOBILE_MCP_CALL_SECS` lowers the time limit for one call (default and maximum: 45 s).
+
+Smoke check, listing the tools:
+
+```sh
+npx @modelcontextprotocol/inspector@2.11.0 --cli agent-mobile mcp --method tools/list
+```
+
 ## Environment
 
 | Variable | Effect |
