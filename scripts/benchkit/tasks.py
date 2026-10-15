@@ -77,8 +77,8 @@ TASKS = [
     {"id": "delete-photo", "goal": "Delete the seeded photo named {photo}.", "values": [{"photo": "bench-a.png"}, {"photo": "bench-b.png"}],
      "reset": {"android": [adb(PHOTO)]},
      "checks": {"android": {"command": adb(
-         "content query --uri content://media/external/images/media --where \"_display_name='{photo}' AND is_trashed=0\" "
-         "| grep -c Row || true"), "expected": "0"}}},
+         "q=$(content query --uri content://media/external/images/media --where \"_display_name='{photo}' AND is_trashed=0\") || exit $?; "
+         "printf '%s\\n' \"$q\" | awk '/Row/ {{n++}} END {{print n+0}}'"), "expected": "0"}}},
     {"id": "deep-settings", "goal": "Open the {page} page in Settings.",
      "values": [{"page": "About", "fragment": "MyDeviceInfoFragment"}, {"page": "Storage", "fragment": "StorageDashboardFragment"}],
      "reset": {"android": [adb(SETTINGS_HOME)]},

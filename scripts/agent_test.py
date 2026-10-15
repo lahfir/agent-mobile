@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from scripts.benchkit import agent, tasks  # noqa: E402
@@ -85,17 +86,21 @@ class TaskDataTests(unittest.TestCase):
 
     def test_every_command_formats_for_every_seed(self):
         original = agent.android_sdk
+        original_serial = agent.android_serial
         agent.android_sdk = lambda: ("/sdk/adb", "/sdk/emulator")
+        agent.android_serial = lambda adb, avd: "emulator-5554"
         try:
             for task in tasks.TASKS:
                 for seed in range(len(task["values"])):
                     _, values = tasks.task_variant(task, seed)
                     for platform, check in task["checks"].items():
+                        device = "android:avd:a" if platform == "android" else "ios:UDID"
                         for command in [*task["reset"][platform], check["command"]]:
-                            self.assertTrue(agent.fill(command, values, "ios:UDID"))
+                            self.assertTrue(agent.fill(command, values, device))
                         self.assertTrue(check["expected"].format(**values))
         finally:
             agent.android_sdk = original
+            agent.android_serial = original_serial
 
     def test_dark_mode_resets_to_the_opposite_of_its_target(self):
         for seed in (0, 1):
@@ -110,13 +115,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(command, ["xcrun", "simctl", "ui", "ABC-123", "appearance", "light"])
 
     def test_fill_resolves_adb_to_the_sdk_binary(self):
-        original = agent.android_sdk
+        original, original_serial = agent.android_sdk, agent.android_serial
         agent.android_sdk = lambda: ("/sdk/adb", "/sdk/emulator")
+        agent.android_serial = lambda adb, avd: "emulator-5554"
         try:
             command = agent.fill(["adb", "shell", "settings get {value}"], {"value": "x"}, "android:avd:a")
         finally:
-            agent.android_sdk = original
-        self.assertEqual(command, ["/sdk/adb", "shell", "settings get x"])
+            agent.android_sdk, agent.android_serial = original, original_serial
+        self.assertEqual(command, ["/sdk/adb", "-s", "emulator-5554", "shell", "settings get x"])
 
     def test_reset_device_runs_each_command_and_reports_failure(self):
         seen = []
@@ -142,6 +148,32 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(agent.checked_outcome(timeout, check, {}, run=lambda *a, **k: Result()), timeout)
         Result.stdout = "yes\n"
         self.assertEqual(agent.checked_outcome({"status": "agent_finished"}, check, {}, run=run)["status"], "success")
+
+    def test_check_command_error_is_an_invalid_attempt(self):
+        failed = agent.checked_outcome({"status": "agent_finished"}, {"command": ["missing"], "expected": "yes"}, {},
+                                       run=lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("missing")))
+        self.assertEqual((failed["status"], failed["cause"]), ("invalid", "missing"))
+
+    def test_photo_check_propagates_query_failure_before_counting(self):
+        command = tasks.TASKS[7]["checks"]["android"]["command"][2]
+        self.assertIn("|| exit $?", command)
+        self.assertIn("awk '/Row/", command)
+        self.assertNotIn("|| true", command)
+
+    def test_timeout_kills_the_claude_process_group(self):
+        class Process:
+            pid = 123
+            returncode = -9
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("claude", timeout)
+                return "", ""
+        with mock.patch.object(agent.subprocess, "Popen", return_value=Process()) as popen, \
+             mock.patch.object(agent.os, "killpg") as killpg:
+            result = agent.run_claude("goal", "server-a", {"command": "stub"}, "/tmp", timeout=1)
+        self.assertEqual(result["reason"], "timeout")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        killpg.assert_called_once_with(123, agent.signal.SIGKILL)
 
     def test_plan_filters_tasks_seeds_and_platforms(self):
         plan = agent.run_plan("dark-mode,alarm", 2, "android")
@@ -179,6 +211,31 @@ class HarnessTests(unittest.TestCase):
         finally:
             agent.reset_device, agent.run_claude = original
         self.assertEqual((row["status"], row["reason"], row["attempts"]), ("success_false", "timeout", 2))
+
+    def test_invalid_retry_accounting_survives_success(self):
+        outcomes = iter([{"status": "invalid", "cause": "first check error"}, {"status": "success"}])
+        original = agent.reset_device, agent.run_claude, agent.checked_outcome
+        agent.reset_device = lambda *a, **k: None
+        agent.run_claude = lambda *a, **k: next(outcomes)
+        agent.checked_outcome = lambda outcome, *a, **k: outcome
+        try:
+            row = agent.run_one("server-a", {}, tasks.TASKS[0], "android", 0, "android:avd:a")
+        finally:
+            agent.reset_device, agent.run_claude, agent.checked_outcome = original
+        self.assertEqual((row["status"], row["invalid_attempts"], row["invalid_causes"]),
+                         ("success", 1, ["first check error"]))
+
+    def test_agent_report_slide_helper_is_shared_and_script_data_is_escaped(self):
+        html = (pathlib.Path(__file__).parent / "bench.html").read_text()
+        self.assertLess(html.index("const slide ="), html.index("function agentReport()"))
+        from scripts.benchkit import report
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "report.html"
+            report.render_agent({"agent_tasks": [{"cause": "</script><script>alert(1)</script>"}]}, path)
+            rendered = path.read_text()
+        self.assertNotIn("</script><script>alert(1)", rendered)
+        self.assertIn("\\u003c/script>", rendered)
+        self.assertIn("${esc(x.cause || x.reason || \"\")}", html)
 
     def test_server_that_fails_to_connect_is_a_fault_not_a_failed_task(self):
         init = json.dumps({"type": "system", "subtype": "init", "mcp_servers": [{"name": "s", "status": "failed"}]})
