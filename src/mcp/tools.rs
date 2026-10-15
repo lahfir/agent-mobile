@@ -247,6 +247,9 @@ pub fn prepare(params: &Value) -> Result<Call, Failure> {
         )?),
         "type" => {
             let text = args["text"].as_str().ok_or_else(invalid)?;
+            if let Some(reference) = reference {
+                agent_mobile_core::contract::Ref::parse(reference).map_err(|_| invalid())?;
+            }
             let mut request =
                 cmd::r#type::request(&[reference.unwrap_or_default().to_owned(), text.to_owned()])?;
             request.body["text"] = json!(text);
@@ -338,5 +341,11 @@ mod tests {
             assert_eq!(request.body, expected);
         }
         Ok(())
+    }
+
+    #[test]
+    fn type_rejects_invalid_explicit_ref() {
+        let result = prepare(&json!({"name":"type","arguments":{"ref":"bad","text":"hello"}}));
+        assert!(result.is_err());
     }
 }
