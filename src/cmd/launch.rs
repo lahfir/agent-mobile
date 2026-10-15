@@ -4,17 +4,19 @@
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::wire::LONG_TIMEOUT;
 
-use super::{Ctx, round_trip_within};
+use super::{Ctx, reply::Request};
 
-/// Run `launch <bundle_id>`; one round trip returning the settled snapshot.
+/// Build the `launch` wire request without session lookup or I/O.
 /// A cold app start can outrun the default wire timeout.
+pub fn request(bundle_id: &str) -> Request {
+    Request {
+        verb: "launch",
+        body: serde_json::json!({ "bundle_id": bundle_id }),
+        timeout: Some(LONG_TIMEOUT),
+    }
+}
+
+/// CLI printing wrapper.
 pub fn run(ctx: &Ctx, bundle_id: &str) -> Result<i32, Failure> {
-    let session = ctx.session()?;
-    round_trip_within(
-        ctx,
-        &session,
-        "launch",
-        &serde_json::json!({ "bundle_id": bundle_id }),
-        LONG_TIMEOUT,
-    )
+    request(bundle_id).run(ctx)
 }
