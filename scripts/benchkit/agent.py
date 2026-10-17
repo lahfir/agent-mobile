@@ -49,7 +49,10 @@ def server_map(path, binary=AGENT_BINARY, device=None):
     if not isinstance(extra, dict) or any(not isinstance(k, str) or not isinstance(v, dict) or
                                           not isinstance(v.get("command"), str) or
                                           not isinstance(v.get("args", []), list) or
-                                          not isinstance(v.get("env", {}), dict) for k, v in extra.items()):
+                                          not isinstance(v.get("env", {}), dict) or
+                                          not isinstance(v.get("disallowedTools", []), list) or
+                                          not all(isinstance(x, str) for x in v.get("disallowedTools", []))
+                                          for k, v in extra.items()):
         raise ValueError("servers file must map labels to command, args, and env")
     if "agent-mobile" in extra:
         raise ValueError("agent-mobile is a built-in server")
@@ -59,13 +62,16 @@ def server_map(path, binary=AGENT_BINARY, device=None):
 def run_claude(goal, label, server, cwd, timeout=TIMEOUT):
     with tempfile.TemporaryDirectory() as config_dir:
         config = pathlib.Path(config_dir) / "mcp.json"
-        config.write_text(json.dumps({"mcpServers": {label: server}}))
+        disallowed = server.get("disallowedTools", [])
+        config_server = {key: value for key, value in server.items() if key != "disallowedTools"}
+        config.write_text(json.dumps({"mcpServers": {label: config_server}}))
         config.chmod(0o600)
         env = os.environ.copy()
         env["ENABLE_TOOL_SEARCH"] = "false"
         start = time.monotonic()
+        denied = ["--disallowedTools", ",".join(f"mcp__{label}__{name}" for name in disallowed)] if disallowed else []
         command = ["claude", "-p", "--setting-sources", "", "--disable-slash-commands", "--model", CLAUDE_MODEL, "--mcp-config", str(config),
-                   "--strict-mcp-config", "--tools", "", "--allowedTools", f"mcp__{label}",
+                   "--strict-mcp-config", "--tools", "", "--allowedTools", f"mcp__{label}", *denied,
                    "--no-session-persistence", "--output-format", "stream-json", "--verbose", goal]
         proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True)

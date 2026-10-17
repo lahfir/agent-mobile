@@ -44,6 +44,13 @@ class ServerMapTests(unittest.TestCase):
             with self.assertRaises(json.JSONDecodeError):
                 agent.server_map(path)
 
+    def test_disallowed_tools_must_be_a_list_of_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "servers.json"
+            path.write_text(json.dumps({"server-a": {"command": "stub", "disallowedTools": "x"}}))
+            with self.assertRaises(ValueError):
+                agent.server_map(path)
+
     def test_failed_host_check_keeps_evidence(self):
         class Result:
             stdout = "30000\n"
@@ -193,6 +200,25 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(result["reason"], "timeout")
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         killpg.assert_called_once_with(123, agent.signal.SIGKILL)
+
+    def test_disallowed_tools_leave_the_agent_view_and_the_config(self):
+        class Process:
+            pid = 123
+            returncode = 0
+            def communicate(self, timeout=None):
+                return "", ""
+        seen = {}
+
+        def popen(command, **kwargs):
+            seen["command"] = command
+            seen["config"] = json.loads(pathlib.Path(command[command.index("--mcp-config") + 1]).read_text())
+            return Process()
+
+        with mock.patch.object(agent.subprocess, "Popen", side_effect=popen):
+            agent.run_claude("goal", "server-a", {"command": "stub", "disallowedTools": ["a", "b"]}, "/tmp")
+        index = seen["command"].index("--disallowedTools")
+        self.assertEqual(seen["command"][index + 1], "mcp__server-a__a,mcp__server-a__b")
+        self.assertEqual(seen["config"], {"mcpServers": {"server-a": {"command": "stub"}}})
 
     def test_plan_filters_tasks_seeds_and_platforms(self):
         plan = agent.run_plan("dark-mode,alarm", 2, "android")
