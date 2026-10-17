@@ -33,6 +33,10 @@ class ServerMapTests(unittest.TestCase):
         servers = agent.server_map(None, "/tmp/agent-mobile")
         self.assertEqual(servers["agent-mobile"], {"command": "/tmp/agent-mobile", "args": ["mcp"], "env": {}})
 
+    def test_relative_binary_becomes_absolute_because_claude_runs_in_another_directory(self):
+        servers = agent.server_map(None, "target/release/agent-mobile")
+        self.assertTrue(pathlib.Path(servers["agent-mobile"]["command"]).is_absolute())
+
     def test_builtin_server_passes_the_device_to_the_binary(self):
         servers = agent.server_map(None, "/tmp/agent-mobile", "android:avd:x")
         self.assertEqual(servers["agent-mobile"]["args"], ["--device", "android:avd:x", "mcp"])
@@ -219,6 +223,46 @@ class HarnessTests(unittest.TestCase):
         index = seen["command"].index("--disallowedTools")
         self.assertEqual(seen["command"][index + 1], "mcp__server-a__a,mcp__server-a__b")
         self.assertEqual(seen["config"], {"mcpServers": {"server-a": {"command": "stub"}}})
+
+    def test_stdin_is_devnull_and_keep_writes_stream_and_stderr(self):
+        class Process:
+            pid = 123
+            returncode = 0
+            def communicate(self, timeout=None):
+                return "out-line\n", "err-line\n"
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(agent.subprocess, "Popen", return_value=Process()) as popen:
+            keep = pathlib.Path(tmp) / "deep" / "run-a1"
+            agent.run_claude("goal", "server-a", {"command": "stub"}, "/tmp", keep=keep)
+            self.assertEqual((keep.parent / "run-a1.jsonl").read_text(), "out-line\n")
+            self.assertEqual((keep.parent / "run-a1.err").read_text(), "err-line\n")
+        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_warmup_runs_once_per_server_per_platform_and_lands_in_meta(self):
+        goals = []
+        servers = {"agent-mobile": {"command": "x"}, "server-a": {"command": "y"}}
+        done = {"status": "success", "wall_ms": 1, "steps": 0, "stale_refs": None}
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(agent, "OUT", pathlib.Path(tmp)), \
+             mock.patch.object(agent, "server_map", return_value=servers), \
+             mock.patch.object(agent, "pick_device", return_value={"key": "android:avd:a"}), \
+             mock.patch.object(agent.subprocess, "run", return_value=mock.Mock(stdout="v1")), \
+             mock.patch.object(agent, "run_claude", side_effect=lambda goal, *a, **k: goals.append((goal, a[0], k["keep"].name))), \
+             mock.patch.object(agent, "run_one", return_value=done), \
+             mock.patch("scripts.benchkit.report.render_agent"):
+            result = agent.run_agent(None, tasks="dark-mode", seeds=2, platforms="android")
+        self.assertEqual(goals, [(agent.WARMUP_GOAL, "agent-mobile", "android-agent-mobile-warmup"),
+                                 (agent.WARMUP_GOAL, "server-a", "android-server-a-warmup")])
+        self.assertEqual(set(result["meta"]["warmup_ms"]), {"agent-mobile:android", "server-a:android"})
+
+    def test_init_status_failed_or_missing_is_a_fault_and_other_states_are_not(self):
+        def init(*servers):
+            return [json.dumps({"type": "system", "subtype": "init", "mcp_servers": list(servers)})]
+        for status, failed in (("connected", []), ("failed", ["server-a"]), ("pending", []),
+                               ("needs-auth", []), ("disabled", [])):
+            parsed = agent.parse_stream(init({"name": "server-a", "status": status}), "server-a")
+            self.assertEqual(parsed["failed"], failed, status)
+        self.assertEqual(agent.parse_stream(init(), "server-a")["failed"], ["server-a"])
 
     def test_plan_filters_tasks_seeds_and_platforms(self):
         plan = agent.run_plan("dark-mode,alarm", 2, "android")

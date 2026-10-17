@@ -13,6 +13,7 @@ from scripts.benchkit.tasks import TASKS, task_variant
 
 CLAUDE_MODEL = "claude-sonnet-5-5"
 TIMEOUT = 180
+WARMUP_GOAL = "Take one screenshot of the device, then stop."
 AGENT_BINARY = pathlib.Path(__file__).resolve().parents[2] / "target" / "release" / "agent-mobile"
 
 
@@ -26,8 +27,8 @@ def parse_stream(lines, server):
         data = event.get("data", event)
         message = data.get("message", {}) if isinstance(data, dict) else {}
         if data.get("type") == "system" and data.get("subtype") == "init":
-            connected = {x.get("name") for x in data.get("mcp_servers", []) if x.get("status") == "connected"}
-            failed = [] if server in connected else [server]
+            states = {x.get("name"): x.get("status") for x in data.get("mcp_servers", [])}
+            failed = [server] if states.get(server, "failed") == "failed" else []
         content = message.get("content", []) if isinstance(message, dict) else []
         for item in content:
             if item.get("type") == "tool_use":
@@ -42,7 +43,7 @@ def parse_stream(lines, server):
 
 def server_map(path, binary=AGENT_BINARY, device=None):
     args = ["--device", device, "mcp"] if device else ["mcp"]
-    servers = {"agent-mobile": {"command": str(binary), "args": args, "env": {}}}
+    servers = {"agent-mobile": {"command": str(pathlib.Path(binary).absolute()), "args": args, "env": {}}}
     if path is None:
         return servers
     extra = json.loads(path.read_text())
@@ -59,7 +60,15 @@ def server_map(path, binary=AGENT_BINARY, device=None):
     return {**servers, **extra}
 
 
-def run_claude(goal, label, server, cwd, timeout=TIMEOUT):
+def keep_streams(keep, stdout, stderr):
+    if keep:
+        keep = pathlib.Path(keep)
+        keep.parent.mkdir(parents=True, exist_ok=True)
+        keep.with_name(keep.name + ".jsonl").write_text(stdout or "")
+        keep.with_name(keep.name + ".err").write_text(stderr or "")
+
+
+def run_claude(goal, label, server, cwd, timeout=TIMEOUT, keep=None):
     with tempfile.TemporaryDirectory() as config_dir:
         config = pathlib.Path(config_dir) / "mcp.json"
         disallowed = server.get("disallowedTools", [])
@@ -73,13 +82,14 @@ def run_claude(goal, label, server, cwd, timeout=TIMEOUT):
         command = ["claude", "-p", "--setting-sources", "", "--disable-slash-commands", "--model", CLAUDE_MODEL, "--mcp-config", str(config),
                    "--strict-mcp-config", "--tools", "", "--allowedTools", f"mcp__{label}", *denied,
                    "--no-session-persistence", "--output-format", "stream-json", "--verbose", goal]
-        proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, start_new_session=True)
+        proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
-            stdout, _ = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             os.killpg(proc.pid, signal.SIGKILL)
-            stdout, _ = proc.communicate()
+            stdout, stderr = proc.communicate()
+            keep_streams(keep, stdout, stderr)
             out = stdout or (exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout) or ""
             parsed = parse_stream(out.splitlines(), label)
             if parsed["failed"]:
@@ -87,6 +97,7 @@ def run_claude(goal, label, server, cwd, timeout=TIMEOUT):
                         "wall_ms": timeout * 1000, **parsed}
             return {"status": "success_false", "reason": "timeout", "wall_ms": timeout * 1000, **parsed}
         elapsed = (time.monotonic() - start) * 1000
+        keep_streams(keep, stdout, stderr)
         parsed = parse_stream(stdout.splitlines(), label)
         final = parsed["final"]
         cause = ("server failed to start: " + ", ".join(parsed["failed"]) if parsed["failed"] else
@@ -165,7 +176,7 @@ def pick_device(binary, platform, pinned=None):
     return rows[0] if rows else None
 
 
-def run_one(label, server, task, platform, seed, device):
+def run_one(label, server, task, platform, seed, device, streams=None):
     """One measured run: reset, agent, host check. A harness fault is invalid and re-runs once."""
     goal, values = task_variant(task, seed)
     row = {"task": task["id"], "platform": platform, "seed": seed, "server": label}
@@ -176,7 +187,8 @@ def run_one(label, server, task, platform, seed, device):
             outcome = {"status": "invalid", "cause": f"reset failed: {fault}"}
         else:
             with tempfile.TemporaryDirectory() as cwd:
-                outcome = run_claude(goal, label, server, cwd)
+                keep = streams / f"{platform}-{label}-{task['id']}-s{seed}-a{attempt}" if streams else None
+                outcome = run_claude(goal, label, server, cwd, keep=keep)
             outcome = checked_outcome(outcome, task["checks"][platform], values, device)
         outcome.pop("final", None)
         outcome.pop("failed", None)
@@ -196,6 +208,8 @@ def run_agent(servers_path, binary=AGENT_BINARY, tasks=None, seeds=2, platforms=
     plan = run_plan(tasks, seeds, platforms)
     version = subprocess.run(["claude", "--version"], capture_output=True, text=True, check=True).stdout.strip()
     rows, warmup = [], {}
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    streams = OUT / f"{stamp}-streams"
     for platform in dict.fromkeys(p for p, _, _ in plan):
         target = pick_device(binary, platform, device)
         if not target:
@@ -203,17 +217,19 @@ def run_agent(servers_path, binary=AGENT_BINARY, tasks=None, seeds=2, platforms=
             continue
         for label in servers:
             server = server_map(servers_path, binary, target["key"])[label]
+            start = time.monotonic()
             if label == "agent-mobile":
-                start = time.monotonic()
                 subprocess.run([str(binary), "--device", target["key"], "status"], capture_output=True)
-                warmup[f"{label}:{platform}"] = round((time.monotonic() - start) * 1000)
+            with tempfile.TemporaryDirectory() as cwd:
+                run_claude(WARMUP_GOAL, label, server, cwd, keep=streams / f"{platform}-{label}-warmup")
+            warmup[f"{label}:{platform}"] = round((time.monotonic() - start) * 1000)
             for _, task, seed in (x for x in plan if x[0] == platform):
                 print(f"{platform} {label} {task['id']} seed {seed}", flush=True)
-                rows.append(run_one(label, server, task, platform, seed, target["key"]))
+                rows.append(run_one(label, server, task, platform, seed, target["key"], streams))
     result = {"meta": {"claude": version, "model": CLAUDE_MODEL, "stamp": time.strftime("%Y-%m-%d %H:%M"),
                        "warmup_ms": warmup}, "agent_tasks": rows}
     OUT.mkdir(exist_ok=True)
-    path = OUT / (time.strftime("%Y%m%d-%H%M%S") + "-agent.json")
+    path = OUT / (stamp + "-agent.json")
     path.write_text(json.dumps(result))
     from scripts.benchkit.report import render_agent
     render_agent(result, path.with_suffix(".html"))
