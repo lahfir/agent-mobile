@@ -271,6 +271,17 @@ again — the command detects the refusal and prints these steps. The phone show
 Running" while the driver is up. The driver URL is `http://<bonjour-host>.local:8770`; it
 lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
 
+### iPhone troubleshooting
+
+| Cause | What to do |
+| --- | --- |
+| The iPhone has no free app slot for this signing profile | Delete apps signed by your personal team that you no longer need in Settings > General > VPN & Device Management, then retry. |
+| The iPhone refused to install the driver | Free an app slot for your personal team. If it still fails, update Xcode to support the iPhone's iOS, then retry. |
+| The iPhone does not trust the developer certificate | In Settings > General > VPN & Device Management, trust the developer app, then retry. |
+| The iPhone is locked | Unlock it and keep it unlocked until the driver answers, then retry. |
+| Developer Mode is off on the iPhone | Turn on Settings > Privacy & Security > Developer Mode, restart the iPhone, then retry. |
+| Xcode has no signing team for the driver | Open Xcode > Settings > Accounts, sign in with your Apple ID, then retry. |
+
 ## Protocol
 
 - Every call is `POST /<command>` with a JSON body, `Authorization: Bearer <token>`, and

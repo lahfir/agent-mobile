@@ -51,6 +51,9 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
     }
     let device = pick_device(ctx)?;
     eprintln!("no driver running; starting one for {device}…");
+    if physical_ios(&device) {
+        eprintln!("keep the iPhone unlocked until the driver answers");
+    }
     let log = ctx.store.driver_log(&device);
     let log_base = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
     let exe = std::env::current_exe()?;
@@ -90,34 +93,35 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
                     f.read_to_string(&mut s).map(|_| s)
                 })
                 .unwrap_or_default();
-            let failure = if crate::platform::TRUST_MARKERS
-                .iter()
-                .any(|m| text.contains(m))
-            {
-                "the development certificate is not trusted on the device".to_owned()
-            } else {
-                last_error_line(&text)
-            };
+            if let Some(failure) = crate::platform::refusal(&text) {
+                return Err(failure);
+            }
+            let (cause, next) = relay_diagnosis(&text);
             return Err(Failure::local(
-                failure,
-                format!("check the log at {} and retry", log.display()),
+                cause,
+                next.unwrap_or_else(|| format!("check the log at {} and retry", log.display())),
             ));
         }
         std::thread::sleep(BOOT_POLL);
     }
 }
 
-/// The last `error:` line in the log — the serve's own diagnosis — or a
-/// generic binding failure when the runner died silently.
-fn last_error_line(log_text: &str) -> String {
-    log_text
-        .lines()
-        .rev()
-        .find(|l| l.starts_with("error: "))
-        .map_or_else(
-            || "the driver exited before binding".to_owned(),
-            |l| l.trim_start_matches("error: ").to_owned(),
-        )
+/// A physical iPhone key: simulator UDIDs are 36-char UUIDs, device UDIDs are not.
+fn physical_ios(key: &str) -> bool {
+    key.strip_prefix("ios:").is_some_and(|id| id.len() != 36)
+}
+
+fn relay_diagnosis(log_text: &str) -> (String, Option<String>) {
+    let lines: Vec<&str> = log_text.lines().collect();
+    let Some(index) = lines.iter().rposition(|line| line.starts_with("error: ")) else {
+        return ("the driver exited before binding".to_owned(), None);
+    };
+    let cause = lines[index].trim_start_matches("error: ").to_owned();
+    let next = lines
+        .get(index + 1)
+        .filter(|line| line.starts_with("next: "))
+        .map(|line| line.trim_start_matches("next: ").to_owned());
+    (cause, next)
 }
 
 /// Which device a lazy boot serves: `--device` wins, then the remembered
@@ -184,4 +188,27 @@ pub(super) fn pick_device_with(
             )
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{physical_ios, relay_diagnosis};
+
+    #[test]
+    fn unlock_hint_is_for_physical_iphones_only() {
+        assert!(physical_ios("ios:00008120-001A14C60CE8C01E"));
+        assert!(!physical_ios("ios:9B7CEE9E-DED1-4A84-8ABD-E4A381E4CFDD"));
+        assert!(!physical_ios("android:avd:agent-mobile-api37"));
+    }
+
+    #[test]
+    fn relays_serve_next_line() {
+        assert_eq!(
+            relay_diagnosis("error: phone setup failed\nnext: unlock the phone\n"),
+            (
+                "phone setup failed".to_owned(),
+                Some("unlock the phone".to_owned())
+            )
+        );
+    }
 }
