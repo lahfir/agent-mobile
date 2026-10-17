@@ -162,7 +162,7 @@ function agentReport() {
     const items = servers.map((name, i) => { const ys = col ? usable(name).map(col).filter((y) => y != null) : []; return { name, v: value(name, field), s: ys.length > 1 ? sd(ys) : null, c: colors[i % colors.length] }; });
     const top = Math.max(1, ...items.map((x) => x.v ?? 0));
     const bars = items.map((x) => `<div class="rname">${esc(x.name)}</div><div class="track">${x.v == null ? "" : `<div class="stackh" style="width:calc((100% - 110px) * ${x.v / top})"><div class="seg" style="flex:1;background:${x.c}"></div></div>`}<span class="rval">${x.v == null ? "n/a" : `${x.v.toFixed(digits)}${x.s == null ? "" : ` ± ${x.s.toFixed(digits)}`} ${unit}`}</span></div>`).join("");
-    return slide(title, "by server", "var(--observe)", `<div class="body full"><div class="rows fill">${bars}</div></div>`, foot);
+    return slide(title, "by server", "var(--observe)", `<div class="body full"><div class="rows" style="row-gap:22px;align-content:center">${bars}</div></div>`, foot);
   };
   const foot = `<div class="foot"><span>Claude ${esc(RUN.meta?.claude || "—")} · model ${esc(RUN.meta?.model || "—")}</span><span>${esc(RUN.meta?.stamp || "—")} · ${rows.length} runs</span></div>`;
   const groups = {};
