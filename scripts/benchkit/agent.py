@@ -52,7 +52,10 @@ def server_map(path, binary=AGENT_BINARY, device=None):
                                           not isinstance(v.get("args", []), list) or
                                           not isinstance(v.get("env", {}), dict) or
                                           not isinstance(v.get("disallowedTools", []), list) or
-                                          not all(isinstance(x, str) for x in v.get("disallowedTools", []))
+                                          not all(isinstance(x, str) for x in v.get("disallowedTools", [])) or
+                                          not isinstance(v.get("teardown", []), list) or
+                                          not all(isinstance(c, list) and all(isinstance(x, str) for x in c)
+                                                  for c in v.get("teardown", []))
                                           for k, v in extra.items()):
         raise ValueError("servers file must map labels to command, args, and env")
     if "agent-mobile" in extra:
@@ -72,7 +75,7 @@ def run_claude(goal, label, server, cwd, timeout=TIMEOUT, keep=None):
     with tempfile.TemporaryDirectory() as config_dir:
         config = pathlib.Path(config_dir) / "mcp.json"
         disallowed = server.get("disallowedTools", [])
-        config_server = {key: value for key, value in server.items() if key != "disallowedTools"}
+        config_server = {key: value for key, value in server.items() if key not in ("disallowedTools", "teardown")}
         config.write_text(json.dumps({"mcpServers": {label: config_server}}))
         config.chmod(0o600)
         env = os.environ.copy()
@@ -133,6 +136,16 @@ def reset_device(task, platform, values, device, run=subprocess.run):
         return str(exc)
 
 
+def teardown_all(servers, device, run=subprocess.run):
+    """Run every server's teardown commands so no server leaves a process behind. Never fails a run."""
+    for server in servers.values():
+        for command in server.get("teardown", []):
+            try:
+                run(fill(command, {}, device), capture_output=True, text=True, timeout=30, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+
 def host_check(check, values, device=None, run=subprocess.run):
     try:
         result = run(fill(check["command"], values, device), capture_output=True, text=True, timeout=30, check=True)
@@ -176,12 +189,14 @@ def pick_device(binary, platform, pinned=None):
     return rows[0] if rows else None
 
 
-def run_one(label, server, task, platform, seed, device, streams=None):
-    """One measured run: reset, agent, host check. A harness fault is invalid and re-runs once."""
+def run_one(label, server, task, platform, seed, device, streams=None, servers=None):
+    """One measured run: teardown, reset, agent, host check. A harness fault is invalid and re-runs once."""
     goal, values = task_variant(task, seed)
     row = {"task": task["id"], "platform": platform, "seed": seed, "server": label}
     invalid_causes = []
     for attempt in (1, 2):
+        if servers is not None:
+            teardown_all(servers, device)
         fault = reset_device(task, platform, values, device)
         if fault:
             outcome = {"status": "invalid", "cause": f"reset failed: {fault}"}
@@ -215,8 +230,9 @@ def run_agent(servers_path, binary=AGENT_BINARY, tasks=None, seeds=2, platforms=
         if not target:
             print(f"no {platform} device available; skipped")
             continue
+        device_servers = server_map(servers_path, binary, target["key"])
         for label in servers:
-            server = server_map(servers_path, binary, target["key"])[label]
+            server = device_servers[label]
             start = time.monotonic()
             if label == "agent-mobile":
                 subprocess.run([str(binary), "--device", target["key"], "status"], capture_output=True)
@@ -225,7 +241,8 @@ def run_agent(servers_path, binary=AGENT_BINARY, tasks=None, seeds=2, platforms=
             warmup[f"{label}:{platform}"] = round((time.monotonic() - start) * 1000)
             for _, task, seed in (x for x in plan if x[0] == platform):
                 print(f"{platform} {label} {task['id']} seed {seed}", flush=True)
-                rows.append(run_one(label, server, task, platform, seed, target["key"], streams))
+                rows.append(run_one(label, server, task, platform, seed, target["key"], streams, device_servers))
+        teardown_all(device_servers, target["key"])
     result = {"meta": {"claude": version, "model": CLAUDE_MODEL, "stamp": time.strftime("%Y-%m-%d %H:%M"),
                        "warmup_ms": warmup}, "agent_tasks": rows}
     OUT.mkdir(exist_ok=True)

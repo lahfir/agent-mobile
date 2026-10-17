@@ -55,6 +55,13 @@ class ServerMapTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 agent.server_map(path)
 
+    def test_teardown_must_be_a_list_of_command_lists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "servers.json"
+            path.write_text(json.dumps({"server-a": {"command": "stub", "teardown": ["adb"]}}))
+            with self.assertRaises(ValueError):
+                agent.server_map(path)
+
     def test_failed_host_check_keeps_evidence(self):
         class Result:
             stdout = "30000\n"
@@ -224,6 +231,34 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(seen["command"][index + 1], "mcp__server-a__a,mcp__server-a__b")
         self.assertEqual(seen["config"], {"mcpServers": {"server-a": {"command": "stub"}}})
 
+    def test_teardown_stays_out_of_the_config(self):
+        class Process:
+            pid = 123
+            returncode = 0
+            def communicate(self, timeout=None):
+                return "", ""
+        seen = {}
+
+        def popen(command, **kwargs):
+            seen["config"] = json.loads(pathlib.Path(command[command.index("--mcp-config") + 1]).read_text())
+            return Process()
+
+        with mock.patch.object(agent.subprocess, "Popen", side_effect=popen):
+            agent.run_claude("goal", "server-a", {"command": "stub", "teardown": [["adb", "shell", "id"]]}, "/tmp")
+        self.assertEqual(seen["config"], {"mcpServers": {"server-a": {"command": "stub"}}})
+
+    def test_teardown_runs_every_servers_commands_and_swallows_os_errors(self):
+        servers = {"agent-mobile": {"command": "x"},
+                   "server-a": {"command": "stub", "teardown": [["one"], ["two", "{device}"]]},
+                   "server-b": {"command": "stub", "teardown": [["three"]]}}
+        seen = []
+        agent.teardown_all(servers, "ios:U", run=lambda c, **k: seen.append((c, k["timeout"], k["check"])))
+        self.assertEqual(seen, [(["one"], 30, False), (["two", "U"], 30, False), (["three"], 30, False)])
+
+        def missing(*a, **k):
+            raise OSError("adb not found")
+        self.assertIsNone(agent.teardown_all(servers, "ios:U", run=missing))
+
     def test_stdin_is_devnull_and_keep_writes_stream_and_stderr(self):
         class Process:
             pid = 123
@@ -288,6 +323,14 @@ class HarnessTests(unittest.TestCase):
             agent.reset_device, agent.run_claude = original
         self.assertEqual((row["status"], row["attempts"]), ("invalid", 2))
         self.assertIn("adb offline", row["cause"])
+
+    def test_teardown_runs_before_each_reset(self):
+        calls = []
+        with mock.patch.object(agent, "teardown_all", side_effect=lambda *a, **k: calls.append("teardown")), \
+             mock.patch.object(agent, "reset_device", side_effect=lambda *a, **k: calls.append("reset") or "adb offline"):
+            row = agent.run_one("agent-mobile", {}, tasks.TASKS[0], "android", 0, "android:avd:a", servers={})
+        self.assertEqual(calls, ["teardown", "reset", "teardown", "reset"])
+        self.assertEqual(row["attempts"], 2)
 
     def test_invalid_then_valid_run_keeps_the_second_attempt(self):
         outcomes = iter([{"status": "invalid", "cause": "claude CLI error"},
