@@ -35,6 +35,7 @@ PHOTO = ("P=/sdcard/Pictures/{photo}; "
          "rm -f $P; screencap -p $P; am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://$P >/dev/null; "
          "for i in 1 2 3 4 5 6 7 8 9 10; do content query --uri content://media/external/images/media "
          "--where \"_display_name='{photo}'\" | grep -q Row && break; sleep 1; done; "
+         "content query --uri content://media/external/images/media --where \"_display_name='{photo}'\" | grep -q Row || exit 1; "
          "am force-stop com.google.android.apps.photos; input keyevent 3")
 SETTINGS_HOME = ("settings put system screen_off_timeout 600000; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; "
                  "am force-stop com.google.android.gms; am force-stop com.google.android.calendar; "

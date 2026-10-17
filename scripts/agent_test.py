@@ -199,6 +199,10 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(out, "5550101", stored)
         self.assertTrue(tasks.TASKS[2]["checks"]["android"]["command"][2].endswith(tasks.PHONE_DIGITS))
 
+    def test_photo_reset_fails_when_the_seed_never_appears(self):
+        reset = tasks.TASKS[7]["reset"]["android"][0][2]
+        self.assertLess(reset.index("grep -q Row || exit 1"), reset.index("am force-stop"))
+
     def test_photo_check_propagates_query_failure_before_counting(self):
         command = tasks.TASKS[7]["checks"]["android"]["command"][2]
         self.assertIn("|| exit $?", command)

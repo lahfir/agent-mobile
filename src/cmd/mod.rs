@@ -225,7 +225,7 @@ pub fn dispatch(cli: &Cli) -> Result<i32, Failure> {
             warn_unused_globals(cli, true, false);
             ctx_dispatch(cli)
         }
-        Command::Snapshot => {
+        Command::Snapshot | Command::ScrollUntilVisible { .. } => {
             warn_unused_globals(cli, true, true);
             ctx_dispatch(cli)
         }
