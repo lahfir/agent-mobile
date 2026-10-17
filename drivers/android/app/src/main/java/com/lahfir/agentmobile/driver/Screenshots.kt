@@ -14,7 +14,7 @@ internal fun interface ScreenshotBackend {
 
 internal class Screenshots(
     private val backend: ScreenshotBackend,
-    private val timeoutMs: Long = 5_000,
+    private val timeoutMs: Long = 15_000,
 ) {
 
     fun capture(): ByteArray {
