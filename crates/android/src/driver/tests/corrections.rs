@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use agent_mobile_core::error::Failure;
 
-use super::{SERVICE_COMPONENT, adb_with, enable_service, ensure_apk, output};
+use super::{
+    SERVICE_COMPONENT, adb_with, enable_service, enable_service_bounded, ensure_apk, output,
+};
 
 /// Temp driver dir, removed even on panic.
 struct TestDir(PathBuf);
@@ -133,4 +135,62 @@ fn enable_settle_loop_rewrites_after_external_reset() -> Result<(), Failure> {
         assert!(p.iter().any(|a| a.contains(&format!("'{merged}'"))));
     }
     Ok(())
+}
+
+#[test]
+fn bound_timeout_reports_active_automation_connection() {
+    let enabled = format!("a.b/.C:{SERVICE_COMPONENT}");
+    let dump = "Bound services:{}\nUi Automation[eventTypes=TYPES_ALL_MASK, notificationTimeout=0]";
+    let (adb, _) = adb_with(vec![
+        output(true, &enabled, ""),
+        output(true, "1", ""),
+        output(true, &enabled, ""),
+        output(true, dump, ""),
+    ]);
+    let error = enable_service_bounded(&adb, "s1", std::time::Duration::ZERO)
+        .err()
+        .map(|failure| failure.render())
+        .unwrap_or_default();
+    assert!(
+        error.contains("the accessibility service is enabled but Android will not bind it: another UI automation connection is active on the device"),
+        "{error}"
+    );
+    assert!(error.contains("adb shell dumpsys accessibility"), "{error}");
+}
+
+#[test]
+fn bound_timeout_without_automation_marker_recommends_settings() {
+    let enabled = format!("a.b/.C:{SERVICE_COMPONENT}");
+    let (adb, _) = adb_with(vec![
+        output(true, &enabled, ""),
+        output(true, "1", ""),
+        output(true, &enabled, ""),
+        output(true, "Bound services:{}\nEnabled services:{driver}", ""),
+    ]);
+    let error = enable_service_bounded(&adb, "s1", std::time::Duration::ZERO)
+        .err()
+        .map(|failure| failure.render())
+        .unwrap_or_default();
+    assert!(
+        error.contains("accessibility service never bound"),
+        "{error}"
+    );
+    assert!(!error.contains("accessibility service service"), "{error}");
+    assert!(error.contains("Settings > Accessibility"), "{error}");
+}
+
+#[test]
+fn bound_dump_succeeds() {
+    let enabled = format!("a.b/.C:{SERVICE_COMPONENT}");
+    let (adb, _) = adb_with(vec![
+        output(true, &enabled, ""),
+        output(true, "1", ""),
+        output(true, &enabled, ""),
+        output(
+            true,
+            "Bound services:{Service[label=Agent Mobile Driver, feedbackType[0]]}",
+            "",
+        ),
+    ]);
+    assert!(enable_service_bounded(&adb, "s1", std::time::Duration::ZERO).is_ok());
 }
