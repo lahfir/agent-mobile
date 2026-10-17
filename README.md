@@ -276,11 +276,11 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
 | Cause | What to do |
 | --- | --- |
 | The iPhone has no free app slot for this signing profile | Delete apps signed by your personal team that you no longer need in Settings > General > VPN & Device Management, then retry. |
-| The iPhone refused to install the driver | Free an app slot for your personal team. If it still fails, update Xcode to support the iPhone's iOS, then retry. |
+| The iPhone refused to install the driver: this Xcode likely does not support the iPhone's iOS version | Update Xcode to a version that supports the iPhone's iOS, then retry. If Xcode is current, free an app slot for your personal team. |
 | The iPhone does not trust the developer certificate | In Settings > General > VPN & Device Management, trust the developer app, then retry. |
 | The iPhone is locked | Unlock it and keep it unlocked until the driver answers, then retry. |
 | Developer Mode is off on the iPhone | Turn on Settings > Privacy & Security > Developer Mode, restart the iPhone, then retry. |
-| Xcode has no signing team for the driver | Open Xcode > Settings > Accounts, sign in with your Apple ID, then retry. |
+| Xcode has no signing team for the driver | Sign in under Xcode > Settings > Accounts. Open the driver's `AgentMobileDriver.xcodeproj`, choose your team under Signing & Capabilities for every target, then retry. |
 
 ## Protocol
 

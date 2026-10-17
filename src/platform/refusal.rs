@@ -8,8 +8,8 @@ const REFUSALS: &[(&[&str], &str, &str)] = &[
     ),
     (
         &["Root install style is not supported"],
-        "the iPhone refused to install the driver",
-        "free an app slot for your personal team (Settings > General > VPN & Device Management; a free profile allows 3 apps per device); if it still fails, update Xcode to a version that supports the iPhone's iOS, then retry",
+        "the iPhone refused to install the driver: this Xcode likely does not support the iPhone's iOS version",
+        "update Xcode to a version that supports the iPhone's iOS (compare `xcodebuild -version` with Settings > General > About > iOS Version), then retry; if Xcode is current, free an app slot for your personal team (Settings > General > VPN & Device Management; a free profile allows 3 apps per device)",
     ),
     (
         &[
@@ -46,7 +46,7 @@ const REFUSALS: &[(&[&str], &str, &str)] = &[
             "No profiles for",
         ],
         "Xcode has no signing team for the driver",
-        "open Xcode > Settings > Accounts, sign in with your Apple ID, then retry",
+        "sign in under Xcode > Settings > Accounts, open the driver's AgentMobileDriver.xcodeproj, choose your team under Signing & Capabilities for every target, then retry",
     ),
 ];
 
