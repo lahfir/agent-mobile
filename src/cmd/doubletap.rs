@@ -3,11 +3,15 @@
 
 use agent_mobile_core::error::Failure;
 
-use super::{Ctx, ref_or_point_body, round_trip};
+use super::{Ctx, ref_or_point_body, reply::Request};
 
-/// Run `doubletap` with the one-or-two positional split.
-pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
+/// Build the `doubletap` wire request without session lookup or I/O.
+pub fn request(args: &[String]) -> Result<Request, Failure> {
     let body = ref_or_point_body(args, "doubletap")?;
-    let session = ctx.session()?;
-    round_trip(ctx, &session, "doubletap", &body)
+    Ok(Request::new("doubletap", body))
+}
+
+/// CLI printing wrapper.
+pub fn run(ctx: &Ctx, args: &[String]) -> Result<i32, Failure> {
+    request(args)?.run(ctx)
 }

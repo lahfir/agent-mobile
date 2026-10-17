@@ -7,6 +7,7 @@ final class Driver {
     var bundle = "com.apple.springboard"
     var snapId = ""
     var refs: [String: Ident] = [:]
+    var alertTarget: XCUIElement?
     var seq = 0
     var lastRead: (h: Int, at: Date)?
     var appCache: [String: XCUIApplication] = [:]
@@ -54,9 +55,9 @@ final class Driver {
             bundle = target
             return out
         case "tap":
-            let (pt, base) = try resolvePoint(p)
+            let (pt, _) = try resolvePoint(p)
             tapPoint(pt)
-            return try settledSnapshot(baseline: base)
+            return try settledSnapshot()
         case "hold":
             let dur: Double
             if let raw = p["duration"] {
@@ -72,14 +73,14 @@ final class Driver {
             guard dur > 0, dur.isFinite, dur <= 10 else {
                 throw DrvError(code: "BAD_REQUEST", msg: "duration 0 < d <= 10")
             }
-            let (pt, hbase) = try resolvePoint(p)
+            let (pt, _) = try resolvePoint(p)
             try Events.press(pt, hold: dur)
-            return try settledSnapshot(baseline: hbase)
+            return try settledSnapshot()
         case "doubletap":
-            let (pt, dbase) = try resolvePoint(p)
+            let (pt, _) = try resolvePoint(p)
             tapPoint(pt)
             tapPoint(pt)
-            return try settledSnapshot(baseline: dbase)
+            return try settledSnapshot()
         case "pinch":
             guard let scale = p["scale"] as? Double, scale > 0, scale.isFinite, abs(scale - 1) >= 0.01 else {
                 throw DrvError(code: "BAD_REQUEST", msg: "scale positive, finite, |scale-1| >= 0.01")
@@ -93,13 +94,13 @@ final class Driver {
             } else {
                 velocity = scale > 1 ? 1.0 : -1.0
             }
-            let (el, base) = try element(p["ref"])
+            let (el, _) = try element(p["ref"])
             try gesture("pinch") { el.pinch(withScale: CGFloat(scale), velocity: CGFloat(velocity)) }
-            return try settledSnapshot(baseline: base)
+            return try settledSnapshot()
         case "twofinger":
-            let (el, base) = try element(p["ref"])
+            let (el, _) = try element(p["ref"])
             try gesture("twofinger") { el.twoFingerTap() }
-            return try settledSnapshot(baseline: base)
+            return try settledSnapshot()
         case "back":
             let f = app().frame
             let y = f.minY + f.height * 0.4
@@ -120,19 +121,19 @@ final class Driver {
                 typeKeys(text)
                 return try settledSnapshot()
             }
-            let (node, base) = try resolve(p["ref"])
+            let (node, _) = try resolve(p["ref"])
             if try !setValue(node, appending: text) {
                 tapPoint(CGPoint(x: node.frame.midX, y: node.frame.midY))
                 typeKeys(text)
             }
-            return try settledSnapshot(baseline: base)
+            return try settledSnapshot()
         case "swipe":
             let dir = try str(p, "direction")
             guard ["up", "down", "left", "right"].contains(dir) else {
                 throw DrvError(code: "BAD_REQUEST", msg: "direction up|down|left|right")
             }
             if p["ref"] != nil {
-                let (node, h) = try resolve(p["ref"]); flick(dir, across: node.frame, span: 0.6); return try settledSnapshot(baseline: h)
+                let (node, _) = try resolve(p["ref"]); flick(dir, across: node.frame, span: 0.6); return try settledSnapshot()
             }
             flick(dir, across: app().frame, span: 0.5)
             return try settledSnapshot()

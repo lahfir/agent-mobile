@@ -7,6 +7,7 @@ const GUIDE: &str = "\
 agent-mobile — drive an iOS or Android app through a snapshot -> act loop
 
 COMMANDS
+  mcp                            serve tools over JSON-RPC stdio
   devices                        list iOS simulators/phones and Android
                                  AVD/USB/wireless targets
   serve <device> [--app <id>]    start a driver in the foreground; <device>
@@ -36,6 +37,9 @@ COMMANDS
                                  type -- -flag
   swipe <up|down|left|right> [<ref>]
                                  swipe the app, or one element
+  scroll_until_visible <text> [direction]
+                                 swipe until the exact node name is visible;
+                                 direction defaults to up
   home                           go to the launcher/home; returns that tree
   doubletap <ref> | <x> <y>      tap twice on a ref, or a point in the app
                                  frame's top-left space
@@ -124,7 +128,10 @@ ANDROID SETUP / RECOVERY
                                  — no Play distribution, no bypass
 
 SYSTEM UI
-  Permission alerts and other system UI live outside the app under test.
+  Permission dialogs appear in snapshots; tap their buttons by ref like
+  any other node. On iOS, the snapshot keeps the target app bundle while
+  showing the dialog; after dismissal, use the fresh refs from the action.
+  Other system UI lives outside the app under test.
   On iOS that is com.apple.springboard; on Android it is the active
   launcher/system package shown in a snapshot's app field. Act on those
   refs, then return with `snapshot --app <bundle>` on iOS or `back` on
@@ -166,6 +173,12 @@ LAUNCH
 
 /// Run `skills`; prints the guide, no wire involved.
 pub fn run() -> i32 {
-    super::emit(GUIDE.trim_end_matches('\n'));
+    super::emit(reply());
     0
+}
+
+/// The guide reply without any output or session lookup.
+#[must_use]
+pub fn reply() -> &'static str {
+    GUIDE.trim_end_matches('\n')
 }

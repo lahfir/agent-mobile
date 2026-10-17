@@ -208,7 +208,7 @@ available_package_rows() { sdkmanager_package_rows --list; }
 
 # Exact `id` row's revision; empty when the id is absent.
 package_revision() {
-    printf '%s\n' "$1" | awk -F'\t' -v want="$2" '$1 == want { print $2; exit }'
+    awk -F'\t' -v want="$2" '$1 == want { print $2; exit }' <<<"$1"
 }
 
 install_packages() {
@@ -259,7 +259,8 @@ install_packages() {
             "the pinned revision is unavailable; reconcile the repository or the pin explicitly"
     done
     echo "installing missing SDK packages: ${missing[*]}"
-    printf 'y\n%.0s' $(seq 1 256) | run_with_deadline 300 "$sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+    run_with_deadline 300 "$sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null \
+        <<<"$(printf 'y\n%.0s' $(seq 1 256))"
     run_with_deadline 1200 "$sdkmanager" --sdk_root="$ANDROID_HOME" "${missing[@]}"
     installed="$(installed_package_rows)"
     for i in "${!required[@]}"; do
@@ -307,12 +308,12 @@ create_avd() {
     local avdmanager
     avdmanager="$(avdmanager_bin)"
     echo "creating AVD ${AVD_NAME} (${AVD_DEVICE}, ${PLATFORM_ID}/${SYS_IMAGE_ABI})"
-    printf 'no\n' | run_with_deadline 120 env "ANDROID_SDK_ROOT=$ANDROID_HOME" "ANDROID_HOME=$ANDROID_HOME" \
+    run_with_deadline 120 env "ANDROID_SDK_ROOT=$ANDROID_HOME" "ANDROID_HOME=$ANDROID_HOME" \
         "$avdmanager" create avd \
         --name "$AVD_NAME" \
         --package "system-images;${PLATFORM_ID};google_apis;${SYS_IMAGE_ABI}" \
         --device "$AVD_DEVICE" \
-        --path "$home/${AVD_NAME}.avd" >/dev/null
+        --path "$home/${AVD_NAME}.avd" >/dev/null <<<'no'
     if ! avd_exists || ! avd_matches_pins; then
         fail "AVD ${AVD_NAME} was not created with the pinned config" \
             "inspect ${home}/${AVD_NAME}.avd/config.ini and the avdmanager output"

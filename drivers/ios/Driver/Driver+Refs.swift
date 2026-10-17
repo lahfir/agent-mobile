@@ -25,7 +25,7 @@ extension Driver {
     // consecutive read only when it is old enough to prove an interval.
     func resolve(_ any: Any?) throws -> (node: XCUIElementSnapshot, read: (h: Int, at: Date)) {
         let (ref, id) = try lookupIdent(any)
-        let snap = try app().snapshot()
+        let snap = try (alertTarget ?? app()).snapshot()
         let at = Date()
         var hits: [XCUIElementSnapshot] = []
         func walk(_ node: XCUIElementSnapshot) {
@@ -42,22 +42,22 @@ extension Driver {
     // Ref-to-element twin of resolve() for the verbs XCTest only offers on
     // XCUIElement (pinch, twoFingerTap). Same ledger, same
     // STALE_REF/AMBIGUOUS_TARGET contract, matched on type + identifier +
-    // label + frame with no isHittable reads (KTD2). The returned read seeds
-    // the settle baseline like resolve()'s does.
+    // label + frame with no isHittable reads (KTD2).
     func element(_ any: Any?) throws -> (el: XCUIElement, read: (h: Int, at: Date)) {
         let (ref, id) = try lookupIdent(any)
-        let snap = try app().snapshot()
+        let a = alertTarget ?? app()
+        let snap = try a.snapshot()
         let at = Date()
         // Filter identifier and label inside XCTest so only candidates pay
         // IPC materialization; frame stays in Swift (not predicate-safe).
         // Fall back to the full walk: predicate semantics can miss elements
         // XCTest reports differently (notably empty identifiers).
         let pred = NSPredicate(format: "identifier == %@ AND label == %@", id.id, id.label)
-        var found = app().descendants(matching: id.type).matching(pred).allElementsBoundByIndex.filter {
+        var found = a.descendants(matching: id.type).matching(pred).allElementsBoundByIndex.filter {
             Driver.close($0.frame, id.frame)
         }
         if found.isEmpty {
-            found = app().descendants(matching: id.type).allElementsBoundByIndex.filter {
+            found = a.descendants(matching: id.type).allElementsBoundByIndex.filter {
                 Driver.snapString($0, "identifier") == id.id && Driver.snapString($0, "label") == id.label && Driver.close($0.frame, id.frame)
             }
         }

@@ -219,18 +219,24 @@ impl Failure {
         }
     }
 
+    /// The wire or client-side code, without printing a failure.
+    #[must_use]
+    pub fn code_str(&self) -> &'static str {
+        match self {
+            Self::Driver { code, .. } => code.as_str(),
+            Self::Transport { .. } => ErrorCode::DriverError.as_str(),
+            Self::Usage { .. } => "USAGE",
+            Self::Local { .. } => "LOCAL",
+        }
+    }
+
     /// The `--json` failure path: stdout gets an envelope-shaped failure
     /// (`USAGE`/`LOCAL`/`DRIVER_ERROR` mark client-side failures that never
     /// reached the driver) and stderr keeps the human render.
     #[must_use]
     pub fn report_json(&self, command: &str) -> i32 {
         use std::io::Write as _;
-        let code = match self {
-            Self::Driver { code, .. } => code.as_str().to_owned(),
-            Self::Transport { .. } => ErrorCode::DriverError.as_str().to_owned(),
-            Self::Usage { .. } => "USAGE".to_owned(),
-            Self::Local { .. } => "LOCAL".to_owned(),
-        };
+        let code = self.code_str();
         let line = serde_json::json!({
             "version": crate::contract::PROTOCOL_VERSION,
             "ok": false,

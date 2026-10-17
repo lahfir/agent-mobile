@@ -15,7 +15,7 @@ use agent_mobile_core::state::{SessionEntry, StateStore};
 use agent_mobile_core::wire::Wire;
 
 use super::android_ops::{StateForwardJournal, android_entry_fields, android_serial};
-use super::{Platform, PlatformDevice, TRUST_MARKERS};
+use super::{Platform, PlatformDevice, refusal};
 
 /// An exited runtime's verdict.
 #[derive(Debug)]
@@ -331,6 +331,7 @@ fn await_ios_driver(
     let deadline = Instant::now() + boot_budget();
     let probe = Wire::with_timeout(url, token, Duration::from_secs(3));
     let mut addrs: Option<Vec<SocketAddr>> = addr.to_socket_addrs().ok().map(Iterator::collect);
+    let mut output = String::new();
     while Instant::now() < deadline {
         if term.load(Ordering::Relaxed) {
             return Err(Failure::local(
@@ -358,15 +359,15 @@ fn await_ios_driver(
         if addrs.is_none() {
             addrs = addr.to_socket_addrs().ok().map(Iterator::collect);
         }
-        let out = child.new_output();
-        if TRUST_MARKERS.iter().any(|m| out.contains(m)) {
-            return Err(Failure::local(
-                "the device refused the runner: certificate untrusted or device locked",
-                "unlock the device and trust the Developer App certificate under \
-                 Settings > General > VPN & Device Management, then rerun `serve`",
-            ));
+        output.push_str(&child.new_output());
+        if let Some(f) = refusal(&output) {
+            return Err(f);
         }
         if matches!(child.try_wait(), Ok(Some(_))) {
+            output.push_str(&child.new_output());
+            if let Some(f) = refusal(&output) {
+                return Err(f);
+            }
             return Err(Failure::local(
                 format!("the driver exited before binding; see {}", log.display()),
                 "check the log for the failing step and retry `serve`",

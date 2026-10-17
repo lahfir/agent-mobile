@@ -30,7 +30,15 @@ def main():
     ap.add_argument("--device", help="default: the CLI's remembered device")
     ap.add_argument("--compare", type=Path, help="earlier results JSON")
     ap.add_argument("--render", type=Path, help="rebuild the HTML from a results JSON, run nothing")
+    ap.add_argument("--agent", action="store_true", help="run agent tasks through MCP")
+    ap.add_argument("--servers", type=Path, help="local JSON map of comparison servers")
+    ap.add_argument("--tasks", help="agent task ids, comma separated (default: all)")
+    ap.add_argument("--seeds", type=int, default=2, help="agent seed variants per task")
+    ap.add_argument("--platforms", help="agent platforms, comma separated (default: ios,android)")
     a = ap.parse_args()
+    if a.agent:
+        from scripts.benchkit.agent import run_agent
+        return run_agent(a.servers, a.bin, a.tasks, a.seeds, a.platforms, a.device)
     base = json.loads(a.compare.read_text()) if a.compare else None
     if a.render:
         return render(json.loads(a.render.read_text()), base, a.render.with_suffix(".html"))

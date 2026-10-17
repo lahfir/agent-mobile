@@ -1,12 +1,17 @@
 //! `screenshot`: base64 to stdout when no path is given, decoded PNG bytes
 //! to a file plus a byte-count confirmation when one is (KTD12).
 
-use agent_mobile_core::contract::Data;
+use agent_mobile_core::contract::{Data, Envelope};
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::format;
 use base64::Engine as _;
 
-use super::Ctx;
+use super::{Ctx, reply::Request};
+
+/// The screenshot wire request, independent of output destination.
+pub fn request() -> Request {
+    Request::new("screenshot", serde_json::json!({}))
+}
 
 /// Run `screenshot [output-path]`.
 pub fn run(ctx: &Ctx, output: Option<&str>) -> Result<i32, Failure> {
@@ -16,13 +21,22 @@ pub fn run(ctx: &Ctx, output: Option<&str>) -> Result<i32, Failure> {
         ));
     }
     let session = ctx.session()?;
-    let env = session.call("screenshot", &serde_json::json!({}))?;
+    let env = request().call(&session)?;
     let path = if ctx.json { None } else { output };
     let Some(path) = path else {
         return Ok(ctx.finish(env));
     };
-    let Some(Data::Screenshot(shot)) = &env.data else {
+    if !matches!(env.data, Some(Data::Screenshot(_))) {
         return Ok(ctx.finish(env));
+    }
+    super::emit(&reply(ctx, env, Some(path))?);
+    Ok(0)
+}
+
+/// Return screenshot text, optionally writing PNG bytes, without printing.
+pub fn reply(ctx: &Ctx, env: Envelope, output: Option<&str>) -> Result<String, Failure> {
+    let (Some(path), Some(Data::Screenshot(shot))) = (output, &env.data) else {
+        return ctx.reply(env);
     };
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&shot.png_base64)
@@ -33,6 +47,5 @@ pub fn run(ctx: &Ctx, output: Option<&str>) -> Result<i32, Failure> {
             )
         })?;
     std::fs::write(path, &bytes)?;
-    super::emit(&format::screenshot_written(path, bytes.len()));
-    Ok(0)
+    Ok(format::screenshot_written(path, bytes.len()))
 }

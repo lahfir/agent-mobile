@@ -5,10 +5,12 @@
 
 mod android_ops;
 mod discovery;
+mod refusal;
 mod runtime;
 
 pub use android_ops::{cleanup_stale, sweep_pending_forwards};
 pub use discovery::discover;
+pub use refusal::refusal;
 pub use runtime::{PlatformRuntime, RuntimeExit};
 
 use agent_mobile_android::{AndroidDeviceKind, AndroidDeviceState, AndroidTarget};
@@ -320,16 +322,6 @@ pub fn default_device(scan: &PlatformScan) -> Option<PlatformDevice> {
         .or_else(|| android(false))
         .cloned()
 }
-
-/// Verbatim fragments of the certificate trust refusal and the
-/// locked-device refusal; serve/lazy scan the driver log for them.
-pub const TRUST_MARKERS: &[&str] = &[
-    "not been explicitly trusted",
-    "certificate is not trusted",
-    "Developer App Certificate",
-    "com.apple.dt.deviceprep",
-    "to Continue",
-];
 
 /// Ambiguous-query failure naming every candidate's collision-free key.
 fn ambiguous(what: &str, query: &str, hits: &[&PlatformDevice]) -> Failure {
