@@ -20,6 +20,8 @@ CONTACTS = ("C=content://com.android.contacts; "
             "done; am force-stop com.google.android.contacts; input keyevent 3")
 CONTACT_FIELD = ("content query --uri content://com.android.contacts/data --projection data1 "
                  "--where \"display_name='{name}' AND mimetype='vnd.android.cursor.item/{kind}'\" | sed -n 's/.*data1=//p'")
+PHONE_DIGITS = " | tr -cd 0-9 | tail -c 7"
+PHONE_FIELD = CONTACT_FIELD + PHONE_DIGITS
 CALENDAR = ("K=content://com.android.calendar; "
             "content delete --uri \"$K/events?caller_is_syncadapter=true&account_name=bench&account_type=LOCAL\" --where \"title LIKE 'Bench Meeting%'\"; "
             "content query --uri $K/calendars --projection _id | grep -q Row || "
@@ -51,12 +53,12 @@ TASKS = [
      "values": [{"name": "Bench Ada", "phone": "5550101", "kind": "phone_v2"},
                 {"name": "Bench Grace", "phone": "5550102", "kind": "phone_v2"}],
      "reset": {"android": [adb(CONTACTS)]},
-     "checks": {"android": {"command": adb(CONTACT_FIELD), "expected": "{phone}"}}},
+     "checks": {"android": {"command": adb(PHONE_FIELD), "expected": "{phone}"}}},
     {"id": "edit-contact", "goal": "Change the phone number for the seeded contact {name} to {phone}.",
      "values": [{"name": "Bench Seed One", "phone": "5550111", "kind": "phone_v2"},
                 {"name": "Bench Seed Two", "phone": "5550112", "kind": "phone_v2"}],
      "reset": {"android": [adb(CONTACTS)]},
-     "checks": {"android": {"command": adb(CONTACT_FIELD), "expected": "{phone}"}}},
+     "checks": {"android": {"command": adb(PHONE_FIELD), "expected": "{phone}"}}},
     {"id": "calendar-event", "goal": "Create a calendar event titled {title} at {time}.",
      "values": [{"title": "Bench Meeting A", "time": "2030-01-02T10:00"}, {"title": "Bench Meeting B", "time": "2030-01-02T11:00"}],
      "reset": {"android": [adb(CALENDAR)]},

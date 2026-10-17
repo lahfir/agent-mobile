@@ -58,9 +58,10 @@ class ServerMapTests(unittest.TestCase):
     def test_teardown_must_be_a_list_of_command_lists(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "servers.json"
-            path.write_text(json.dumps({"server-a": {"command": "stub", "teardown": ["adb"]}}))
-            with self.assertRaises(ValueError):
-                agent.server_map(path)
+            for teardown in (["adb"], [[]]):
+                path.write_text(json.dumps({"server-a": {"command": "stub", "teardown": teardown}}))
+                with self.assertRaises(ValueError):
+                    agent.server_map(path)
 
     def test_failed_host_check_keeps_evidence(self):
         class Result:
@@ -191,6 +192,13 @@ class HarnessTests(unittest.TestCase):
                                        run=lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("missing")))
         self.assertEqual((failed["status"], failed["cause"]), ("invalid", "missing"))
 
+    def test_phone_check_ignores_the_contacts_app_formatting(self):
+        for stored in ("+1 555-010-1", "555-0101", "(555) 0101", "5550101"):
+            out = subprocess.run(["sh", "-c", f"printf '%s\\n' '{stored}'" + tasks.PHONE_DIGITS],
+                                 capture_output=True, text=True, check=True).stdout
+            self.assertEqual(out, "5550101", stored)
+        self.assertTrue(tasks.TASKS[2]["checks"]["android"]["command"][2].endswith(tasks.PHONE_DIGITS))
+
     def test_photo_check_propagates_query_failure_before_counting(self):
         command = tasks.TASKS[7]["checks"]["android"]["command"][2]
         self.assertIn("|| exit $?", command)
@@ -273,6 +281,20 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual((keep.parent / "run-a1.err").read_text(), "err-line\n")
         self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
+    def test_simulator_is_booted_and_a_failed_driver_start_stops_the_run(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(stdout="v1", stderr="error: a driver is already running", returncode=int(argv[-1] == "status"))
+        with mock.patch.object(agent, "server_map", return_value={"agent-mobile": {"command": "x"}}), \
+             mock.patch.object(agent, "pick_device", return_value={"key": "ios:U-1", "kind": "simulator"}), \
+             mock.patch.object(agent.subprocess, "run", side_effect=run), \
+             mock.patch.object(agent, "run_claude") as claude, \
+             self.assertRaisesRegex(SystemExit, "no driver on ios:U-1: error: a driver is already running"):
+            agent.run_agent(None, tasks="dark-mode", seeds=1, platforms="ios")
+        self.assertIn(["xcrun", "simctl", "bootstatus", "U-1", "-b"], calls)
+        claude.assert_not_called()
+
     def test_warmup_runs_once_per_server_per_platform_and_lands_in_meta(self):
         goals = []
         servers = {"agent-mobile": {"command": "x"}, "server-a": {"command": "y"}}
@@ -281,7 +303,7 @@ class HarnessTests(unittest.TestCase):
              mock.patch.object(agent, "OUT", pathlib.Path(tmp)), \
              mock.patch.object(agent, "server_map", return_value=servers), \
              mock.patch.object(agent, "pick_device", return_value={"key": "android:avd:a"}), \
-             mock.patch.object(agent.subprocess, "run", return_value=mock.Mock(stdout="v1")), \
+             mock.patch.object(agent.subprocess, "run", return_value=mock.Mock(stdout="v1", returncode=0)), \
              mock.patch.object(agent, "run_claude", side_effect=lambda goal, *a, **k: goals.append((goal, a[0], k["keep"].name))), \
              mock.patch.object(agent, "run_one", return_value=done), \
              mock.patch("scripts.benchkit.report.render_agent"):
@@ -290,11 +312,11 @@ class HarnessTests(unittest.TestCase):
                                  (agent.WARMUP_GOAL, "server-a", "android-server-a-warmup")])
         self.assertEqual(set(result["meta"]["warmup_ms"]), {"agent-mobile:android", "server-a:android"})
 
-    def test_init_status_failed_or_missing_is_a_fault_and_other_states_are_not(self):
+    def test_init_status_unavailable_or_missing_is_a_fault_and_live_states_are_not(self):
         def init(*servers):
             return [json.dumps({"type": "system", "subtype": "init", "mcp_servers": list(servers)})]
         for status, failed in (("connected", []), ("failed", ["server-a"]), ("pending", []),
-                               ("needs-auth", []), ("disabled", [])):
+                               ("needs-auth", ["server-a"]), ("disabled", ["server-a"])):
             parsed = agent.parse_stream(init({"name": "server-a", "status": status}), "server-a")
             self.assertEqual(parsed["failed"], failed, status)
         self.assertEqual(agent.parse_stream(init(), "server-a")["failed"], ["server-a"])

@@ -28,7 +28,7 @@ def parse_stream(lines, server):
         message = data.get("message", {}) if isinstance(data, dict) else {}
         if data.get("type") == "system" and data.get("subtype") == "init":
             states = {x.get("name"): x.get("status") for x in data.get("mcp_servers", [])}
-            failed = [server] if states.get(server, "failed") == "failed" else []
+            failed = [server] if states.get(server, "failed") in ("failed", "needs-auth", "disabled") else []
         content = message.get("content", []) if isinstance(message, dict) else []
         for item in content:
             if item.get("type") == "tool_use":
@@ -54,7 +54,7 @@ def server_map(path, binary=AGENT_BINARY, device=None):
                                           not isinstance(v.get("disallowedTools", []), list) or
                                           not all(isinstance(x, str) for x in v.get("disallowedTools", [])) or
                                           not isinstance(v.get("teardown", []), list) or
-                                          not all(isinstance(c, list) and all(isinstance(x, str) for x in c)
+                                          not all(isinstance(c, list) and c and all(isinstance(x, str) for x in c)
                                                   for c in v.get("teardown", []))
                                           for k, v in extra.items()):
         raise ValueError("servers file must map labels to command, args, and env")
@@ -230,12 +230,18 @@ def run_agent(servers_path, binary=AGENT_BINARY, tasks=None, seeds=2, platforms=
         if not target:
             print(f"no {platform} device available; skipped")
             continue
+        if target.get("kind") == "simulator":
+            udid = target["key"].split(":", 1)[1]
+            subprocess.run(["xcrun", "simctl", "boot", udid], capture_output=True)
+            subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], capture_output=True, check=True)
         device_servers = server_map(servers_path, binary, target["key"])
         for label in servers:
             server = device_servers[label]
             start = time.monotonic()
             if label == "agent-mobile":
-                subprocess.run([str(binary), "--device", target["key"], "status"], capture_output=True)
+                up = subprocess.run([str(binary), "--device", target["key"], "status"], capture_output=True, text=True)
+                if up.returncode:
+                    raise SystemExit(f"agent-mobile has no driver on {target['key']}: {up.stderr.strip()}")
             with tempfile.TemporaryDirectory() as cwd:
                 run_claude(WARMUP_GOAL, label, server, cwd, keep=streams / f"{platform}-{label}-warmup")
             warmup[f"{label}:{platform}"] = round((time.monotonic() - start) * 1000)
