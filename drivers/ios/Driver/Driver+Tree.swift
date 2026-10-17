@@ -2,30 +2,35 @@ import XCTest
 import UIKit
 
 extension Driver {
-    // Two-read tree-hash idle check with a finite cap (Apple's own quiescence
-    // wait is unbounded). Reads are spaced by at least `gap` — two matching
-    // hashes taken microseconds apart prove nothing. `baseline` donates an
-    // already-taken read (the action's own resolve read, or the last served
-    // snapshot) as the first of the pair, but only counts when it is at
-    // least `gap` old; a fresher donation just becomes the first poll read.
-    func settledSnapshot(timeout: TimeInterval = 3, baseline: (h: Int, at: Date)? = nil, target: String? = nil) throws -> [String: Any] {
+    // Three-read tree-hash idle check with a finite cap (Apple's own
+    // quiescence wait is unbounded). Reads are spaced by at least `gap`.
+    func settledSnapshot(timeout: TimeInterval = 3, target: String? = nil) throws -> [String: Any] {
         let gap: TimeInterval = 0.15
         let a = app(target ?? bundle)
+        var alert: XCUIElement?
+        func read() throws -> XCUIElementSnapshot {
+            let candidate = app("com.apple.springboard").alerts.firstMatch
+            alert = candidate.exists && candidate.isHittable ? candidate : nil
+            return try (alert ?? a).snapshot()
+        }
         let started = Date(); let deadline = started.addingTimeInterval(timeout)
-        var snap = try a.snapshot(); var reads = 1; var h = hash(snap); var at = Date()
-        var settled = (baseline ?? lastRead).map { $0.h == h && at.timeIntervalSince($0.at) >= gap } ?? false
+        var snap = try read(); var reads = 1; var h = hash(snap); var at = Date()
+        var consecutiveMatches = 1
+        var settled = false
         while !settled, Date() < deadline {
             let wait = gap - Date().timeIntervalSince(at)
             if wait > 0 { usleep(UInt32(wait * 1_000_000)) }
-            let s2 = try a.snapshot(); reads += 1
+            let s2 = try read(); reads += 1
             let h2 = hash(s2); let at2 = Date(); snap = s2
-            if h2 == h { settled = true }
+            if h2 == h { consecutiveMatches += 1 } else { consecutiveMatches = 1 }
+            if consecutiveMatches >= 3 { settled = true }
             h = h2; at = at2
         }
         let settleMs = Int(Date().timeIntervalSince(started) * 1000)
         lastRead = (h, at)
         snapId = newSnapId()
         refs = [:]; seq = 0
+        alertTarget = alert
         var lines: [String] = []
         let tree = build(snap, pdepth: 0, lines: &lines)
         return ["app": target ?? bundle, "snapshot_id": snapId, "ref_count": seq, "complete": true, "settled": settled,

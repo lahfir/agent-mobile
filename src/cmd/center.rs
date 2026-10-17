@@ -3,15 +3,14 @@
 
 use agent_mobile_core::error::Failure;
 
-use super::{Ctx, round_trip};
+use super::{Ctx, reply::Request};
 
-/// Run `center` with the validated sheet selector.
+/// Build the `center` wire request without session lookup or I/O.
+pub fn request(which: &str) -> Request {
+    Request::new("center", serde_json::json!({ "which": which }))
+}
+
+/// CLI printing wrapper.
 pub fn run(ctx: &Ctx, which: &str) -> Result<i32, Failure> {
-    let session = ctx.session()?;
-    round_trip(
-        ctx,
-        &session,
-        "center",
-        &serde_json::json!({ "which": which }),
-    )
+    request(which).run(ctx)
 }

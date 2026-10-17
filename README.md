@@ -110,6 +110,41 @@ already-foreground package, so use `launch` to change apps), `--max-depth <n>` (
 client-side; `complete=false` follows), `--device <device>` (name, id, or `platform:id`;
 remembered for later calls).
 
+## MCP server
+
+`agent-mobile mcp` is a stdio MCP server (newline-delimited JSON-RPC). One server process drives one
+device: the one fixed by `--device`, or else the remembered default.
+
+```sh
+claude mcp add agent-mobile -- agent-mobile mcp --device "iPhone 16"
+```
+
+Other clients accept a generic `mcpServers` block:
+
+```json
+{ "mcpServers": { "agent-mobile": { "command": "agent-mobile", "args": ["mcp", "--device", "iPhone 16"] } } }
+```
+
+Tools (18): `devices`, `status`, `snapshot`, `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`,
+`hold`, `back`, `twofinger`, `center`, `launch`, `screenshot`, `stop`, `skills`, `scroll_until_visible`.
+Tools take the CLI's argument shapes. `screenshot` takes no arguments and returns an image.
+
+What an agent must know:
+
+- Refs die after every action. On `STALE_REF`, run `snapshot` again and use the new refs.
+- The first call while a driver boots returns "driver is starting; call again" within about 45 s.
+  The boot continues in the background, so call again.
+- A call that times out may already have run. `snapshot` before you repeat the action.
+- `AGENT_MOBILE_MCP_CALL_SECS` lowers the time limit for one call (default and maximum: 45 s).
+
+Smoke check, listing the tools:
+
+```sh
+npx @modelcontextprotocol/inspector@2.11.0 --cli agent-mobile mcp --method tools/list
+```
+
+The Inspector does not pass your shell environment to the server. Give each variable the server needs with `-e`, for example `-e ANDROID_HOME="$ANDROID_HOME"`.
+
 ## Environment
 
 | Variable | Effect |
@@ -235,6 +270,17 @@ phone: Settings > General > VPN & Device Management > trust the certificate, the
 again — the command detects the refusal and prints these steps. The phone shows "Automation
 Running" while the driver is up. The driver URL is `http://<bonjour-host>.local:8770`; it
 lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
+
+### iPhone troubleshooting
+
+| Cause | What to do |
+| --- | --- |
+| The iPhone has no free app slot for this signing profile | Delete apps signed by your personal team that you no longer need in Settings > General > VPN & Device Management, then retry. |
+| The iPhone refused to install the driver: this Xcode likely does not support the iPhone's iOS version | Update Xcode to a version that supports the iPhone's iOS, then retry. If Xcode is current, free an app slot for your personal team. |
+| The iPhone does not trust the developer certificate | In Settings > General > VPN & Device Management, trust the developer app, then retry. |
+| The iPhone is locked | Unlock it and keep it unlocked until the driver answers, then retry. |
+| Developer Mode is off on the iPhone | Turn on Settings > Privacy & Security > Developer Mode, restart the iPhone, then retry. |
+| Xcode has no signing team for the driver | Sign in under Xcode > Settings > Accounts. Open the driver's `AgentMobileDriver.xcodeproj`, choose your team under Signing & Capabilities for every target, then retry. |
 
 ## Protocol
 

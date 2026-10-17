@@ -38,7 +38,7 @@ class SettlerTest {
         )
 
     @Test
-    fun firstReadEqualToEarlierTreeDoesNotSettleAlone() {
+    fun threeEqualReadsSettleWithoutCountingAnEarlierTree() {
         val clock = Clock()
         clock.now = 200_000_000
         var reads = 0
@@ -47,8 +47,8 @@ class SettlerTest {
             read("S", clock.time())
         }
         assertTrue(result.settled)
-        assertEquals(2, reads)
-        assertEquals(2, result.reads)
+        assertEquals(3, reads)
+        assertEquals(3, result.reads)
     }
 
     @Test
@@ -61,8 +61,8 @@ class SettlerTest {
             read("S", clock.time())
         }
         assertTrue(result.settled)
-        assertEquals(4, calls)
-        assertEquals(3, result.reads)
+        assertEquals(5, calls)
+        assertEquals(4, result.reads)
     }
 
     @Test
@@ -75,8 +75,8 @@ class SettlerTest {
             read("S", clock.time())
         }
         assertTrue(result.settled)
-        assertEquals(3, calls)
-        assertEquals(2, result.reads)
+        assertEquals(4, calls)
+        assertEquals(3, result.reads)
     }
 
     @Test
@@ -101,12 +101,12 @@ class SettlerTest {
     }
 
     @Test
-    fun twoEqualReadsAtLeastGapApartSettle() {
+    fun threeEqualReadsAtLeastGapApartSettle() {
         val clock = Clock()
         val result = settler(clock).settle { read("S", clock.time()) }
         assertTrue(result.settled)
-        assertEquals(2, result.reads)
-        assertTrue(result.settleMs >= 150)
+        assertEquals(3, result.reads)
+        assertTrue(result.settleMs >= 300)
     }
 
     @Test
@@ -120,11 +120,23 @@ class SettlerTest {
         }
         assertTrue(result.settled)
         assertTrue("early-wake sleeper must be retried", sleepCalls >= 3)
-        assertEquals(2, result.reads)
+        assertEquals(3, result.reads)
         assertTrue(
             "second read must not start before the gap: ${readTimes[1] - readTimes[0]}",
             readTimes[1] - readTimes[0] >= gapNanos,
         )
+    }
+
+    @Test
+    fun mismatchResetsConsecutiveMatchCount() {
+        val clock = Clock()
+        val signatures = listOf("S", "S", "T", "T", "T")
+        var index = 0
+        val result = settler(clock).settle {
+            read(signatures[index++], clock.time())
+        }
+        assertTrue(result.settled)
+        assertEquals(5, result.reads)
     }
 
     @Test

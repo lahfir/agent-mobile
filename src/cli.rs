@@ -27,6 +27,8 @@ pub struct Cli {
 /// One CLI verb per variant; `devices` is CLI-side only.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Serve tools over newline-delimited JSON-RPC on stdio.
+    Mcp,
     /// List reachable simulators, devices, and AVDs.
     Devices,
     /// Start a driver for one device in the foreground; prints the token once.
@@ -58,6 +60,15 @@ pub enum Command {
         direction: String,
         /// Optional `@<snapshot>:e<N>` ref to swipe on.
         target: Option<String>,
+    },
+    /// Swipe until an exact node name appears in the snapshot.
+    #[command(name = "scroll_until_visible")]
+    ScrollUntilVisible {
+        /// Exact accessibility node name to find.
+        text: String,
+        /// Swipe direction; defaults to up.
+        #[arg(value_parser = ["up", "down", "left", "right"])]
+        direction: Option<String>,
     },
     /// Go to the launcher/home; returns that tree.
     Home,
@@ -129,6 +140,7 @@ impl Command {
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Mcp => "mcp",
             Self::Devices => "devices",
             Self::Serve { .. } => "serve",
             Self::Status => "status",
@@ -136,6 +148,7 @@ impl Command {
             Self::Tap { .. } => "tap",
             Self::Type { .. } => "type",
             Self::Swipe { .. } => "swipe",
+            Self::ScrollUntilVisible { .. } => "scroll_until_visible",
             Self::Home => "home",
             Self::Doubletap { .. } => "doubletap",
             Self::Pinch { .. } => "pinch",

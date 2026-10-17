@@ -103,7 +103,7 @@ pub(crate) fn enable_service_bounded(
             return poll_bound_until(adb, serial, deadline);
         }
         if Instant::now() > deadline {
-            return Err(bind_failure("service not present after write"));
+            return Err(bind_failure("not present after write"));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -113,7 +113,7 @@ pub(crate) fn enable_service_bounded(
 /// accessibility` for the actual bound-service record line.
 fn verify_service(adb: &Adb, serial: &str, budget: Duration) -> Result<(), Failure> {
     if !service_present(adb, serial)? {
-        return Err(bind_failure("service not present after write"));
+        return Err(bind_failure("not present after write"));
     }
     poll_bound_until(adb, serial, Instant::now() + budget)
 }
@@ -127,6 +127,7 @@ fn service_present(adb: &Adb, serial: &str) -> Result<bool, Failure> {
 /// Poll `dumpsys accessibility` for the bound-service record until
 /// `deadline`, honouring cancellation.
 fn poll_bound_until(adb: &Adb, serial: &str, deadline: Instant) -> Result<(), Failure> {
+    let mut last_stdout;
     loop {
         if adb.is_cancelled() {
             return Err(Failure::local("operation interrupted", "rerun the command"));
@@ -139,11 +140,25 @@ fn poll_bound_until(adb: &Adb, serial: &str, deadline: Instant) -> Result<(), Fa
         {
             return Ok(());
         }
+        last_stdout = out.stdout;
         if Instant::now() > deadline {
-            return Err(bind_failure("service never bound"));
+            return Err(bind_timeout_failure(&last_stdout));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+fn bind_timeout_failure(last_stdout: &str) -> Failure {
+    if last_stdout
+        .lines()
+        .any(|line| line.starts_with("Ui Automation["))
+    {
+        return Failure::local(
+            "the accessibility service is enabled but Android will not bind it: another UI automation connection is active on the device",
+            "stop the other automation tool and its on-device process (`adb shell dumpsys accessibility` lists the Ui Automation client; `adb shell ps -A` shows app_process or instrumentation processes), or reboot the device, then retry",
+        );
+    }
+    bind_failure("never bound")
 }
 
 /// The standard refusal with its manual remedy.
