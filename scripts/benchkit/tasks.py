@@ -36,8 +36,11 @@ PHOTO = ("P=/sdcard/Pictures/{photo}; "
          "for i in 1 2 3 4 5 6 7 8 9 10; do content query --uri content://media/external/images/media "
          "--where \"_display_name='{photo}'\" | grep -q Row && break; sleep 1; done; "
          "am force-stop com.google.android.apps.photos; input keyevent 3")
-SETTINGS_HOME = "am force-stop com.android.settings; am start -W -n com.android.settings/.Settings >/dev/null; sleep 1"
-SETTINGS_PAGE = ("dumpsys activity top | grep -A3 'mResumed=true' | grep -q '{fragment}{{' && echo yes || echo no")
+SETTINGS_HOME = ("settings put system screen_off_timeout 600000; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; "
+                 "am force-stop com.google.android.gms; am force-stop com.google.android.calendar; "
+                 "am force-stop com.android.settings; am start -W -n com.android.settings/.Settings >/dev/null; sleep 1")
+SETTINGS_PAGE = ("dumpsys activity top | awk '/ ACTIVITY /{{r=0}} /mResumed=true/{{r=1}} "
+                 "r && /^ +{fragment}[{{]/{{f=1}} END{{print f ? \"yes\" : \"no\"}}'")
 
 TASKS = [
     {"id": "dark-mode", "goal": "Change the device appearance to {value} mode.",

@@ -398,5 +398,26 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(agent.parse_stream([empty], "s")["failed"], ["s"])
 
 
+class SettingsPageCheckTests(unittest.TestCase):
+    DUMP = ("  ACTIVITY launcher/.Home 1 pid=1\n      mResumed=false\n"
+            "  ACTIVITY com.android.settings/.SubSettings 2 pid=2\n      mResumed=true\n"
+            "      filler\n      filler\n      filler\n      Active Fragments:\n"
+            "    {shown}{{abc}} (id=1)\n")
+
+    def run_check(self, shown, fragment):
+        command = tasks.SETTINGS_PAGE.format(fragment=fragment).replace("dumpsys activity top", "cat")
+        dump = self.DUMP.replace("{shown}{{abc}}", shown + "{abc}")
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as f:
+            f.write(dump)
+            f.flush()
+            return subprocess.run(command.replace("cat |", f"cat {f.name} |", 1), shell=True, capture_output=True, text=True).stdout.strip()
+
+    def test_page_fragment_far_below_the_resumed_line_is_found(self):
+        self.assertEqual(self.run_check("AccessibilitySettings", "AccessibilitySettings"), "yes")
+
+    def test_settings_home_is_not_the_page(self):
+        self.assertEqual(self.run_check("TopLevelSettings", "AccessibilitySettings"), "no")
+
+
 if __name__ == "__main__":
     unittest.main()
