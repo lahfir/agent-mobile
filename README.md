@@ -4,38 +4,44 @@ Let an AI agent drive iOS and Android apps through a snapshot -> act loop, on th
 simulator/emulator and on physical devices, with the driver exposed on a plain local HTTP port
 so any tunnel can forward it. Sibling of agent-browser (web) and agent-desktop (native desktop).
 
-## Status (2026-10-05)
+## Status (2026-10-18)
 
 - P1 iOS shipped: the Rust CLI (`agent-mobile`) wraps the proven XCUITest driver. Any verb
-  lazy-starts a driver when none runs; `serve` runs one in the foreground. The npm package
-  bundles a prebuilt simulator runner, so the iOS simulator path builds nothing on the user's
-  Mac.
-- P2 Android is implemented and emulator-proven on this branch: a Kotlin
+  lazy-starts a driver when none runs; `serve` runs one in the foreground.
+- P2 Android shipped: a Kotlin
   `AccessibilityService` driver plus a Rust ADB adapter serve the same protocol —
   cross-platform `devices`/`serve`, normalized `platform:id` device keys, a loopback
   bridge with one owned `adb forward`, and exact owned-resource cleanup. A headless
   Ubuntu emulator job gates the rail; the local live gate passed, and Experiment 10
   created a real Clock alarm.
-- Probe evidence stands (`docs/experiments/RESULTS.md`, Experiments 1–10): agent-driven Calendar
+- P3 shipped: the MCP server (`agent-mobile mcp`, 18 tools), three-read settle on both drivers,
+  iOS system alerts in snapshots, `scroll_until_visible`, and the agent-task benchmark over MCP.
+  Experiment 11 ran (results in PR #8). The physical-iPhone loopback bind is deferred.
+- Probe evidence stands (Experiments 1–10, in the local experiment record): agent-driven Calendar
   events on the iOS 26 simulator and on a physical iPhone 14 Pro over Wi-Fi, plus the Android
   17 emulator alarm. Experiment 10's physical Android leg is explicitly not run because no
   authorized phone was available; its manual procedure remains in the experiment record.
-- Not built (later phases): the reliability benchmark for Android (P3), the MCP wrapper (P4),
-  the iOS in-app SDK, end-to-end encryption on the LAN hop.
+- Not built (later phases): P4 release (npm and cargo publish, MCP Registry listing), the iOS
+  in-app SDK, end-to-end encryption on the LAN hop.
 
 ## Install
 
-The published npm package is macOS-only, Node >= 18 — it ships a prebuilt CLI binary and a
-prebuilt iOS simulator runner, so installation compiles and downloads nothing for iOS. A
-source checkout additionally supports the headless Android host on macOS arm64/x86_64 and
-Linux x86_64 (the hosts the setup script declares).
+agent-mobile is not published to a package registry yet (P4). Install it from a checkout. The
+pins in `rust-toolchain.toml` and `Cargo.toml` apply. On macOS, this builds the release CLI and
+the prebuilt iOS simulator runner into `npm/`, then puts `agent-mobile` on your PATH (Node >= 18):
 
 ```
-npm i -g agent-mobile
+scripts/sync-npm-version.sh
+(cd npm && npm link)
 agent-mobile --version
 ```
 
-From a checkout instead (pins in `rust-toolchain.toml` and `Cargo.toml` apply):
+The linked command runs the staged copy in `npm/bin/`, which does not rebuild itself. Run
+`scripts/sync-npm-version.sh` again after every `git pull`. If a command that the docs list is
+missing (for example `unrecognized subcommand 'mcp'`), the staged copy is old.
+
+For the CLI alone (also the headless Android host on Linux x86_64), build it and use
+`target/release/agent-mobile`:
 
 ```
 cargo build --release --locked
@@ -63,7 +69,7 @@ saves the session under `~/.agent-mobile/`, and runs the verb. The first call ca
 minute; progress prints to stderr.
 
 ```
-agent-mobile devices                    # normalized rows: name, platform, id, kind, os, state
+agent-mobile devices                    # rows: name, udid, platform, key, id, kind, os, state, serving
 agent-mobile snapshot                   # lazy-boots, prints the accessibility tree
 agent-mobile launch com.apple.mobilecal # iOS bundle id — Android takes a package name
 agent-mobile tap @1abc:e7               # act on a ref from the last snapshot
@@ -95,6 +101,7 @@ devices share a name the CLI refuses to guess — pick by key.
 | `tap <ref>` or `tap <x> <y>` | tap an element ref, or a point in the app frame |
 | `type [<ref>] <text...>` | append text: a leading ref writes that field's value directly, otherwise keystrokes go to the focused field; use `--` before hyphen-leading text |
 | `swipe <up\|down\|left\|right> [<ref>]` | swipe the app, or one element |
+| `scroll_until_visible <name> [up\|down\|left\|right]` | swipe until a node with that exact name appears (at most 15 swipes) |
 | `home` | go to the launcher/home; returns that tree |
 | `back` | navigate back |
 | `doubletap`, `pinch`, `hold`, `twofinger` | two-tap, zoom, press-and-hold, two-finger tap |
@@ -103,6 +110,7 @@ devices share a name the CLI refuses to guess — pick by key.
 | `screenshot [path]` | PNG to a file, or base64 to stdout |
 | `stop` | terminate the active app; the driver stays up |
 | `skills` | print the one-page agent guide |
+| `mcp` | serve the tools over MCP on stdio (see MCP server) |
 
 Global flags: `--json` (raw JSON envelope instead of text), `--app <id>` (app selector for
 `snapshot`/`serve` — iOS targets the bundle; Android `snapshot --app` only validates the
@@ -153,7 +161,10 @@ The Inspector does not pass your shell environment to the server. Give each vari
 | `AGENT_MOBILE_TOKEN` | bearer token paired with the URL override |
 | `AGENT_MOBILE_DRIVER_DIR` | iOS driver source override: an Xcode project dir or a `runner/` dir holding `*.xctestrun` |
 | `AGENT_MOBILE_ANDROID_APK` | Android driver APK override; otherwise the checked-in Gradle wrapper builds the debug APK |
-| `ANDROID_SDK_ROOT` / `ANDROID_AVD_HOME` | standard Android locations; the adapter also honors `ANDROID_HOME` and PATH |
+| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | SDK location, in that order; then the platform default, then PATH |
+| `AGENT_MOBILE_BOOT_BUDGET_SECS` | lazy-boot deadline in seconds (default 240); raise it past 600 before the first Android boot, which can run a cold Gradle build |
+| `AGENT_MOBILE_REPO_ROOT` | checkout root that holds `drivers/android`; needed only outside a checkout |
+| `AGENT_MOBILE_MCP_CALL_SECS` | time limit for one MCP tool call (default and maximum: 45 s) |
 | `TEST_RUNNER_AGENT_MOBILE_PORT` / `_TOKEN` / `_BIND` | iOS driver-side env, set through xcodebuild's `TEST_RUNNER_` prefix (see `drivers/ios/am.sh`) |
 
 ## Sessions and state
@@ -244,6 +255,7 @@ python3 scripts/bench.py --quick             # ~5 min smoke run
 python3 scripts/bench.py --device android:avd:<name>   # same suite against Android
 python3 scripts/bench.py --compare bench-results/<old>.json
 python3 scripts/bench.py --render bench-results/<run>.json   # rebuild the HTML only
+python3 scripts/bench.py --agent --platforms android --seeds 5 --servers <local.json>  # agent tasks over MCP
 ```
 
 It drives the release binary against the iOS simulator (or an Android emulator via
@@ -253,6 +265,11 @@ covers cold start, per-verb p50/p95, the CLI/driver/settle split, snapshot cost 
 size, typing speed, settle rate, stale-ref refusals, error rate, tokens per snapshot, drift,
 runner memory and CPU, and an end-to-end Settings task. The cold boots shut down the simulator;
 `--cold 0` skips them.
+
+`--agent` runs the agent tasks: a fixed model drives each task through one MCP server per run,
+and a host-side check that uses no tool under test decides success. `--tasks` narrows the task
+list. `--servers` names a local, untracked JSON file with the comparison servers' launch
+commands; without it only agent-mobile runs.
 
 ## Physical iPhone
 
@@ -289,7 +306,8 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
   platforms.
 - Commands: `status`; `launch {bundle_id}`; `terminate`; `snapshot {app?}`; `tap {ref} | {x,y}`;
   `type {text, ref?}`; `swipe {direction: up|down|left|right, ref?}`; `home`;
-  `screenshot` (PNG base64). `snapshot {app?}` on Android validates that the package is
+  `back`; `doubletap`; `hold`; `pinch`; `twofinger`; `center`; `screenshot` (PNG base64).
+  `scroll_until_visible` has no wire command: the host loops `swipe` and `snapshot`. `snapshot {app?}` on Android validates that the package is
   already foreground rather than retargeting — `launch` changes apps. On Android `launch`/
   `terminate` run through the host bridge with serial-scoped `cmd package`/`am force-stop`/
   `am start`; `terminate` refuses the driver itself, System UI, and the current launcher.
@@ -310,8 +328,8 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
 - Refs are per-snapshot and qualified: `@<snapshot_id>:eN`. Each action re-resolves its ref
   against the live tree by element type + identifier + label + frame (1 pt tolerance).
   Snapshot-id mismatch or no live match -> STALE_REF; more than one match -> AMBIGUOUS_TARGET.
-  No self-healing, by design (`docs/research/07`, `docs/research/11`).
-- Idle check: after every action the driver re-reads the tree until two consecutive tree hashes
+  No self-healing, by design.
+- Idle check: after every action the driver re-reads the tree until three consecutive tree hashes
   match, capped at 3 s; `settled` and `reads` report what happened.
 - `Accept: text/plain` returns the compact listing instead of JSON, one line per named or
   interactive node: `@id:eN role "name" value="..." at=x,y size=WxH [states]`.
@@ -345,5 +363,5 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
   `check-*.sh` source gates, `bench.py`.
 - `docs/PRD.md` — the product requirements: contract, phases P1–P4 with experiment exit
   criteria, engineering practices, risks, and the reliability gate.
-- `docs/research/` and `docs/experiments/` — the 13 research tracks with their synthesis, and
-  the experiment record with verbatim output (Experiments 1–10) plus logs and screenshots.
+- `docs/research/` and `docs/experiments/` (local only, gitignored) — the research tracks and
+  the experiment record. A clone does not have them.

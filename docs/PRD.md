@@ -1,7 +1,7 @@
 # agent-mobile — Product Requirements Document
 
 Status: draft v0.4, 2026-10-15. Owner: Lahfir. Language: Rust (host), Swift (iOS driver), Kotlin (Android driver).
-Evidence base: `docs/research/` (13 tracks), `docs/experiments/RESULTS.md` (Experiments 1–10, verbatim).
+Evidence base: `docs/research/` (13 tracks), `docs/experiments/RESULTS.md` (Experiments 1–11, verbatim). Both are local and gitignored.
 
 ## 0. Summary
 
@@ -48,7 +48,7 @@ Goals
 - Simulator/emulator and physical devices over their supported local transports: iOS LAN and
   authorized Android USB or wireless ADB.
 - Measured reliability, published with seed variance.
-- An MCP server in P3 lets the same agent harness drive all three tools over MCP.
+- The MCP server (`agent-mobile mcp`, shipped in P3) lets the same agent harness drive all three tools over MCP.
 - No hidden retry and no fuzzy match, anywhere.
 
 Non-goals
@@ -75,7 +75,7 @@ flowchart TB
     end
 
     subgraph IOSHOST["iOS host adapter (module in core, P1)"]
-        IOSA["simctl · devicectl · xcodebuild<br/>reach: 127.0.0.1 (simulator)<br/>LAN ip (phone, P1) → loopback + pairing forward (P3)"]
+        IOSA["simctl · devicectl · xcodebuild<br/>reach: 127.0.0.1 (simulator)<br/>LAN ip (phone, P1) → loopback + pairing forward (deferred)"]
     end
 
     subgraph ANDHOST["Android host adapter (crates/android, P2)"]
@@ -156,7 +156,7 @@ app=com.apple.mobilecal snapshot=@upii2see refs=127 settled=true reads=2 elapsed
 @upii2see:e1 application "Calendar" at=0,0 size=440x956
 ```
 
-**Settle.** After every action or snapshot, the driver re-reads the tree every 150 ms, hashing each node's type, integer frame, label, identifier, and value, until two consecutive reads match or 3 s pass. `settled` reports which happened; `reads` reports how many tries; a `settled: false` reply still returns the last, usable, read.
+**Settle.** After every action or snapshot, the driver re-reads the tree every 150 ms, hashing each node's type, integer frame, label, identifier, and value, until three consecutive reads match or 3 s pass. `settled` reports which happened; `reads` reports how many tries; a `settled: false` reply still returns the last, usable, read.
 
 **Refs.** Refs are minted per snapshot as `@<snapshot_id>:e<N>`. Each settled snapshot discards every prior ref before minting new ones, so a ref resolves only against the snapshot that produced it. An action re-resolves its ref against the live tree by element type, accessibility identifier, label, and frame, allowing at most 1 pt of difference in x, y, width, and height. A snapshot-id mismatch or zero live matches returns `STALE_REF`; more than one live match returns `AMBIGUOUS_TARGET`; the driver never guesses. Example: a ref taken on the empty Title field dies once text goes in, because the label changes from the placeholder to the identifier and the width shrinks (Experiment 8). That is the contract at work: re-snapshot after any action that changes the target.
 
@@ -250,7 +250,7 @@ act on any target, a Delete button included, so they are destructive too (2025-1
   forged content boundaries, and bound node and reply sizes. Server instructions stay static.
 - Validate every argument, including types, ranges, refs and IDs; reject unknown properties.
   Driver URL comes only from local discovery or configuration, token only from environment/configuration;
-  neither comes from tool arguments or appears in replies or logs. Serialize calls and rate-limit them.
+  neither comes from tool arguments or appears in replies or logs. Serialize calls through one worker; there is no separate rate limiter.
 - Keep every verb, including startup, under the 60 s client tool timeout; return a typed error before it expires.
 - Testing: black-box stdio tests for both protocol eras, plus an MCP Inspector smoke check.
 
@@ -302,7 +302,7 @@ P0 is the first phase and it is finished. What it proved:
 verbatim. The emulator leg passed. The conditional phone leg is explicitly not run, with its exact
 manual procedure retained, rather than represented by a synthetic transcript.
 
-### 6.3 P3 — Reliability gate
+### 6.3 P3 — Reliability gate (shipped in #8; physical-iOS forward deferred)
 
 **Scope**
 - MCP server (§5.4).
@@ -310,11 +310,11 @@ manual procedure retained, rather than represented by a synthetic transcript.
   an iOS simulator and Android emulator. Programmatic host-side success checks use no tool under
   test. Reset the device between runs, pin versions of every component, and report §10's metrics.
   The comparison servers' launch commands come from a local untracked config file, not the repo.
-- Settle fix: a third read or minimum settle window for the early-settle case (§9).
-  The post-action two-read rule already landed in #7.
-- System-alert surface for permission dialogs.
-- `scroll_until_visible`.
-- Physical-iOS loopback bind plus pairing-channel port forward.
+- Settle fix (shipped): both drivers settle on three consecutive equal reads (§9).
+- System-alert surface for permission dialogs (shipped).
+- `scroll_until_visible` (shipped).
+- Physical-iOS loopback bind plus pairing-channel port forward (deferred: Xcode 26.0 cannot install the
+  runner on iOS 27, and a forward over Wi-Fi needs the CoreDevice tunnel; see the #8 residuals).
 
 The comparison servers are MCP servers, so all three tools must use MCP through the same agent harness; otherwise the comparison mixes the contract with the calling interface.
 
@@ -330,6 +330,10 @@ The comparison servers are MCP servers, so all three tools must use MCP through 
 - Everything in §6.5's Later and Never lists.
 
 **Exit criterion** — Experiment 11: the benchmark completes across all tasks and seeds against both comparison servers, and §10's kill criterion applies to the pooled result.
+
+**Status** — Experiment 11 ran (results in PR #8): 9 Android tasks and the iOS dark-mode
+task, 5 seeds each. calendar-event cannot pass on the emulator image, and the other iOS tasks have no host
+check. The pooled rates do not meet the kill criterion's "measurably" bar; that decision stays open.
 
 ### 6.4 P4 — Release
 
@@ -515,9 +519,10 @@ Kill criterion: if agent-mobile is not measurably more reliable than both compar
 - Physical iOS shows the system "Automation Running" cover for the whole session. Not removable.
 - The Developer certificate trust on the phone lapsed after about an hour in Experiment 8. Expect a manual re-trust step until a paid profile is used.
 - The two-read settle check can declare "settled" while a late layout pass is still pending on a
-  device (Experiment 7). The fail-loud ref check catches it; P3 tightens it.
+  device (Experiment 7). P3 raised the check to three consecutive equal reads; the fail-loud ref
+  check still catches a later layout pass.
 - The phone driver binds all interfaces on the LAN in P1. The token is the only gate on that hop.
-  P3 replaces it with a loopback bind and a pairing-channel forward.
+  A loopback bind plus a pairing-channel forward is deferred until it can run on a physical device.
 - Canvas, games, and opaque WebViews expose no tree. Vision is out of scope.
 - Android: the agent app is sideload only. Play policy bans this use of the accessibility API.
 - Physical Android requires user-authorized USB or wireless ADB plus explicit Accessibility and,
