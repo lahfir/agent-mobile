@@ -67,6 +67,8 @@ COMMANDS
                                  (--json stays base64; path+--json is an error)
   stop                           terminate the active app; the driver stays
                                  up. No tree comes back — snapshot to verify
+  release                        stop the running driver session; the device
+                                 stays up
   skills                         this page
 
 FLAGS (global)

@@ -19,7 +19,15 @@ impl Client {
     }
 
     pub fn at(home: &PathBuf, envs: &[(&str, &str)]) -> Result<Self, Failure> {
-        let mut child = crate::common::spawn_stdio(&["--json", "mcp"], home, envs)?;
+        Self::with_args(&["--json", "mcp"], home, envs)
+    }
+
+    pub fn with_args(
+        args: &[&str],
+        home: &PathBuf,
+        envs: &[(&str, &str)],
+    ) -> Result<Self, Failure> {
+        let mut child = crate::common::spawn_stdio(args, home, envs)?;
         let input = child
             .stdin
             .take()

@@ -93,7 +93,7 @@ fn acquire_lock(store: &StateStore) -> Result<std::fs::File, Failure> {
                 });
             Err(Failure::local(
                 format!("a driver is already running{detail}"),
-                "use the live session, or `kill` its pid to stop it",
+                "use the live session, or run `agent-mobile release` to stop it",
             ))
         }
         Err(std::fs::TryLockError::Error(e)) => Err(Failure::from(e)),

@@ -50,6 +50,22 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
         return Ok(s);
     }
     let device = pick_device(ctx)?;
+    let state = ctx.store.load();
+    if let Some((key, entry)) = state.devices.iter().find(|(key, entry)| {
+        *key != &device
+            && agent_mobile_core::process::process_matches(
+                entry.pid,
+                entry.process_started_at.as_deref(),
+            )
+    }) {
+        return Err(Failure::local(
+            format!(
+                "{key} is being served (pid {}); one driver runs at a time",
+                entry.pid
+            ),
+            "run `agent-mobile release` (MCP: call the `release` tool), then retry",
+        ));
+    }
     eprintln!("no driver running; starting one for {device}…");
     if physical_ios(&device) {
         eprintln!("keep the iPhone unlocked until the driver answers");

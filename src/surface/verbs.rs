@@ -335,6 +335,21 @@ pub const VERBS: &[Verb] = &[
         guide: "The driver stays up. Take a snapshot to verify.",
         ..verb("stop", "Terminate the active app", wire("terminate"))
     },
+    Verb {
+        globals: SESSION,
+        hints: Hints {
+            read_only: false,
+            destructive: true,
+            idempotent: true,
+            open_world: false,
+        },
+        reply: ReplyKind::Text,
+        ..verb(
+            "release",
+            "Stop the running driver session; the device stays up",
+            Exec::Local(cmd::release::exec),
+        )
+    },
     read(
         verb(
             "skills",

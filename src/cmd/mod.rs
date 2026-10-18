@@ -4,6 +4,7 @@
 
 pub mod devices;
 pub mod lazy;
+pub mod release;
 pub mod reply;
 pub mod screenshot;
 pub mod scroll;
@@ -276,6 +277,17 @@ fn canonical_with_alias(
             store.remember_device_selection(&key, &display)?;
         }
         return Ok(key);
+    }
+    if let Some((key, entry)) = state.devices.iter().find(|(_, entry)| {
+        agent_mobile_core::process::process_matches(entry.pid, entry.process_started_at.as_deref())
+    }) {
+        return Err(Failure::local(
+            format!(
+                "{key} is being served (pid {}); one driver runs at a time",
+                entry.pid
+            ),
+            "run `agent-mobile release` (MCP: call the `release` tool), then retry",
+        ));
     }
     let device = discover(raw)?;
     let canonical = device.key();

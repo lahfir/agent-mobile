@@ -88,6 +88,37 @@ mod canonical {
         );
         Ok(())
     }
+
+    #[test]
+    fn unknown_selector_reports_live_serving_device_before_discovery() -> Result<(), Failure> {
+        let tmp = TestDir::new("canon-serving-conflict");
+        let store = StateStore::at(&tmp.0);
+        std::fs::create_dir_all(store.root())?;
+        let pid = std::process::id();
+        let mut entry =
+            SessionEntry::new("http://127.0.0.1:8770".to_owned(), pid, "t0k".to_owned());
+        entry.process_started_at = agent_mobile_core::process::process_identity(pid);
+        store.upsert("ios:A", &entry)?;
+        let called = std::sync::atomic::AtomicBool::new(false);
+        let Err(failure) = canonical_with_alias(
+            "android:avd:x",
+            &store,
+            |_| {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(Failure::local("discovery ran", "fail"))
+            },
+            false,
+        ) else {
+            return Err(Failure::local("expected serving conflict", "fail"));
+        };
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        let Failure::Local { message, next } = failure else {
+            return Err(failure);
+        };
+        assert!(message.contains("ios:A is being served"), "{message}");
+        assert!(next.contains("release"), "{next}");
+        Ok(())
+    }
 }
 
 mod lazy {
