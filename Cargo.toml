@@ -12,7 +12,7 @@ version      = "0.1.0"
 agent-mobile-android = { path = "crates/android" }
 agent-mobile-core    = { path = "crates/core" }
 base64            = "=0.23.1"
-clap              = { version = "=4.6.7", features = ["derive"] }
+clap              = { version = "=4.6.7", features = ["string"] }
 insta             = { version = "=1.48.0", features = ["filters"] }
 serde             = { version = "=1.0.229", features = ["derive"] }
 serde_json        = "=1.0.151"

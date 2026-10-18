@@ -171,14 +171,14 @@ LAUNCH
   and loses transient app state.
 ";
 
-/// Run `skills`; prints the guide, no wire involved.
-pub fn run() -> i32 {
-    super::emit(reply());
-    0
-}
-
-/// The guide reply without any output or session lookup.
-#[must_use]
-pub fn reply() -> &'static str {
-    GUIDE.trim_end_matches('\n')
+/// The `skills` verb: the guide, no wire involved.
+///
+/// # Errors
+/// Never; the signature matches every local verb.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "every local verb shares one fn signature"
+)]
+pub fn exec(_call: &super::Call) -> Result<super::Reply, agent_mobile_core::error::Failure> {
+    Ok(super::Reply::Text(GUIDE.trim_end_matches('\n').to_owned()))
 }

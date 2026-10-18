@@ -151,20 +151,6 @@ fn pinch_nonfinite_velocity_exits_2_without_request() -> Result<(), Failure> {
     Ok(())
 }
 
-/// A zero scale rides the wire unchanged; the driver owns the rejection.
-#[test]
-fn pinch_zero_scale_passes_through() -> Result<(), Failure> {
-    let home = tmp_home("pinch-zero")?;
-    let s = stub(&[SNAPSHOT])?;
-    let out = run_wired(&["pinch", "@snap1:e2", "0"], &home, &s)?;
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let req = only_request(s, "pinch-zero")?;
-    assert!(req.contains("POST /pinch "), "{req}");
-    let v = body_of(&req)?;
-    assert_eq!(v["scale"], 0.0);
-    Ok(())
-}
-
 #[test]
 fn hold_ref_defaults_duration_to_one() -> Result<(), Failure> {
     let home = tmp_home("hold-ref")?;
@@ -219,29 +205,28 @@ fn hold_nonfinite_duration_exits_2_without_request() -> Result<(), Failure> {
     Ok(())
 }
 
-/// Zero and negative durations ride the wire unchanged; positivity is the
-/// driver's call, so a later client-side check would break this test first.
+/// Out-of-range gesture numbers fail locally, naming the argument, before
+/// any request (KTD2): the CLI and MCP share one range check.
 #[test]
-fn hold_zero_duration_passes_through() -> Result<(), Failure> {
-    let home = tmp_home("hold-zero")?;
-    let s = stub(&[SNAPSHOT])?;
-    let out = run_wired(&["hold", "@snap1:e2", "--duration", "0"], &home, &s)?;
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let req = only_request(s, "hold-zero")?;
-    let v = body_of(&req)?;
-    assert_eq!(v["duration"], 0.0);
-    Ok(())
-}
-
-#[test]
-fn hold_negative_duration_passes_through() -> Result<(), Failure> {
-    let home = tmp_home("hold-neg")?;
-    let s = stub(&[SNAPSHOT])?;
-    let out = run_wired(&["hold", "@snap1:e2", "--duration", "-1"], &home, &s)?;
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let req = only_request(s, "hold-neg")?;
-    let v = body_of(&req)?;
-    assert_eq!(v["duration"], -1.0);
+fn out_of_range_gesture_numbers_exit_2_without_request() -> Result<(), Failure> {
+    let cases: [(&[&str], &str); 4] = [
+        (&["hold", "@snap1:e2", "--duration", "0"], "duration"),
+        (&["hold", "@snap1:e2", "--duration", "-1"], "duration"),
+        (&["hold", "@snap1:e2", "--duration", "11"], "duration"),
+        (&["pinch", "@snap1:e2", "0"], "scale"),
+    ];
+    for (argv, field) in cases {
+        let home = tmp_home("gesture-range")?;
+        let s = stub(&[])?;
+        let out = run_wired(argv, &home, &s)?;
+        assert_eq!(code(&out), 2, "{argv:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains(&format!("{field}: out of range")),
+            "{}",
+            stderr(&out)
+        );
+        assert_eq!(s.captured()?.len(), 0, "{argv:?}");
+    }
     Ok(())
 }
 

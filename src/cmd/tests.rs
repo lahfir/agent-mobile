@@ -45,15 +45,47 @@ mod canonical {
         e.device_name = Some("iPhone 17".to_owned());
         store.upsert("ios:UDID-1", &e)?;
         let called = std::sync::atomic::AtomicBool::new(false);
-        let key = canonical_with_alias("iPhone 17", &store, |_| {
-            called.store(true, std::sync::atomic::Ordering::SeqCst);
-            Err(Failure::local("discovery must not run", "fail"))
-        })?;
+        let key = canonical_with_alias(
+            "iPhone 17",
+            &store,
+            |_| {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(Failure::local("discovery must not run", "fail"))
+            },
+            true,
+        )?;
         assert_eq!(key, "ios:UDID-1");
         assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
         let state = store.load();
         assert_eq!(state.default_device_key.as_deref(), Some("ios:UDID-1"));
         assert_eq!(state.default_device.as_deref(), Some("iPhone 17"));
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_resolution_leaves_the_remembered_default_alone() -> Result<(), Failure> {
+        let tmp = TestDir::new("canon-mcp");
+        let store = StateStore::at(&tmp.0);
+        std::fs::create_dir_all(store.root())?;
+        let mut e = SessionEntry::new(
+            "http://127.0.0.1:8770".to_owned(),
+            std::process::id(),
+            "t0k".to_owned(),
+        );
+        e.device_name = Some("iPhone 17".to_owned());
+        store.upsert("ios:UDID-1", &e)?;
+        store.remember_device_selection("android:avd:a", "a")?;
+        let key = canonical_with_alias(
+            "iPhone 17",
+            &store,
+            |_| Err(Failure::local("discovery must not run", "fail")),
+            false,
+        )?;
+        assert_eq!(key, "ios:UDID-1");
+        assert_eq!(
+            store.load().default_device_key.as_deref(),
+            Some("android:avd:a")
+        );
         Ok(())
     }
 }
@@ -73,10 +105,9 @@ mod lazy {
         std::fs::create_dir_all(&tmp.0).unwrap_or_default();
         (
             Ctx {
-                json: false,
                 app: None,
-                max_depth: None,
                 device: None,
+                remember: true,
                 store: StateStore::at(&tmp.0),
             },
             tmp,

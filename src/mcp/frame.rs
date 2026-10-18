@@ -14,9 +14,7 @@ pub fn text(raw: &str, error: bool) -> Value {
     let mut line_bytes = 0;
     let mut truncated = false;
     for c in raw.chars() {
-        if c.is_control() && c != '\n'
-            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        {
+        if c != '\n' && unsafe_char(c) {
             continue;
         }
         let mut bytes = [0; 4];
@@ -44,6 +42,30 @@ pub fn text(raw: &str, error: bool) -> Value {
     }
     out.push_str(FOOTER);
     json!({"content":[{"type":"text", "text":out}], "isError":error})
+}
+
+/// Clean every string leaf of structured output like text content (R13):
+/// control and bidi characters dropped, each string capped at a line's bound.
+pub fn clean(value: Value) -> Value {
+    match value {
+        Value::String(s) => {
+            let mut out = String::new();
+            for c in s.chars().filter(|c| !unsafe_char(*c)) {
+                if out.len() + c.len_utf8() > LINE_LIMIT {
+                    break;
+                }
+                out.push(c);
+            }
+            Value::String(out)
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(clean).collect()),
+        Value::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (k, clean(v))).collect()),
+        other => other,
+    }
+}
+
+fn unsafe_char(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Remove configured credentials even when a remote failure echoes them.

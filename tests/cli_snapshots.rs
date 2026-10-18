@@ -51,7 +51,7 @@ fn tap_bad_coordinate_is_usage_error() -> Result<(), Failure> {
     let home = tmp_home("tap-bad")?;
     let out = run(&["tap", "10", "abc"], &home, &[])?;
     assert_eq!(code(&out), 2);
-    assert!(stderr(&out).contains("x y"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("target.y"), "{}", stderr(&out));
     Ok(())
 }
 

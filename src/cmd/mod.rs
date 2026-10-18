@@ -1,44 +1,122 @@
-//! Command dispatch and the shared plumbing every verb inherits: session
-//! resolution and the stdout/stderr + exit-code output contract (KTD5,
-//! KTD12).
+//! Execution shared by both surfaces: a validated [`Call`] runs through
+//! [`execute`] to one [`Reply`] (KTD5); session resolution and the
+//! stdout/stderr + exit-code contract live here (KTD12).
 
-pub mod back;
-pub mod center;
 pub mod devices;
-pub mod doubletap;
-pub mod hold;
-pub mod home;
-pub mod launch;
 pub mod lazy;
-pub mod pinch;
 pub mod reply;
 pub mod screenshot;
 pub mod scroll;
 pub mod serve;
 pub mod skills;
-pub mod snapshot;
-pub mod status;
-pub mod stop;
-pub mod swipe;
-pub mod tap;
-pub mod twofinger;
-pub mod r#type;
 
 use serde_json::Value;
 
-use agent_mobile_core::contract::{Envelope, Ref};
+use agent_mobile_core::contract::Envelope;
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::state::StateStore;
 use agent_mobile_core::wire::Wire;
 
-use crate::cli::{Cli, Command};
+use crate::surface::{Args, Exec, Verb, wire_request};
 
-/// Parsed global flags plus the session store, shared by every verb.
+/// A validated invocation from either surface.
+pub struct Call {
+    /// The verb being run.
+    pub verb: &'static Verb,
+    /// Validated arguments, globals included.
+    pub args: Args,
+    /// CLI `--json`.
+    pub json: bool,
+    /// Whether device resolution may change the remembered default (KTD8).
+    pub remember: bool,
+}
+
+impl Call {
+    /// A string argument.
+    #[must_use]
+    pub fn str(&self, key: &str) -> Option<&str> {
+        self.args.get(key).and_then(Value::as_str)
+    }
+
+    /// The depth limit, when given.
+    #[must_use]
+    pub fn max_depth(&self) -> Option<u32> {
+        self.args
+            .get("max_depth")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    }
+}
+
+/// What a verb produced; each surface renders it (KTD5).
+pub enum Reply {
+    /// A driver reply.
+    Envelope(Envelope),
+    /// Device rows, plus their text form.
+    Devices {
+        /// JSON rows.
+        rows: Vec<Value>,
+        /// One text line per row.
+        text: String,
+    },
+    /// Plain text.
+    Text(String),
+    /// A CLI-only verb that printed its own output and exits with this code.
+    Exit(i32),
+}
+
+/// Run a call to its reply.
+///
+/// # Errors
+/// Session, transport, or local failures.
+pub fn execute(call: &Call) -> Result<Reply, Failure> {
+    match call.verb.exec {
+        Exec::Local(run) => run(call),
+        Exec::Wire { .. } => {
+            let request = wire_request(call.verb, &call.args)
+                .ok_or_else(|| Failure::local("not a wire verb", "report a bug"))?;
+            let session = Ctx::for_call(call)?.session()?;
+            request.call(&session).map(Reply::Envelope)
+        }
+    }
+}
+
+/// Run a CLI call and print its reply; the return value is the exit code.
+///
+/// # Errors
+/// Any failure from [`execute`].
+pub fn run_cli(call: &Call) -> Result<i32, Failure> {
+    Ok(match execute(call)? {
+        Reply::Envelope(env) => reply::finish(env, call.json, call.max_depth()),
+        Reply::Devices { rows, text } => {
+            if call.json {
+                emit(&serde_json::json!({ "devices": rows }).to_string());
+            } else if !text.is_empty() {
+                emit(&text);
+            }
+            0
+        }
+        Reply::Text(text) => {
+            emit(&text);
+            0
+        }
+        Reply::Exit(code) => code,
+    })
+}
+
+/// The `mcp` verb: serve until stdin closes.
+///
+/// # Errors
+/// Only a stdout failure other than a closed pipe.
+pub fn mcp_exec(call: &Call) -> Result<Reply, Failure> {
+    crate::mcp::run(call).map(Reply::Exit)
+}
+
+/// Parsed selectors plus the session store, for verbs that talk to a driver.
 pub struct Ctx {
-    json: bool,
     app: Option<String>,
-    max_depth: Option<u32>,
     device: Option<String>,
+    remember: bool,
     store: StateStore,
 }
 
@@ -72,7 +150,6 @@ impl Session {
         }
     }
 
-    /// The wire client for this session's platform.
     fn wire(&self, timeout: Option<std::time::Duration>) -> Wire {
         let wire = match timeout {
             Some(t) => Wire::with_timeout(&self.url, &self.token, t),
@@ -86,6 +163,9 @@ impl Session {
     }
 
     /// One driver call with the standard timeout.
+    ///
+    /// # Errors
+    /// Transport or protocol failures.
     pub fn call(&self, verb: &str, body: &Value) -> Result<Envelope, Failure> {
         self.wire(None).call(verb, body)
     }
@@ -93,6 +173,9 @@ impl Session {
     /// One driver call with an explicit timeout — for verbs whose
     /// driver-side work can outrun the default (cold `launch`, long `type`
     /// payloads), so the client does not abandon an action that still runs.
+    ///
+    /// # Errors
+    /// Transport or protocol failures.
     pub fn call_within(
         &self,
         verb: &str,
@@ -104,61 +187,60 @@ impl Session {
 }
 
 impl Ctx {
-    /// Build the CLI context; `serve` ignores the global device flag.
-    fn new(cli: &Cli) -> Result<Self, Failure> {
-        let device = if matches!(cli.command, Command::Serve { .. }) {
-            None
-        } else {
-            cli.device.as_deref()
-        };
-        let mut ctx = Self::from_options(device, cli.app.clone(), cli.max_depth)?;
-        ctx.json = cli.json;
-        Ok(ctx)
+    /// The context for `call`'s device and app selectors.
+    ///
+    /// # Errors
+    /// An unwritable state dir or an unknown device.
+    pub fn for_call(call: &Call) -> Result<Self, Failure> {
+        Self::from_options(call.str("device"), call.str("app"), call.remember)
     }
 
-    /// Build a text-reply context without constructing a CLI invocation.
+    /// Build a context; `remember` lets device resolution update the
+    /// remembered default (the CLI does, MCP does not — KTD8).
+    ///
+    /// # Errors
+    /// An unwritable state dir or an unknown device.
     pub fn from_options(
         device: Option<&str>,
-        app: Option<String>,
-        max_depth: Option<u32>,
+        app: Option<&str>,
+        remember: bool,
     ) -> Result<Self, Failure> {
         let store = StateStore::new()?;
         let device = device
-            .map(|raw| canonical_with_alias(raw, &store, crate::platform::resolve))
+            .map(|raw| canonical_with_alias(raw, &store, crate::platform::resolve, remember))
             .transpose()?;
         Ok(Self {
-            json: false,
-            app,
-            max_depth,
+            app: app.map(str::to_owned),
             device,
+            remember,
             store,
         })
     }
 
     /// The app selector, for multi-call host-side verbs.
+    #[must_use]
     pub fn app_selector(&self) -> Option<&str> {
         self.app.as_deref()
     }
 
     /// Resolve this invocation's endpoint, or lazy-start a driver first
     /// when nothing is running (KTD7).
+    ///
+    /// # Errors
+    /// Boot or state failures.
     pub fn session(&self) -> Result<Session, Failure> {
-        match self.ready_session()? {
+        match self.ready_session(self.device.as_deref())? {
             Some(s) => Ok(s),
             None => lazy::session(self),
         }
     }
 
-    /// The session for an already-running driver; `None` on a miss or when
-    /// the recorded session's pid is dead — `resolve` reconciles stale
-    /// entries to a lazy boot instead of a wire failure. The stale entry
-    /// stays on disk for `serve` to reclaim: its `runner_pid` reaps any
-    /// orphaned runner still holding the port (KTD7). State keys are
-    /// canonical `platform:id` (legacy pre-upgrade rows are iOS display
-    /// names, and env-override resolves carry no key), so only an
-    /// `android:` key selects the Android transport checklist.
-    fn ready_session(&self) -> Result<Option<Session>, Failure> {
-        let Some(r) = self.store.resolve(self.device.as_deref())? else {
+    /// The session for an already-running driver for `device` (or the
+    /// default); `None` on a miss or when the recorded pid is dead, so
+    /// stale entries reconcile to a lazy boot instead of a wire failure.
+    /// Only an `android:` key selects the Android transport checklist.
+    fn ready_session(&self, device: Option<&str>) -> Result<Option<Session>, Failure> {
+        let Some(r) = self.store.resolve(device)? else {
             return Ok(None);
         };
         let token = r.token().to_owned();
@@ -181,99 +263,32 @@ fn canonical_with_alias(
     raw: &str,
     store: &StateStore,
     discover: impl Fn(&str) -> Result<crate::platform::PlatformDevice, Failure>,
+    remember: bool,
 ) -> Result<String, Failure> {
     let state = store.load();
     if let Some(key) = state.resolve_live_device_key(raw)? {
-        let display = state
-            .devices
-            .get(&key)
-            .and_then(|e| e.device_name.clone())
-            .unwrap_or_else(|| raw.to_owned());
-        store.remember_device_selection(&key, &display)?;
+        if remember {
+            let display = state
+                .devices
+                .get(&key)
+                .and_then(|e| e.device_name.clone())
+                .unwrap_or_else(|| raw.to_owned());
+            store.remember_device_selection(&key, &display)?;
+        }
         return Ok(key);
     }
     let device = discover(raw)?;
     let canonical = device.key();
-    store.remember_device_selection(&canonical, device.name())?;
+    if remember {
+        store.remember_device_selection(&canonical, device.name())?;
+    }
     Ok(canonical)
 }
 
-/// Note when a global flag lands on a verb that ignores it — a flag that
-/// silently does nothing is worse than a note on stderr.
-fn warn_unused_globals(cli: &Cli, app_ok: bool, device_ok: bool) {
-    if cli.app.is_some() && !app_ok {
-        eprintln!("note: --app is ignored by {}", cli.command.name());
-    }
-    if cli.device.is_some() && !device_ok {
-        eprintln!("note: --device is ignored by {}", cli.command.name());
-    }
-}
-
-/// Run `cli` to completion; the process exit code is the return value.
-pub fn dispatch(cli: &Cli) -> Result<i32, Failure> {
-    match &cli.command {
-        Command::Mcp => crate::mcp::run(cli),
-        Command::Devices => {
-            warn_unused_globals(cli, false, false);
-            devices::run(cli.json)
-        }
-        Command::Skills => {
-            warn_unused_globals(cli, false, false);
-            Ok(skills::run())
-        }
-        Command::Serve { .. } => {
-            warn_unused_globals(cli, true, false);
-            ctx_dispatch(cli)
-        }
-        Command::Snapshot | Command::ScrollUntilVisible { .. } => {
-            warn_unused_globals(cli, true, true);
-            ctx_dispatch(cli)
-        }
-        _ => {
-            warn_unused_globals(cli, false, true);
-            ctx_dispatch(cli)
-        }
-    }
-}
-
-/// Dispatch the verbs that need a session context.
-fn ctx_dispatch(cli: &Cli) -> Result<i32, Failure> {
-    match &cli.command {
-        Command::Status => Ctx::new(cli).and_then(|ctx| status::run(&ctx)),
-        Command::Snapshot => Ctx::new(cli).and_then(|ctx| snapshot::run(&ctx)),
-        Command::Tap { args } => Ctx::new(cli).and_then(|ctx| tap::run(&ctx, args)),
-        Command::Type { args } => Ctx::new(cli).and_then(|ctx| r#type::run(&ctx, args)),
-        Command::Swipe { direction, target } => {
-            Ctx::new(cli).and_then(|ctx| swipe::run(&ctx, direction, target.as_deref()))
-        }
-        Command::ScrollUntilVisible { text, direction } => Ctx::new(cli)
-            .and_then(|ctx| scroll::run(&ctx, text, direction.as_deref().unwrap_or("up"))),
-        Command::Home => Ctx::new(cli).and_then(|ctx| home::run(&ctx)),
-        Command::Launch { bundle_id } => Ctx::new(cli).and_then(|ctx| launch::run(&ctx, bundle_id)),
-        Command::Screenshot { output } => {
-            Ctx::new(cli).and_then(|ctx| screenshot::run(&ctx, output.as_deref()))
-        }
-        Command::Stop => Ctx::new(cli).and_then(|ctx| stop::run(&ctx)),
-        Command::Serve { device } => Ctx::new(cli).and_then(|ctx| serve::run(&ctx, device)),
-        Command::Doubletap { args } => Ctx::new(cli).and_then(|ctx| doubletap::run(&ctx, args)),
-        Command::Pinch {
-            target,
-            scale,
-            velocity,
-        } => Ctx::new(cli).and_then(|ctx| pinch::run(&ctx, target, *scale, *velocity)),
-        Command::Hold { args, duration } => {
-            Ctx::new(cli).and_then(|ctx| hold::run(&ctx, args, *duration))
-        }
-        Command::Back => Ctx::new(cli).and_then(|ctx| back::run(&ctx)),
-        Command::Twofinger { target } => Ctx::new(cli).and_then(|ctx| twofinger::run(&ctx, target)),
-        Command::Center { which } => Ctx::new(cli).and_then(|ctx| center::run(&ctx, which)),
-        Command::Devices => devices::run(cli.json),
-        Command::Skills => Ok(skills::run()),
-        Command::Mcp => crate::mcp::run(cli),
-    }
-}
-
 /// Create the `~/.agent-mobile` state dir before locks or logs touch it.
+///
+/// # Errors
+/// An unwritable home.
 pub fn ensure_state_dir(store: &StateStore) -> Result<(), Failure> {
     agent_mobile_core::secret::create_private_dirs(store.root())
 }
@@ -288,42 +303,10 @@ pub fn emit(line: &str) {
     }
 }
 
-/// The CLI's checked write, kept separate from reply rendering.
 fn write_line(out: &mut impl std::io::Write, line: &str) -> std::io::Result<()> {
     writeln!(out, "{line}")?;
     out.flush()
 }
-
-/// Shared one-or-two positional split for point verbs (`tap`,
-/// `doubletap`, `hold`): one argument is a ref, two are finite `x y` numbers, anything
-/// else is a usage error naming the verb.
-pub fn ref_or_point_body(args: &[String], verb: &str) -> Result<Value, Failure> {
-    match args {
-        [r] => {
-            let r = Ref::parse(r)?;
-            Ok(serde_json::json!({ "ref": r.to_string() }))
-        }
-        [x, y] => {
-            let point = |raw: &str| {
-                raw.parse::<f64>()
-                    .ok()
-                    .filter(|v| v.is_finite())
-                    .ok_or_else(|| {
-                        Failure::usage(format!(
-                            "{verb} takes a ref or an x y point; {raw:?} is not a finite number"
-                        ))
-                    })
-            };
-            let (x, y) = (point(x)?, point(y)?);
-            Ok(serde_json::json!({ "x": x, "y": y }))
-        }
-        _ => Err(Failure::usage(format!(
-            "{verb} takes a ref or an x y point"
-        ))),
-    }
-}
-
-pub use reply::round_trip_within;
 
 #[cfg(test)]
 mod tests;

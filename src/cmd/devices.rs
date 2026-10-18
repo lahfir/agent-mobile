@@ -6,35 +6,30 @@ use agent_mobile_core::state::{State, StateStore};
 
 use crate::platform::{PlatformDevice, discover};
 
-/// Run `devices`; pure discovery, never touches the wire.
-pub fn run(json: bool) -> Result<i32, Failure> {
+/// The `devices` verb: pure discovery, never touches the wire.
+///
+/// # Errors
+/// Discovery failures on both platforms.
+pub fn exec(_call: &super::Call) -> Result<super::Reply, Failure> {
     let scan = discover()?;
     for note in &scan.notes {
         eprintln!("note: {note}");
     }
     let state = StateStore::new().map(|s| s.load()).unwrap_or_default();
-    let text = reply(&scan.devices, &state, json)?;
-    if !text.is_empty() {
-        super::emit(&text);
-    }
-    Ok(0)
+    Ok(reply(&scan.devices, &state))
 }
 
-/// Render discovered devices without writing to stdout or starting a driver.
-pub fn reply(devices: &[PlatformDevice], state: &State, json: bool) -> Result<String, Failure> {
-    if json {
-        let out: Vec<serde_json::Value> = devices
+/// Device rows in both forms, without writing to stdout.
+#[must_use]
+pub fn reply(devices: &[PlatformDevice], state: &State) -> super::Reply {
+    super::Reply::Devices {
+        rows: devices.iter().map(|d| row_json(state, d)).collect(),
+        text: devices
             .iter()
-            .map(|device| row_json(state, device))
-            .collect();
-        return serde_json::to_string(&serde_json::json!({ "devices": out }))
-            .map_err(|error| Failure::local(error.to_string(), "report a bug"));
+            .map(|d| row_text(state, d))
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
-    Ok(devices
-        .iter()
-        .map(|device| row_text(state, device))
-        .collect::<Vec<_>>()
-        .join("\n"))
 }
 
 /// One device's JSON row: `udid` is the deprecated alias for `id` kept so
