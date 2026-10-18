@@ -7,7 +7,8 @@ pub mod kind;
 pub mod mcp;
 #[cfg(test)]
 mod parity_tests;
-pub mod usage;
+#[cfg(test)]
+mod usage;
 mod verbs;
 
 use std::time::Duration;
@@ -33,6 +34,8 @@ pub struct Verb {
     pub summary: &'static str,
     /// Longer guidance appended to `--help` and the MCP description.
     pub guide: &'static str,
+    /// CLI-only guidance appended to `--help`; never sent to MCP.
+    pub cli_note: &'static str,
     /// Arguments in CLI positional order.
     pub args: &'static [Arg],
     /// Global options this verb honors.
@@ -115,12 +118,12 @@ impl Global {
         let (name, help, kind) = match self {
             Self::Device => (
                 "device",
-                "Device to target: name, id, or platform:id key",
+                "Device key, name, or id from `devices`; a shut-down device boots by itself",
                 Kind::Text(1024),
             ),
             Self::App => (
                 "app",
-                "Target app id (iOS bundle id / Android package)",
+                "App id: iOS bundle id or Android package",
                 Kind::AppId,
             ),
             Self::MaxDepth => (

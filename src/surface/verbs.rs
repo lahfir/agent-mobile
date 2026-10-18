@@ -60,6 +60,7 @@ const fn verb(name: &'static str, summary: &'static str, exec: Exec) -> Verb {
         name,
         summary,
         guide: "",
+        cli_note: "",
         args: &[],
         globals: ACTING,
         hints: ACTION,
@@ -90,13 +91,13 @@ pub const VERBS: &[Verb] = &[
         globals: SELECTING,
         ..verb(
             "mcp",
-            "Serve tools over newline-delimited JSON-RPC on stdio",
+            "Serve the tools over MCP on stdio",
             Exec::Local(cmd::mcp_exec),
         )
     },
     read(
         Verb {
-            guide: "Filters combine with AND. Rows begin with a stable `key`, followed by name, platform, kind, OS, state, and serving status.",
+            guide: "Pass a row's `key` as `device` in later calls. A shut-down device boots on the first call that targets it, so never boot devices with simctl, adb, or emulator yourself. Filters combine with AND.",
             args: &[
                 flag(arg(
                     "platform",
@@ -116,7 +117,7 @@ pub const VERBS: &[Verb] = &[
             ],
             ..verb(
                 "devices",
-                "List reachable simulators, devices, and AVDs",
+                "List the simulators, emulators, and phones you can drive",
                 Exec::Local(cmd::devices::exec),
             )
         },
@@ -130,19 +131,19 @@ pub const VERBS: &[Verb] = &[
             "Device name, id, or stable key from `agent-mobile devices`",
             Kind::Text(1024),
         )],
-        guide: "Accepts a name, raw id, or collision-free `platform:id` key (`ios:<udid>`, `android:avd:<name>`, `android:<serial>`). `--app` launches the app after the driver binds. Prints the URL and device; the token is shown only in a terminal and otherwise stored under `~/.agent-mobile/tokens/<device>`.",
+        guide: "Other verbs start a driver on demand, so you rarely need this. `--app` launches the app once the driver is up. The token prints only in a terminal; otherwise it is stored under `~/.agent-mobile/tokens/<device>`.",
         globals: &[Global::App],
         reply: ReplyKind::Text,
         ..verb(
             "serve",
-            "Start a driver for one device in the foreground; prints the token once",
+            "Run a driver for one device in the foreground",
             Exec::Local(cmd::serve::exec),
         )
     },
     read(
         verb(
             "status",
-            "Show the active app and session identity",
+            "Show the foreground app and the session's device",
             wire("status"),
         ),
         ReplyKind::Status,
@@ -150,10 +151,10 @@ pub const VERBS: &[Verb] = &[
     ),
     read(
         Verb {
-            guide: "`--app` selects the target: iOS targets the bundle; Android only validates the foreground package, so use launch to change apps.",
+            guide: "Use it to start, or after a STALE_REF. Every action already returns the next tree, so do not call it after each action. On iOS `app` picks the app to read; on Android it only checks the foreground app, so use `launch` to change apps.",
             ..verb(
                 "snapshot",
-                "Capture the accessibility tree and mint refs",
+                "Read the screen as an accessibility tree with refs",
                 wire("snapshot"),
             )
         },
@@ -162,12 +163,8 @@ pub const VERBS: &[Verb] = &[
     ),
     Verb {
         args: &[TARGET],
-        guide: "Tap a node's center (x + w/2, y + h/2); `at=x,y` in the listing is its top-left origin.",
-        ..verb(
-            "tap",
-            "Tap a ref, or an x y point from the app frame's top-left",
-            wire("tap"),
-        )
+        guide: "Prefer a ref. A point is measured from the app frame's top-left; to hit a node by point, tap its center (x + w/2, y + h/2), because `at=x,y` in the tree is its top-left corner.",
+        ..verb("tap", "Tap a ref, or an x,y point", wire("tap"))
     },
     Verb {
         args: &[arg(
@@ -175,10 +172,11 @@ pub const VERBS: &[Verb] = &[
             "Text to append; a leading ref-shaped word on the CLI selects the field",
             Kind::RefThenText,
         )],
-        guide: "With a ref the driver writes that field's value directly; otherwise keystrokes go to the focused field (the field may not keep focus). A newline requests IME Return when the field exposes it (Android), otherwise it is appended literally. On the CLI, text starting with `-` needs `--` first.",
+        guide: "With a ref the text goes into that field; without one it goes to the focused field. End the text with a newline to press Return, for example to submit a search.",
+        cli_note: "Text that starts with `-` needs `--` before it.",
         ..verb(
             "type",
-            "Append text to a ref or the focused field",
+            "Type text into a ref or the focused field",
             Exec::Wire {
                 route: "type",
                 timeout: Timeout::Long,
@@ -190,11 +188,8 @@ pub const VERBS: &[Verb] = &[
             arg("direction", "Direction to swipe", Kind::Enum(DIRECTIONS)),
             optional(REF),
         ],
-        ..verb(
-            "swipe",
-            "Swipe up, down, left, or right, on a ref or the whole app",
-            wire("swipe"),
-        )
+        guide: "With a ref it swipes inside that node; without one it swipes the whole app. Swipe up to see content further down. To find a known item, use scroll_until_visible.",
+        ..verb("swipe", "Swipe up, down, left, or right", wire("swipe"))
     },
     Verb {
         args: &[
@@ -210,23 +205,23 @@ pub const VERBS: &[Verb] = &[
             )),
         ],
         globals: SELECTING,
-        guide: "Matches the exact node name. Direction defaults to up. Stops after 15 swipes, 40 s, or when the list stops moving; returns the snapshot that shows the node.",
+        guide: "Use it instead of a loop of swipes. Returns the tree that shows the node. Fails after 15 swipes, 40 s, or when the list stops moving.",
         ..verb(
             "scroll_until_visible",
-            "Swipe until an exact node name appears in the snapshot",
+            "Scroll until a node with this exact name is on screen",
             Exec::Local(cmd::scroll::exec),
         )
     },
     verb(
         "home",
-        "Go to the launcher/home; returns that tree",
+        "Go to the home screen; returns its tree",
         wire("home"),
     ),
     Verb {
         args: &[TARGET],
         ..verb(
             "doubletap",
-            "Double-tap a ref, or an x y point from the app frame's top-left",
+            "Double-tap a ref, or an x,y point",
             wire("doubletap"),
         )
     },
@@ -254,8 +249,7 @@ pub const VERBS: &[Verb] = &[
                 },
             )),
         ],
-        guide: "Above 1 zooms out and below 1 zooms in. Near-1 or non-positive scales are rejected; non-finite scale or velocity is invalid.",
-        ..verb("pinch", "Pinch-zoom on a ref", wire("pinch"))
+        ..verb("pinch", "Pinch on a ref to zoom", wire("pinch"))
     },
     Verb {
         args: &[
@@ -271,10 +265,10 @@ pub const VERBS: &[Verb] = &[
                 },
             )),
         ],
-        guide: "The duration is 0 < d <= 10 seconds, default 1.0. Context menus appear in the returned snapshot; web long-press is unproven.",
+        guide: "Use it to open a context menu; the menu is in the returned tree.",
         ..verb(
             "hold",
-            "Press a ref or point for a duration; surfaces context menus",
+            "Press and hold a ref or an x,y point",
             Exec::Wire {
                 route: "hold",
                 timeout: Timeout::Hold,
@@ -282,12 +276,12 @@ pub const VERBS: &[Verb] = &[
         )
     },
     Verb {
-        guide: "Judge the result from the returned tree.",
-        ..verb("back", "Navigate back; no target", wire("back"))
+        guide: "Check the returned tree; some screens ignore back.",
+        ..verb("back", "Go back one screen", wire("back"))
     },
     Verb {
         args: &[REF],
-        ..verb("twofinger", "Two-finger tap on a ref", wire("twofinger"))
+        ..verb("twofinger", "Tap a ref with two fingers", wire("twofinger"))
     },
     Verb {
         args: &[arg(
@@ -295,23 +289,19 @@ pub const VERBS: &[Verb] = &[
             "Which sheet to open",
             Kind::Enum(&["notification"]),
         )],
-        guide: "Earlier refs die. Take a snapshot to return to your app (iOS also accepts `--app`). On Android, back out of the shade first; `snapshot --app` fails while System UI holds the foreground.",
-        ..verb(
-            "center",
-            "Open notifications from the system UI session",
-            wire("center"),
-        )
+        guide: "Earlier refs stop working. To return to your app, call `back` on Android, or `snapshot` with `app` on iOS.",
+        ..verb("center", "Open the notification center", wire("center"))
     },
     Verb {
         args: &[arg(
             "app_id",
-            "iOS bundle id or Android package, e.g. com.apple.mobilecal",
+            "iOS bundle id or Android package, e.g. com.apple.mobilesafari or com.android.settings",
             Kind::AppId,
         )],
-        guide: "Keeps app data but loses transient state. On Android, terminate refuses the driver, System UI, and the current launcher.",
+        guide: "The usual first call: it boots the device and starts the driver when needed, then returns the app's tree. A running app restarts; it keeps its data but loses unsaved state.",
         ..verb(
             "launch",
-            "Cold-start or restart an app",
+            "Open an app by its id, or restart it",
             Exec::Wire {
                 route: "launch",
                 timeout: Timeout::Long,
@@ -325,10 +315,11 @@ pub const VERBS: &[Verb] = &[
                 "PNG file to write; omitted prints base64",
                 Kind::Path,
             ))],
-            guide: "Writes a PNG to the supplied path or prints base64 to stdout. With `--json`, base64 stays in the envelope; a path cannot be combined with `--json`.",
+            guide: "Use it only to check how the screen looks; text and refs come from the tree.",
+            cli_note: "Writes the PNG to the given path, or prints base64. A path cannot be combined with `--json`.",
             ..verb(
                 "screenshot",
-                "Capture a PNG screenshot",
+                "Capture the screen as a PNG",
                 Exec::Local(cmd::screenshot::exec),
             )
         },
@@ -339,8 +330,8 @@ pub const VERBS: &[Verb] = &[
         hints: STOP,
         reply: ReplyKind::Terminate,
         globals: SESSION,
-        guide: "The driver stays up and no tree comes back; take a snapshot to verify.",
-        ..verb("stop", "Terminate the active app", wire("terminate"))
+        guide: "The driver keeps running and no tree comes back; take a snapshot to see the screen.",
+        ..verb("stop", "Close the foreground app", wire("terminate"))
     },
     Verb {
         globals: SESSION,
@@ -351,17 +342,17 @@ pub const VERBS: &[Verb] = &[
             open_world: false,
         },
         reply: ReplyKind::Text,
-        guide: "If no session is running, reports that and succeeds.",
+        guide: "Call it before you switch to another device. It succeeds when no session runs.",
         ..verb(
             "release",
-            "Stop the running driver session; the device stays up",
+            "Stop the driver session; the device keeps running",
             Exec::Local(cmd::release::exec),
         )
     },
     read(
         verb(
             "skills",
-            "Print the one-page agent guide",
+            "Print the agent guide (SKILL.md)",
             Exec::Local(cmd::skills::exec),
         ),
         ReplyKind::Text,

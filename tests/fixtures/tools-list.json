@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "List reachable simulators, devices, and AVDs. Filters combine with AND. Rows begin with a stable `key`, followed by name, platform, kind, OS, state, and serving status.",
+      "description": "List the simulators, emulators, and phones you can drive. Pass a row's `key` as `device` in later calls. A shut-down device boots on the first call that targets it, so never boot devices with simctl, adb, or emulator yourself. Filters combine with AND.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -93,12 +93,12 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Show the active app and session identity",
+      "description": "Show the foreground app and the session's device.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -139,19 +139,19 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Capture the accessibility tree and mint refs. `--app` selects the target: iOS targets the bundle; Android only validates the foreground package, so use launch to change apps.",
+      "description": "Read the screen as an accessibility tree with refs. Use it to start, or after a STALE_REF. Every action already returns the next tree, so do not call it after each action. On iOS `app` picks the app to read; on Android it only checks the foreground app, so use `launch` to change apps.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "app": {
-            "description": "Target app id (iOS bundle id / Android package)",
+            "description": "App id: iOS bundle id or Android package",
             "maxLength": 1024,
             "minLength": 1,
             "pattern": "^[A-Za-z0-9._-]+$",
             "type": "string"
           },
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -209,12 +209,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Tap a ref, or an x y point from the app frame's top-left. Tap a node's center (x + w/2, y + h/2); `at=x,y` in the listing is its top-left origin. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "description": "Tap a ref, or an x,y point. Prefer a ref. A point is measured from the app frame's top-left; to hit a node by point, tap its center (x + w/2, y + h/2), because `at=x,y` in the tree is its top-left corner. Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -310,12 +310,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Append text to a ref or the focused field. With a ref the driver writes that field's value directly; otherwise keystrokes go to the focused field (the field may not keep focus). A newline requests IME Return when the field exposes it (Android), otherwise it is appended literally. On the CLI, text starting with `-` needs `--` first. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "description": "Type text into a ref or the focused field. With a ref the text goes into that field; without one it goes to the focused field. End the text with a newline to press Return, for example to submit a search. Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -386,12 +386,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Swipe up, down, left, or right, on a ref or the whole app Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "description": "Swipe up, down, left, or right. With a ref it swipes inside that node; without one it swipes the whole app. Swipe up to see content further down. To find a known item, use scroll_until_visible. Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -467,19 +467,19 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Swipe until an exact node name appears in the snapshot. Matches the exact node name. Direction defaults to up. Stops after 15 swipes, 40 s, or when the list stops moving; returns the snapshot that shows the node.",
+      "description": "Scroll until a node with this exact name is on screen. Use it instead of a loop of swipes. Returns the tree that shows the node. Fails after 15 swipes, 40 s, or when the list stops moving.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "app": {
-            "description": "Target app id (iOS bundle id / Android package)",
+            "description": "App id: iOS bundle id or Android package",
             "maxLength": 1024,
             "minLength": 1,
             "pattern": "^[A-Za-z0-9._-]+$",
             "type": "string"
           },
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -555,12 +555,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Go to the launcher/home; returns that tree",
+      "description": "Go to the home screen; returns its tree.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -618,12 +618,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Double-tap a ref, or an x y point from the app frame's top-left Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "description": "Double-tap a ref, or an x,y point. Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -719,12 +719,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Pinch-zoom on a ref. Above 1 zooms out and below 1 zooms in. Near-1 or non-positive scales are rejected; non-finite scale or velocity is invalid. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "description": "Pinch on a ref to zoom. Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -800,12 +800,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Press a ref or point for a duration; surfaces context menus. The duration is 0 < d <= 10 seconds, default 1.0. Context menus appear in the returned snapshot; web long-press is unproven. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "description": "Press and hold a ref or an x,y point. Use it to open a context menu; the menu is in the returned tree. Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -908,12 +908,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Navigate back; no target. Judge the result from the returned tree.",
+      "description": "Go back one screen. Check the returned tree; some screens ignore back.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -971,12 +971,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Two-finger tap on a ref Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "description": "Tap a ref with two fingers. Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -1042,12 +1042,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Open notifications from the system UI session. Earlier refs die. Take a snapshot to return to your app (iOS also accepts `--app`). On Android, back out of the shade first; `snapshot --app` fails while System UI holds the foreground.",
+      "description": "Open the notification center. Earlier refs stop working. To return to your app, call `back` on Android, or `snapshot` with `app` on iOS.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -1114,19 +1114,19 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Cold-start or restart an app. Keeps app data but loses transient state. On Android, terminate refuses the driver, System UI, and the current launcher.",
+      "description": "Open an app by its id, or restart it. The usual first call: it boots the device and starts the driver when needed, then returns the app's tree. A running app restarts; it keeps its data but loses unsaved state.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "app_id": {
-            "description": "iOS bundle id or Android package, e.g. com.apple.mobilecal",
+            "description": "iOS bundle id or Android package, e.g. com.apple.mobilesafari or com.android.settings",
             "maxLength": 1024,
             "minLength": 1,
             "pattern": "^[A-Za-z0-9._-]+$",
             "type": "string"
           },
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -1186,12 +1186,12 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Capture a PNG screenshot. Writes a PNG to the supplied path or prints base64 to stdout. With `--json`, base64 stays in the envelope; a path cannot be combined with `--json`.",
+      "description": "Capture the screen as a PNG. Use it only to check how the screen looks; text and refs come from the tree.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -1209,12 +1209,12 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Terminate the active app. The driver stays up and no tree comes back; take a snapshot to verify.",
+      "description": "Close the foreground app. The driver keeps running and no tree comes back; take a snapshot to see the screen.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -1243,12 +1243,12 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Stop the running driver session; the device stays up. If no session is running, reports that and succeeds.",
+      "description": "Stop the driver session; the device keeps running. Call it before you switch to another device. It succeeds when no session runs.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
           "device": {
-            "description": "Device to target: name, id, or platform:id key",
+            "description": "Device key, name, or id from `devices`; a shut-down device boots by itself",
             "maxLength": 1024,
             "minLength": 1,
             "type": "string"
@@ -1266,7 +1266,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Print the one-page agent guide",
+      "description": "Print the agent guide (SKILL.md).",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {},

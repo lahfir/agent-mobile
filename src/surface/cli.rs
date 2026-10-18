@@ -55,8 +55,12 @@ pub fn command() -> Command {
 
 fn subcommand(verb: &Verb) -> Command {
     let mut sub = Command::new(verb.name).about(verb.summary);
-    if !verb.guide.is_empty() {
-        sub = sub.long_about(format!("{}\n\n{}", verb.summary, verb.guide));
+    let notes: Vec<&str> = [verb.guide, verb.cli_note]
+        .into_iter()
+        .filter(|note| !note.is_empty())
+        .collect();
+    if !notes.is_empty() {
+        sub = sub.long_about(format!("{}\n\n{}", verb.summary, notes.join(" ")));
     }
     for arg in verb.args {
         sub = sub.arg(clap_arg(arg));

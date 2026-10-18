@@ -126,31 +126,20 @@ fn commands_in_help() -> Result<BTreeSet<String>, Failure> {
     Ok(names)
 }
 
-/// Command rows indent exactly two spaces; deeper-indented lines are
-/// wrapped descriptions, not new names.
+/// Generated command lines look like "- `name args`: summary".
 fn commands_in_skills() -> Result<BTreeSet<String>, Failure> {
     let home = tmp_home("skills")?;
     let out = run(&["skills"], &home, &[])?;
     let text = stdout(&out);
-    let mut names = BTreeSet::new();
-    let mut in_commands = false;
-    for line in text.lines() {
-        if line.starts_with("COMMANDS") {
-            in_commands = true;
-            continue;
-        }
-        if in_commands && (line.trim().is_empty() || !line.starts_with("  ")) {
-            break;
-        }
-        if in_commands
-            && line.starts_with("  ")
-            && !line.starts_with("   ")
-            && let Some(name) = line.split_whitespace().next()
-        {
-            names.insert(name.to_owned());
-        }
-    }
-    Ok(names)
+    let list = text
+        .split_once("<!-- commands:start -->")
+        .map_or("", |(_, rest)| rest);
+    Ok(list
+        .lines()
+        .filter_map(|line| line.strip_prefix("- `"))
+        .filter_map(|rest| rest.split([' ', '`']).next())
+        .map(str::to_owned)
+        .collect())
 }
 
 #[test]
@@ -181,17 +170,12 @@ fn skills_guide_teaches_ref_lifecycle_and_recovery() -> Result<(), Failure> {
     for needle in [
         "STALE_REF",
         "AMBIGUOUS_TARGET",
-        "re-snapshot",
         "settled=false",
-        "tap <x> <y>",
-        "AGENT_MOBILE_URL",
-        "android:avd:",
-        "setup-android-sdk.sh --check",
-        "Allow restricted settings",
-        "platform:id",
-        "emulator stays up",
+        "newest tree",
+        "scroll_until_visible",
+        "release",
+        "AGENT_MOBILE_HEADED",
         "Agent Mobile Driver",
-        "use launch",
     ] {
         assert!(text.contains(needle), "skills missing {needle:?}");
     }

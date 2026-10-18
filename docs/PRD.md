@@ -189,7 +189,7 @@ the twenty-one commands map to a same-named driver verb; `devices`, `serve`, `mc
 | `screenshot` | `[output-path]` | `screenshot` | Decodes `png_base64`; writes to `output-path`, or stdout if omitted. |
 | `stop` | none | `terminate` | |
 | `release` | none | none | Stops the running driver session and owned resources; the device remains running. With no session, reports that and succeeds. |
-| `skills` | none | none | Prints the bundled one-page agent guide. |
+| `skills` | none | none | Prints the agent guide, `skills/agent-mobile/SKILL.md`. |
 
 Wire calls are read from the driver. `devices`, `serve`, `mcp`, `release`, filters, and argument
 shapes are CLI-side specification.
@@ -287,7 +287,7 @@ P0 is the first phase and it is finished. What it proved:
 - Developer experience, the P1 acceptance bar: `npm i -g agent-mobile` then `agent-mobile snapshot` is the whole start. The first verb starts the driver if none runs (lazy start), boots the default simulator, saves the session under `~/.agent-mobile/`, and then runs the verb. `serve` stays as the explicit form.
 - The npm package ships a prebuilt simulator runner, so the simulator path builds nothing on the user's Mac (the prebuilt runner pattern, docs/research/09 §5). A physical iPhone builds and signs once with the Xcode account on that Mac; `--device <name>` is remembered.
 - Every error names the next action: a stale ref says re-snapshot, a missing Xcode says the install step, a missing simulator says the create command, a trust refusal says the three Settings steps.
-- `agent-mobile skills` prints the one-page agent guide.
+- `agent-mobile skills` prints the agent guide, `skills/agent-mobile/SKILL.md`; its command list is generated from the verb registry.
 
 **Out of scope**
 - Android waits for P2; the benchmark and MCP server wait for P3; the in-app SDK stays Later.

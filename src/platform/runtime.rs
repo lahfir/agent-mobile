@@ -102,6 +102,9 @@ impl PlatformRuntime {
         if d.kind == "simulator" {
             eprintln!("booting {} ({})…", d.name, d.udid);
             ios::boot_simulator(&d.udid)?;
+            if agent_mobile_core::process::headed() {
+                ios::show_simulator(&d.udid);
+            }
         }
         let token = mint_token()?;
         let source = ios::driver_source()?;

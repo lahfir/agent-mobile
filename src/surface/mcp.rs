@@ -8,7 +8,7 @@ use super::kind::{self, Fault};
 use super::{Arg, Kind, ReplyKind, Surface, VERBS, Verb, find};
 use crate::cmd::Call;
 
-const REFS: &str = "Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.";
+const REFS: &str = "Refs come from the newest tree and stop working after the next action; on STALE_REF, use the newest tree or take a snapshot.";
 
 /// Why a `tools/call` request was refused before execution.
 pub enum Rejected {
@@ -49,18 +49,20 @@ fn tool(verb: &Verb) -> Value {
 }
 
 fn description(verb: &Verb) -> String {
-    let mut text = verb.summary.to_owned();
-    if !verb.guide.is_empty() {
-        text = format!("{text}. {}", verb.guide);
-    }
-    if verb
+    let refs = verb
         .args
         .iter()
-        .any(|a| matches!(a.kind, Kind::Ref | Kind::Point | Kind::RefThenText))
-    {
-        text = format!("{text} {REFS}");
+        .any(|a| matches!(a.kind, Kind::Ref | Kind::Point | Kind::RefThenText));
+    let mut parts = vec![verb.summary, verb.guide];
+    if refs {
+        parts.push(REFS);
     }
-    text
+    parts
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| format!("{}.", part.trim_end_matches('.')))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn input_schema(verb: &Verb) -> Value {
