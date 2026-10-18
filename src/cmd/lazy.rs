@@ -14,6 +14,7 @@ use super::{Ctx, Session, ensure_state_dir};
 /// Resolve a session, booting a driver first when none exists.
 pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
     ensure_state_dir(&ctx.store)?;
+    super::served_elsewhere(&ctx.store.load(), ctx.device.as_deref())?;
     let lock_path = ctx.store.lock_file();
     let deadline = Instant::now() + boot_budget();
     loop {
@@ -30,7 +31,7 @@ pub fn session(ctx: &Ctx) -> Result<Session, Failure> {
             BootLock::clear(&lock_path);
             continue;
         }
-        if let Some(s) = ctx.ready_session()? {
+        if let Some(s) = ctx.ready_session(ctx.device.as_deref())? {
             return Ok(s);
         }
         std::thread::sleep(BOOT_POLL);
@@ -46,10 +47,11 @@ const SERVE_CLEANUP_BUDGET: Duration = Duration::from_secs(60);
 /// timeout sends TERM first so serve's supervisor can clear state and reap
 /// the runner; SIGKILL is only for a serve that refuses.
 fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Session, Failure> {
-    if let Some(s) = ctx.ready_session()? {
+    if let Some(s) = ctx.ready_session(ctx.device.as_deref())? {
         return Ok(s);
     }
     let device = pick_device(ctx)?;
+    super::served_elsewhere(&ctx.store.load(), Some(&device))?;
     eprintln!("no driver running; starting one for {device}…");
     if physical_ios(&device) {
         eprintln!("keep the iPhone unlocked until the driver answers");
@@ -59,7 +61,11 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
     let exe = std::env::current_exe()?;
     let out = agent_mobile_core::process::open_private_log(&log)?;
     let err = out.try_clone()?;
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    if !ctx.remember {
+        command.env(super::serve::NO_REMEMBER_ENV, "1");
+    }
+    let mut child = command
         .args(["serve", &device])
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
@@ -82,7 +88,7 @@ fn boot_with_lock(ctx: &Ctx, _lock: BootLock, deadline: Instant) -> Result<Sessi
                 format!("check the log at {} and retry", log.display()),
             ));
         }
-        if let Some(s) = ctx.ready_session()? {
+        if let Some(s) = ctx.ready_session(Some(&device))? {
             return Ok(s);
         }
         if let Some(_status) = child.try_wait()? {
@@ -152,7 +158,9 @@ pub(super) fn pick_device_with(
                 .get(&key)
                 .and_then(|e| e.device_name.clone())
                 .unwrap_or_else(|| (*d).to_owned());
-            let _ = ctx.store.remember_device_selection(&key, &display);
+            if ctx.remember {
+                let _ = ctx.store.remember_device_selection(&key, &display);
+            }
             return Ok(key);
         }
     }
@@ -162,7 +170,9 @@ pub(super) fn pick_device_with(
         match crate::platform::resolve_from(&scan, d) {
             Ok(found) => {
                 let key = found.key();
-                let _ = ctx.store.remember_device_selection(&key, found.name());
+                if ctx.remember {
+                    let _ = ctx.store.remember_device_selection(&key, found.name());
+                }
                 return Ok(key);
             }
             Err(e) => {

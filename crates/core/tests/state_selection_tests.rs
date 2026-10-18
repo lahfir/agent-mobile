@@ -181,3 +181,18 @@ fn live_row_with_missing_token_is_an_explicit_failure() -> Result<(), Failure> {
     );
     Ok(())
 }
+
+#[test]
+fn no_selector_uses_the_one_live_session_and_never_guesses_between_two() -> Result<(), Failure> {
+    let tmp = store_at("single-live");
+    let store = tmp.1.clone();
+    std::fs::create_dir_all(store.root())?;
+    store.write_token("t0k", "secret")?;
+    store.upsert("ios:A", &live_entry("A", "iPhone A"))?;
+    store.upsert("iPhone A", &dead_entry("A", "iPhone A"))?;
+    let resolved = store.resolve_with(None, None, None)?;
+    assert_eq!(resolved.and_then(|r| r.device).as_deref(), Some("ios:A"));
+    store.upsert("ios:B", &live_entry("B", "iPhone B"))?;
+    assert!(store.resolve_with(None, None, None)?.is_none());
+    Ok(())
+}

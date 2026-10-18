@@ -147,10 +147,10 @@ impl PlatformDevice {
 
     /// Boot/attach state when reported.
     #[must_use]
-    pub fn state(&self) -> Option<&str> {
+    pub fn state(&self) -> Option<String> {
         match &self.backend {
-            Backend::Ios(d) => d.state.as_deref(),
-            Backend::Android(t) => Some(android_state(&t.state)),
+            Backend::Ios(d) => d.state.as_deref().map(str::to_lowercase),
+            Backend::Android(t) => Some(android_state(&t.state).to_lowercase()),
         }
     }
 
@@ -305,13 +305,13 @@ pub fn default_device(scan: &PlatformScan) -> Option<PlatformDevice> {
             d.platform() == Platform::Ios
                 && d.kind() == "simulator"
                 && (!iphone || d.name().contains("iPhone"))
-                && (!booted || d.state() == Some("Booted"))
+                && (!booted || d.state().as_deref() == Some("booted"))
         })
     };
     let android = |ready: bool| {
-        scan.devices
-            .iter()
-            .find(|d| d.platform() == Platform::Android && (!ready || d.state() == Some("device")))
+        scan.devices.iter().find(|d| {
+            d.platform() == Platform::Android && (!ready || d.state().as_deref() == Some("device"))
+        })
     };
     sim(true, true)
         .or_else(|| sim(false, true))

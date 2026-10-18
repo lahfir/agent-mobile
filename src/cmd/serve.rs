@@ -10,12 +10,33 @@ use std::time::Duration;
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::state::{SessionEntry, StateStore};
 
-use super::{Ctx, Session};
+use super::{Call, Reply, Session};
 use crate::platform::{self, Platform, PlatformDevice, PlatformRuntime};
 
-/// Run `serve <device>`; blocks for the life of the driver.
-pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
-    let store = &ctx.store;
+/// Set by a lazy boot that must not change the remembered default (KTD8).
+pub const NO_REMEMBER_ENV: &str = "AGENT_MOBILE_NO_REMEMBER";
+
+/// The `serve` verb; blocks for the life of the driver.
+///
+/// # Errors
+/// Lock, boot, or registration failures.
+pub fn exec(call: &Call) -> Result<Reply, Failure> {
+    let store = StateStore::new()?;
+    run(
+        &store,
+        call.str("device").unwrap_or_default(),
+        call.str("app"),
+        call.json,
+    )
+    .map(Reply::Exit)
+}
+
+fn run(
+    store: &StateStore,
+    device_name: &str,
+    app: Option<&str>,
+    json: bool,
+) -> Result<i32, Failure> {
     crate::cmd::ensure_state_dir(store)?;
     let lock = acquire_lock(store)?;
     let term = term_flag()?;
@@ -35,18 +56,18 @@ pub fn run(ctx: &Ctx, device_name: &str) -> Result<i32, Failure> {
     let ready = ready_line(&runtime, &device, store, &token_file);
     super::emit(&ready);
     eprintln!("driver ready on {}", runtime.url());
-    if let Some(app) = &ctx.app {
+    if let Some(app) = app {
         let session = if matches!(device.platform(), Platform::Android) {
             Session::new_android(runtime.url().to_owned(), runtime.token().to_owned())
         } else {
             Session::new(runtime.url().to_owned(), runtime.token().to_owned())
         };
-        let launch = super::round_trip_within(
-            ctx,
+        let launch = super::reply::round_trip_within(
             &session,
             "launch",
             &serde_json::json!({ "bundle_id": app }),
             agent_mobile_core::wire::LONG_TIMEOUT,
+            json,
         );
         match launch {
             Ok(0) => {}
@@ -79,7 +100,7 @@ fn acquire_lock(store: &StateStore) -> Result<std::fs::File, Failure> {
                 });
             Err(Failure::local(
                 format!("a driver is already running{detail}"),
-                "use the live session, or `kill` its pid to stop it",
+                "use the live session, or run `agent-mobile release` to stop it",
             ))
         }
         Err(std::fs::TryLockError::Error(e)) => Err(Failure::from(e)),
@@ -189,6 +210,9 @@ fn register_session(
     store.remove_token(token_file)?;
     store.write_token(token_file, token)?;
     store.upsert(key, entry)?;
+    if std::env::var_os(NO_REMEMBER_ENV).is_some() {
+        return Ok(());
+    }
     store.remember_device_selection(key, entry.device_name.as_deref().unwrap_or(key))
 }
 

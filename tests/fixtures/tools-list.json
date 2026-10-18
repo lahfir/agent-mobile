@@ -1,0 +1,1280 @@
+{
+  "cacheScope": "public",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List reachable simulators, devices, and AVDs. Filters combine with AND. Rows begin with a stable `key`, followed by name, platform, kind, OS, state, and serving status.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "Filter by device kind",
+            "enum": [
+              "simulator",
+              "device",
+              "emulator",
+              "usb",
+              "wireless"
+            ],
+            "type": "string"
+          },
+          "platform": {
+            "description": "Filter by platform",
+            "enum": [
+              "ios",
+              "android"
+            ],
+            "type": "string"
+          },
+          "state": {
+            "description": "Filter by lowercase device state",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "devices",
+      "outputSchema": {
+        "properties": {
+          "devices": {
+            "items": {
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "os": {
+                  "type": "string"
+                },
+                "platform": {
+                  "type": "string"
+                },
+                "serving": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "name",
+                "platform",
+                "kind"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Show the active app and session identity",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "status",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "device",
+          "os"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Capture the accessibility tree and mint refs. `--app` selects the target: iOS targets the bundle; Android only validates the foreground package, so use launch to change apps.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "description": "Target app id (iOS bundle id / Android package)",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "type": "string"
+          },
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "snapshot",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Tap a ref, or an x y point from the app frame's top-left. Tap a node's center (x + w/2, y + h/2); `at=x,y` in the listing is its top-left origin. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target": {
+            "description": "A ref, or an x y point in the app frame from its top-left",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "ref": {
+                    "description": "Ref from the most recent snapshot or action reply",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ref"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "name": "tap",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Append text to a ref or the focused field. With a ref the driver writes that field's value directly; otherwise keystrokes go to the focused field (the field may not keep focus). A newline requests IME Return when the field exposes it (Android), otherwise it is appended literally. On the CLI, text starting with `-` needs `--` first. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ref": {
+            "description": "Ref of the field to write; omitted types into the focused field",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "text": {
+            "description": "Text to append; a leading ref-shaped word on the CLI selects the field",
+            "maxLength": 65536,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "type",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Swipe up, down, left, or right, on a ref or the whole app Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "direction": {
+            "description": "Direction to swipe",
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ref": {
+            "description": "Ref from the most recent snapshot or action reply",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "swipe",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Swipe until an exact node name appears in the snapshot. Matches the exact node name. Direction defaults to up. Stops after 15 swipes, 40 s, or when the list stops moving; returns the snapshot that shows the node.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "description": "Target app id (iOS bundle id / Android package)",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "type": "string"
+          },
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "direction": {
+            "description": "Swipe direction; defaults to up",
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "Exact accessibility node name to find",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "scroll_until_visible",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Go to the launcher/home; returns that tree",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "home",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Double-tap a ref, or an x y point from the app frame's top-left Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target": {
+            "description": "A ref, or an x y point in the app frame from its top-left",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "ref": {
+                    "description": "Ref from the most recent snapshot or action reply",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ref"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "name": "doubletap",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Pinch-zoom on a ref. Above 1 zooms out and below 1 zooms in. Near-1 or non-positive scales are rejected; non-finite scale or velocity is invalid. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ref": {
+            "description": "Ref from the most recent snapshot or action reply",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "scale": {
+            "description": "Zoom scale; above 1 zooms out, below 1 zooms in; near-1 values fail",
+            "exclusiveMinimum": 0.0,
+            "type": "number"
+          },
+          "velocity": {
+            "description": "Pinch velocity; omitted keeps the driver default",
+            "type": "number"
+          }
+        },
+        "required": [
+          "ref",
+          "scale"
+        ],
+        "type": "object"
+      },
+      "name": "pinch",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Press a ref or point for a duration; surfaces context menus. The duration is 0 < d <= 10 seconds, default 1.0. Context menus appear in the returned snapshot; web long-press is unproven. Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "duration": {
+            "default": 1.0,
+            "description": "Hold duration in seconds, 0 < d <= 10",
+            "exclusiveMinimum": 0.0,
+            "maximum": 10.0,
+            "type": "number"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target": {
+            "description": "A ref, or an x y point in the app frame from its top-left",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "ref": {
+                    "description": "Ref from the most recent snapshot or action reply",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ref"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "name": "hold",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Navigate back; no target. Judge the result from the returned tree.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "back",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Two-finger tap on a ref Refs come from the most recent snapshot or action reply and die after every action; on STALE_REF, take a new snapshot.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ref": {
+            "description": "Ref from the most recent snapshot or action reply",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "type": "object"
+      },
+      "name": "twofinger",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Open notifications from the system UI session. Earlier refs die. Take a snapshot to return to your app (iOS also accepts `--app`). On Android, back out of the shade first; `snapshot --app` fails while System UI holds the foreground.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "which": {
+            "description": "Which sheet to open",
+            "enum": [
+              "notification"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "which"
+        ],
+        "type": "object"
+      },
+      "name": "center",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Cold-start or restart an app. Keeps app data but loses transient state. On Android, terminate refuses the driver, System UI, and the current launcher.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "app_id": {
+            "description": "iOS bundle id or Android package, e.g. com.apple.mobilecal",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "type": "string"
+          },
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_depth": {
+            "description": "Drop tree nodes deeper than N levels; marks the snapshot incomplete",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "app_id"
+        ],
+        "type": "object"
+      },
+      "name": "launch",
+      "outputSchema": {
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "reads": {
+            "type": "integer"
+          },
+          "ref_count": {
+            "type": "integer"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "snapshot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "snapshot_id",
+          "ref_count",
+          "complete",
+          "settled",
+          "reads"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Capture a PNG screenshot. Writes a PNG to the supplied path or prints base64 to stdout. With `--json`, base64 stays in the envelope; a path cannot be combined with `--json`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "screenshot"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Terminate the active app. The driver stays up and no tree comes back; take a snapshot to verify.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "stop",
+      "outputSchema": {
+        "properties": {
+          "terminated": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "terminated"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Stop the running driver session; the device stays up. If no session is running, reports that and succeeds.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "Device to target: name, id, or platform:id key",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "release"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Print the one-page agent guide",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "skills"
+    }
+  ],
+  "ttlMs": 86400000
+}

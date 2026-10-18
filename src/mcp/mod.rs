@@ -4,7 +4,6 @@ mod call;
 mod frame;
 mod protocol;
 mod rpc;
-mod tools;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -14,7 +13,8 @@ use std::time::{Duration, Instant};
 use agent_mobile_core::error::Failure;
 use serde_json::{Value, json};
 
-use crate::cli::Cli;
+use crate::cmd::Call;
+use crate::surface::mcp::{Rejected, prepare, tools};
 
 enum Event {
     Line(Vec<u8>),
@@ -40,7 +40,7 @@ struct Server {
 }
 
 /// Run until stdin EOF or the client closes stdout; failures stay on stderr.
-pub fn run(cli: &Cli) -> Result<i32, Failure> {
+pub fn run(call: &Call) -> Result<i32, Failure> {
     let (events, input) = mpsc::channel();
     let reader = events.clone();
     std::thread::spawn(move || {
@@ -53,12 +53,8 @@ pub fn run(cli: &Cli) -> Result<i32, Failure> {
         let _ = reader.send(Event::Eof);
     });
     let (jobs, work) = mpsc::channel();
-    let options = call::Options {
-        device: cli.device.clone(),
-        app: cli.app.clone(),
-        max_depth: cli.max_depth,
-    };
-    std::thread::spawn(move || call::worker(work, &events, &options));
+    let defaults = call.args.clone();
+    std::thread::spawn(move || call::worker(work, &events, &defaults));
     let budget = std::env::var("AGENT_MOBILE_MCP_CALL_SECS")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
@@ -165,19 +161,26 @@ impl Server {
                 result
             }
             "ping" if !modern => json!({}),
-            "tools/list" => tools::list(),
+            "tools/list" => tools(),
             "tools/call" => {
-                let Ok(call) = tools::prepare(&request.params) else {
-                    return rpc::write(
-                        out,
-                        &rpc::error(&id, -32602, "Unknown tool or invalid arguments"),
-                    );
+                let call = match prepare(&request.params) {
+                    Ok(call) => call,
+                    Err(Rejected::Protocol(message)) => {
+                        return rpc::write(out, &rpc::error(&id, -32602, message));
+                    }
+                    Err(Rejected::Tool(fault)) => {
+                        let result = frame::text(&fault.tool_text(), true);
+                        return rpc::write(
+                            out,
+                            &rpc::success(&id, &protocol::complete(result, modern)),
+                        );
+                    }
                 };
                 if self.pending.values().any(|p| p.id == id) {
                     return rpc::write(out, &rpc::error(&id, -32600, "Duplicate pending id"));
                 }
                 self.sequence += 1;
-                let name = call.name.clone();
+                let name = call.verb.name.to_owned();
                 self.jobs
                     .send(call::Job {
                         sequence: self.sequence,

@@ -10,16 +10,6 @@ use super::{Ctx, reply::Request};
 const MAX_SWIPES: usize = 15;
 const TIME_BOUND: Duration = Duration::from_secs(40);
 
-/// Validate and build the swipe request used for each scroll step.
-pub fn request(direction: &str) -> Result<Request, Failure> {
-    if !matches!(direction, "up" | "down" | "left" | "right") {
-        return Err(Failure::usage(
-            "scroll_until_visible direction must be up, down, left, or right",
-        ));
-    }
-    super::swipe::request(direction, None)
-}
-
 fn without_refs(node: &mut Node) {
     node.ref_id.clear();
     for child in &mut node.children {
@@ -49,10 +39,14 @@ pub fn reply(
     text: &str,
     direction: &str,
 ) -> Result<agent_mobile_core::contract::Envelope, Failure> {
-    let request = request(direction)?;
+    let swipe = serde_json::json!({ "direction": direction });
     let session = ctx.session()?;
     let deadline = Instant::now() + TIME_BOUND;
-    let mut initial = super::snapshot::request(ctx.app_selector());
+    let app = ctx.app_selector().map_or_else(
+        || serde_json::json!({}),
+        |a| serde_json::json!({ "app": a }),
+    );
+    let mut initial = Request::new("snapshot", app);
     initial.timeout = Some(TIME_BOUND);
     let mut current = initial.call(&session)?;
     if contains(&snapshot(&current)?.tree, text) {
@@ -69,7 +63,7 @@ pub fn reply(
         let before = snapshot(&current)?;
         let mut previous_tree = before.tree.clone();
         without_refs(&mut previous_tree);
-        let mut step = Request::new(request.verb, request.body.clone());
+        let mut step = Request::new("swipe", swipe.clone());
         step.timeout = Some(remaining);
         current = step.call(&session)?;
         let after = snapshot(&current)?;
@@ -91,7 +85,13 @@ pub fn reply(
     ))
 }
 
-/// CLI wrapper.
-pub fn run(ctx: &Ctx, text: &str, direction: &str) -> Result<i32, Failure> {
-    Ok(ctx.finish(reply(ctx, text, direction)?))
+/// The `scroll_until_visible` verb.
+///
+/// # Errors
+/// Not found, or session and transport failures.
+pub fn exec(call: &super::Call) -> Result<super::Reply, Failure> {
+    let ctx = Ctx::for_call(call)?;
+    let text = call.str("text").unwrap_or_default();
+    let direction = call.str("direction").unwrap_or("up");
+    reply(&ctx, text, direction).map(super::Reply::Envelope)
 }

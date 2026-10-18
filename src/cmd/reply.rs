@@ -1,4 +1,4 @@
-//! Shared request execution and stdout-clean rendering; only CLI wrappers emit.
+//! Driver requests and reply rendering; only [`finish`] prints.
 
 use std::time::Duration;
 
@@ -7,9 +7,9 @@ use agent_mobile_core::error::Failure;
 use agent_mobile_core::format;
 use serde_json::Value;
 
-use super::{Ctx, Session, emit};
+use super::{Session, emit};
 
-pub(super) fn error_failure(env: &Envelope) -> Failure {
+pub(crate) fn error_failure(env: &Envelope) -> Failure {
     env.error.as_ref().map_or_else(
         || Failure::local("empty error envelope", "report a bug"),
         Failure::from_error_body,
@@ -43,74 +43,70 @@ impl Request {
             None => session.call(self.verb, &self.body),
         }
     }
+}
 
-    /// CLI wrapper: resolve the session, execute, then print the reply.
-    pub fn run(&self, ctx: &Ctx) -> Result<i32, Failure> {
-        let session = ctx.session()?;
-        Ok(ctx.finish(self.call(&session)?))
+/// Render a driver reply as text or a typed failure, without output.
+pub fn text(mut env: Envelope, max_depth: Option<u32>) -> Result<String, Failure> {
+    if !env.ok {
+        return Err(error_failure(&env));
+    }
+    trim(&mut env, max_depth);
+    Ok(format::render(&env).into_owned())
+}
+
+/// Apply the shared depth limit before either text or JSON rendering.
+pub fn trim(env: &mut Envelope, max_depth: Option<u32>) {
+    if let (Some(depth), Some(Data::Snapshot(snap))) = (max_depth, env.data.as_mut())
+        && trim_snapshot(snap, depth)
+    {
+        snap.text = format::tree_lines(&snap.tree);
     }
 }
 
-impl Ctx {
-    /// Render a driver reply as text or a typed failure, without output.
-    pub fn reply(&self, mut env: Envelope) -> Result<String, Failure> {
-        if !env.ok {
-            return Err(error_failure(&env));
-        }
-        self.trim_reply(&mut env);
-        Ok(format::render(&env).into_owned())
+/// ponytail: preserve raw driver JSON only in the CLI printing wrapper.
+pub fn finish(mut env: Envelope, json: bool, max_depth: Option<u32>) -> i32 {
+    if max_depth.is_some() && !matches!(env.data, Some(Data::Snapshot(_))) && env.ok {
+        eprintln!("note: --max-depth only trims snapshot replies");
     }
-
-    /// Apply the shared depth limit before either text or JSON rendering.
-    fn trim_reply(&self, env: &mut Envelope) {
-        if let (Some(depth), Some(Data::Snapshot(snap))) = (self.max_depth, env.data.as_mut())
-            && trim_snapshot(snap, depth)
-        {
-            snap.text = format::tree_lines(&snap.tree);
+    if json {
+        trim(&mut env, max_depth);
+        match serde_json::to_string(&env) {
+            Ok(line) => emit(&line),
+            Err(error) => {
+                eprintln!("error: cannot serialize the reply: {error}");
+                return 1;
+            }
         }
+        return i32::from(!env.ok);
     }
-
-    /// ponytail: preserve raw driver JSON only in the CLI printing wrapper.
-    pub(super) fn finish(&self, mut env: Envelope) -> i32 {
-        if self.max_depth.is_some() && !matches!(env.data, Some(Data::Snapshot(_))) && env.ok {
-            eprintln!("note: --max-depth only trims snapshot replies");
+    match text(env, max_depth) {
+        Ok(text) => {
+            emit(&text);
+            0
         }
-        if self.json {
-            self.trim_reply(&mut env);
-            match serde_json::to_string(&env) {
-                Ok(line) => emit(&line),
-                Err(error) => {
-                    eprintln!("error: cannot serialize the reply: {error}");
-                    return 1;
-                }
-            }
-            return i32::from(!env.ok);
-        }
-        match self.reply(env) {
-            Ok(text) => {
-                emit(&text);
-                0
-            }
-            Err(failure) => failure.report(),
-        }
+        Err(failure) => failure.report(),
     }
 }
 
-/// CLI compatibility wrapper for `serve`'s launch on an existing session.
+/// `serve --app`: launch on the new session and print the reply.
 pub fn round_trip_within(
-    ctx: &Ctx,
     session: &Session,
     verb: &str,
     body: &Value,
     timeout: Duration,
+    json: bool,
 ) -> Result<i32, Failure> {
-    Ok(ctx.finish(session.call_within(verb, body, timeout)?))
+    Ok(finish(
+        session.call_within(verb, body, timeout)?,
+        json,
+        None,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::{hold, pinch, write_line};
+    use crate::cmd::write_line;
 
     fn fixture(raw: &str) -> Result<Envelope, Failure> {
         Envelope::from_json(raw).map_err(|error| Failure::local(error.to_string(), "fix fixture"))
@@ -134,8 +130,7 @@ mod tests {
             env.elapsed_ms.unwrap_or_default(),
             snapshot.text
         );
-        let ctx = Ctx::from_options(None, None, None)?;
-        let text = ctx.reply(env)?;
+        let text = text(env, None)?;
         let mut printed = Vec::new();
         write_line(&mut printed, &text)?;
         assert_eq!(printed, expected.as_bytes());
@@ -148,27 +143,8 @@ mod tests {
         let env = fixture(include_str!(
             "../../crates/core/tests/fixtures/error-stale.json"
         ))?;
-        let ctx = Ctx::from_options(None, None, None)?;
-        let result = ctx.reply(env);
+        let result = text(env, None);
         assert!(matches!(&result, Err(failure) if failure.code_str() == "STALE_REF"));
-        Ok(())
-    }
-
-    #[test]
-    fn non_finite_gestures_fail_before_session_lookup() -> Result<(), Failure> {
-        let target = ["@snap1:e2".to_owned()];
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(matches!(
-                hold::request(&target, value),
-                Err(Failure::Usage { .. })
-            ));
-            assert!(matches!(
-                pinch::request(&target[0], value, None),
-                Err(Failure::Usage { .. })
-            ));
-        }
-        let request = pinch::request(&target[0], 1.0, None)?;
-        assert_eq!(request.body["scale"], 1.0);
         Ok(())
     }
 }

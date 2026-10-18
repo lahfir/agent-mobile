@@ -1,20 +1,16 @@
-//! `agent-mobile` command-line entry point: parse, dispatch, map the failure
-//! render to stderr, and exit with the registry code.
+//! `agent-mobile` command-line entry point: parse through the registry,
+//! run, map the failure render to stderr, and exit with the registry code.
 
-mod cli;
 mod cmd;
 mod mcp;
 mod platform;
-
-use clap::Parser;
+mod surface;
 
 fn main() {
-    let cli = cli::Cli::parse();
-    let code = match cmd::dispatch(&cli) {
+    let (call, name, json) = surface::cli::parse();
+    let code = match call.and_then(|call| cmd::run_cli(&call)) {
         Ok(code) => code,
-        Err(f) if cli.json && !matches!(cli.command, cli::Command::Mcp) => {
-            f.report_json(cli.command.name())
-        }
+        Err(f) if json && name != "mcp" => f.report_json(name),
         Err(f) => f.report(),
     };
     std::process::exit(code);

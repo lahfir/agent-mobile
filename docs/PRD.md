@@ -162,13 +162,15 @@ app=com.apple.mobilecal snapshot=@upii2see refs=127 settled=true reads=2 elapsed
 
 ### 5.2 CLI surface
 
-The CLI is stateless per call against the long-lived driver. Fourteen of the nineteen commands
-below map to a same-named driver verb; `devices`, `serve`, and `skills` have none, and `stop`
-sends `terminate`.
+The CLI is stateless per call against the long-lived driver. The verb registry in
+`src/surface/verbs.rs` owns the command list; the table below describes that registry. Fourteen of
+the twenty-one commands map to a same-named driver verb; `devices`, `serve`, `mcp`, `release`, and
+`skills` have none, and `stop` sends `terminate`.
 
 | Command | Args | Wire call | Notes |
 |---|---|---|---|
-| `devices` | none | none | Lists normalized iOS simulators/phones and Android AVD/USB/wireless targets; CLI-side only. |
+| `mcp` | none | none | Serves MCP tools over stdio; transport command, not a device operation. |
+| `devices` | `[--platform <platform>] [--kind <kind>] [--state <state>]` | none | Lists normalized iOS simulators/phones and Android AVD/USB/wireless targets; optional filters combine with AND. |
 | `serve` | `<device>` | starts driver | Runs in the foreground for a name, id, or `platform:id`; prints the token and URL once. `--app` pre-launches an app. |
 | `status` | none | `status` | |
 | `snapshot` | none | `snapshot` | `--app` follows the platform semantics above; `--max-depth` trims client-side and marks `complete:false`. |
@@ -178,17 +180,19 @@ sends `terminate`.
 | `scroll_until_visible` | `<text> [direction]` | `snapshot`, `swipe` | Exact node-name match; direction defaults to up; stops at the list end or bound. |
 | `home` | none | `home` | |
 | `doubletap` | `<ref>`, or `<x> <y>` | `doubletap` | One argument is read as `ref`; two are read as `x y`. |
-| `pinch` | `<ref> <scale> [--velocity <V>]` | `pinch` | `scale` above 1 zooms out, below 1 zooms in; near-1 or non-positive scales are `BAD_REQUEST` driver-side; non-finite scale/velocity fail client-side. Unaddressable elements fail as `DRIVER_ERROR`; the driver stays up. |
-| `hold` | `<ref>`, or `<x> <y>`, `[--duration <SECS>]` | `hold` | `duration` defaults to 1.0 and must satisfy 0 < d <= 10 (`BAD_REQUEST` from the driver); the CLI sizes its wire timeout from the duration. |
+| `pinch` | `<ref> <scale> [--velocity <V>]` | `pinch` | `scale` above 1 zooms out, below 1 zooms in; non-positive, non-finite, or near-1 (within 0.01) scales fail locally on both surfaces (KTD2). Unaddressable elements fail as `DRIVER_ERROR`; the driver stays up. |
+| `hold` | `<ref>`, or `<x> <y>`, `[--duration <SECS>]` | `hold` | `duration` defaults to 1.0 and must satisfy 0 < d <= 10; finite and range checks run locally on both surfaces (KTD2), and the CLI sizes its wire timeout from the duration. |
 | `back` | none | `back` | |
 | `twofinger` | `<ref>` | `twofinger` | |
 | `center` | `<notification>` | `center` | Only `notification` exists today. |
 | `launch` | `<app_id>` | `launch` | Sends the shared wire field `bundle_id`. |
 | `screenshot` | `[output-path]` | `screenshot` | Decodes `png_base64`; writes to `output-path`, or stdout if omitted. |
 | `stop` | none | `terminate` | |
+| `release` | none | none | Stops the running driver session and owned resources; the device remains running. With no session, reports that and succeeds. |
 | `skills` | none | none | Prints the bundled one-page agent guide. |
 
-Wire calls are read from the driver. `devices`, `serve`, and the argument shapes are new CLI specification.
+Wire calls are read from the driver. `devices`, `serve`, `mcp`, `release`, filters, and argument
+shapes are CLI-side specification.
 
 **Flags and environment.** `--app` carries an app selector: iOS `snapshot` targets the bundle, Android `snapshot` only validates the foreground package, and `serve --app` launches it after binding. `--max-depth` applies to every settled-snapshot verb and lives in the core: the core drops nodes below the depth and sets `complete: false`; independently, the driver can report `complete: false` — traversal caps, cycles, or unavailable children — so the flag's presence is not the only source, and an incomplete tree cannot prove ref uniqueness (ref actions may fail closed). `--device` accepts a name, raw id, or collision-free `platform:id` key and is remembered. `AGENT_MOBILE_URL` and `AGENT_MOBILE_TOKEN` override the saved address and token.
 
@@ -221,27 +225,32 @@ Spec revisions: `2026-07-28` (current) and `2025-11-25` (legacy), at modelcontex
   other stock clients' protocol eras are unconfirmed, so both are needed.
 - Advertise both revisions and only `tools: {}`. Keep the tool list static and deterministic;
   discovery and list results carry `ttlMs` and `cacheScope: "public"`.
-- One tool per CLI verb in §5.2, with the same argument shapes and short names matching the verbs.
-  `mcp` and `serve` are not tools: `mcp` is the transport, and `serve` blocks for the driver's
-  lifetime. The first tool call starts the driver lazily, as the CLI does. Input schemas are plain JSON Schema 2020-12
-  objects with `additionalProperties:false`, no root `anyOf` or `oneOf`.
-- Set all four annotation hints explicitly per tool:
-
-| Tools | readOnlyHint | destructiveHint | idempotentHint | openWorldHint |
-|---|---|---|---|---|
-| `devices`, `status`, `snapshot`, `screenshot`, `skills` | true | false | true | false |
-| `launch` | false | true | false | true |
-| `stop` | false | true | true | true |
-| `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`, `hold`, `back`, `twofinger`, `center` | false | true | false | true |
-| `scroll_until_visible` | false | true | false | true |
+- The registry in `src/surface/verbs.rs` owns the tool list, descriptions, schemas, annotations,
+  and reply kinds. It defines one tool per eligible verb in §5.2 with the CLI's short name and
+  corresponding arguments. `mcp` and `serve` are not tools: `mcp` is the transport, and `serve`
+  blocks for the driver's lifetime. `release` stops the active driver session while leaving the
+  device running. Every device tool accepts an optional per-call `device`, which overrides the
+  server's startup selection for that call without changing the remembered default. The server
+  owns one serve at a time; targeting another device while one is active names the serving device
+  and directs the caller to `release`. The first tool call starts the driver lazily, as the CLI
+  does. Input schemas are plain JSON Schema 2020-12 objects with `additionalProperties:false`, no
+  root `anyOf` or `oneOf`.
+- Tool annotations come from each verb's hints in the registry; the hint classes are read, action,
+  stop, and release.
 
 `launch` force-stops and restarts the app, so it is destructive and not idempotent. Action tools
 act on any target, a Delete button included, so they are destructive too (2025-11-25 ToolAnnotations).
 
-- Snapshot and action replies return the compact text listing as one text content item.
-  `screenshot` returns base64 image content with `mimeType: "image/png"`. No structured output initially.
+- Data replies declare an output schema and return matching `structuredContent`: devices, status,
+  snapshot/action, and stop (`terminate`) replies each use their reply-kind schema. Snapshot JSON
+  carries metadata but omits the tree because the framed compact listing in text already contains
+  every ref; repeating the tree as JSON would roughly double action tokens (KTD6). `screenshot`
+  returns base64 image content with `mimeType: "image/png"`; `skills` and `release` have no output
+  schema.
 - Typed driver errors (`STALE_REF`, etc.) return `isError:true` with the code and next action (§5.3).
-  Unknown tool or malformed arguments return JSON-RPC `-32602`; unknown method returns `-32601`.
+  Argument faults in `tools/call` return `isError:true` tool results naming the field, problem, and
+  fix. Unknown tool names and malformed requests return JSON-RPC `-32602`; unknown methods return
+  `-32601` (R10).
   Missing modern request metadata returns `-32602`; unsupported version returns `-32022` with supported versions.
 - Stdout carries only flushed JSON-RPC lines. Logs and panics go to stderr; exit on stdin EOF.
 - Handle `notifications/cancelled` without replying; abandon the pending call and drop its response.

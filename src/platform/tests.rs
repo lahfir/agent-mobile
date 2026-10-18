@@ -208,13 +208,14 @@ fn device_normalization_fields() {
     let ios = ios_dev("iPhone 17", "UDID-1", "simulator");
     assert_eq!(ios.key(), "ios:UDID-1");
     assert_eq!(ios.legacy_key(), Some("iPhone 17"));
+    assert_eq!(ios.state().as_deref(), Some("booted"));
     assert_eq!(ios.fixed_addr().as_deref(), Some("127.0.0.1:8770"));
     let and = and_dev("avd:x", None, "shutdown");
     assert_eq!(and.key(), "android:avd:x");
     assert_eq!(and.legacy_key(), None);
     assert_eq!(and.fixed_addr(), None);
     assert_eq!(and.kind(), "emulator");
-    assert_eq!(and.state(), Some("shutdown"));
+    assert_eq!(and.state().as_deref(), Some("shutdown"));
 }
 
 #[test]

@@ -114,5 +114,18 @@ pub(super) fn choose_device_key(
             return Ok(Some(key));
         }
     }
+    if device.is_none() {
+        let live: Vec<&String> = state
+            .devices
+            .iter()
+            .filter(|(_, e)| {
+                crate::process::process_matches(e.pid, e.process_started_at.as_deref())
+            })
+            .map(|(key, _)| key)
+            .collect();
+        if let [only] = live.as_slice() {
+            return Ok(Some((*only).clone()));
+        }
+    }
     Ok(selectors.first().map(|s| (*s).to_owned()))
 }

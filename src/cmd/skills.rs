@@ -1,84 +1,8 @@
-//! `skills`: the one-page agent guide, written from the shipped surface and
-//! kept honest by the two-way accuracy test.
+//! `skills`: the one-page agent guide, projected from the shipped surface.
 
-/// The guide text; every command named here exists in `--help`, and the test
-/// proves it in both directions.
+/// Static sections of the guide; command and flag sections come from the registry.
 const GUIDE: &str = "\
 agent-mobile — drive an iOS or Android app through a snapshot -> act loop
-
-COMMANDS
-  mcp                            serve tools over JSON-RPC stdio
-  devices                        list iOS simulators/phones and Android
-                                 AVD/USB/wireless targets
-  serve <device> [--app <id>]    start a driver in the foreground; <device>
-                                 is a name, id, or collision-free
-                                 platform:id key (`ios:<udid>`,
-                                 `android:avd:<name>`, `android:<serial>`).
-                                 --app launches the app once the driver
-                                 binds. Prints url/device/token to a
-                                 terminal; when piped the token lives only
-                                 in ~/.agent-mobile/tokens/<device>
-  status                         active app, device, os, current snapshot id
-  snapshot [--app <id>]          mint refs and print the accessibility tree;
-                                 --app carries an app selector: iOS targets
-                                 the bundle, Android only validates the
-                                 foreground package — use launch to change
-                                 apps
-  tap <ref> | <x> <y>            tap an element ref, or a point in the app
-                                 frame's top-left space (at=x,y is the node's
-                                 origin — tap its center x+w/2, y+h/2)
-  type [<ref>] <text...>         append text; a leading ref writes that field
-                                 directly (the field may not keep focus), else
-                                 keys go to the focused field. A newline
-                                 requests IME Return when the field exposes
-                                 it (Android); otherwise a literal newline
-                                 is appended. Judge the returned snapshot.
-                                 Text starting with `-` needs `--`:
-                                 type -- -flag
-  swipe <up|down|left|right> [<ref>]
-                                 swipe the app, or one element
-  scroll_until_visible <text> [direction]
-                                 swipe until the exact node name is visible;
-                                 direction defaults to up
-  home                           go to the launcher/home; returns that tree
-  doubletap <ref> | <x> <y>      tap twice on a ref, or a point in the app
-                                 frame's top-left space
-  pinch <ref> <scale> [--velocity <v>]
-                                 zoom on a ref; above 1 zooms out, below 1
-                                 zooms in. Near-1 or non-positive scales
-                                 fail as BAD_REQUEST; non-finite
-                                 scale/velocity fail here
-  hold <ref> | <x> <y> [--duration <s>]
-                                 press and hold 0 < d <= 10 s, default 1.0;
-                                 native context menus surface in the
-                                 snapshot (web long-press is unproven)
-  back                           navigate back; no target. Judge from the
-                                 returned tree: web-history back is unproven
-  twofinger <ref>                two-finger tap on a ref
-  center notification            open notifications (system UI session).
-                                 Earlier refs die; snapshot to return to
-                                 your app (iOS also accepts --app). On
-                                 Android, back out of the shade first:
-                                 snapshot --app fails while System UI
-                                 holds the foreground
-  launch <app_id>                cold-start or restart an app (iOS bundle id
-                                 or Android package); app data is kept
-  screenshot [path]              PNG to a file, or base64 to stdout
-                                 (--json stays base64; path+--json is an error)
-  stop                           terminate the active app; the driver stays
-                                 up. No tree comes back — snapshot to verify
-  skills                         this page
-
-FLAGS (global)
-  --json                         emit the raw JSON envelope; failures then
-                                 print the envelope shape on stdout too
-  --app <app_id>                 app selector for `snapshot`/`serve`; on
-                                 Android `snapshot --app` only checks the
-                                 already-foreground package
-  --max-depth <n>                trim the tree client-side; header then shows
-                                 complete=false
-  --device <device>              pick a device by name, id, or platform:id;
-                                 remembered for later calls
 
 ENVIRONMENT
   AGENT_MOBILE_URL, AGENT_MOBILE_TOKEN   override the saved session per call;
@@ -171,14 +95,21 @@ LAUNCH
   and loses transient app state.
 ";
 
-/// Run `skills`; prints the guide, no wire involved.
-pub fn run() -> i32 {
-    super::emit(reply());
-    0
-}
-
-/// The guide reply without any output or session lookup.
-#[must_use]
-pub fn reply() -> &'static str {
-    GUIDE.trim_end_matches('\n')
+/// The `skills` verb: the guide, no wire involved.
+///
+/// # Errors
+/// Never; the signature matches every local verb.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "every local verb shares one fn signature"
+)]
+pub fn exec(_call: &super::Call) -> Result<super::Reply, agent_mobile_core::error::Failure> {
+    let (intro, static_sections) = GUIDE.split_once("ENVIRONMENT\n").unwrap_or((GUIDE, ""));
+    let mut guide = intro.to_owned();
+    guide.push_str(&crate::surface::usage::guide_sections());
+    if !static_sections.is_empty() {
+        guide.push_str("ENVIRONMENT\n");
+        guide.push_str(static_sections);
+    }
+    Ok(super::Reply::Text(guide.trim_end_matches('\n').to_owned()))
 }

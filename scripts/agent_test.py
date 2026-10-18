@@ -11,6 +11,18 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from scripts.benchkit import agent, tasks  # noqa: E402
 
 
+class PickDeviceTests(unittest.TestCase):
+    def test_prefers_booted_simulator_using_lowercase_state_and_key(self):
+        rows = [
+            {"key": "ios:shutdown", "platform": "ios", "kind": "simulator", "state": "shutdown"},
+            {"key": "ios:booted", "platform": "ios", "kind": "simulator", "state": "booted"},
+        ]
+        result = subprocess.CompletedProcess([], 0, json.dumps({"devices": rows}), "")
+        with mock.patch.object(agent.subprocess, "run", return_value=result):
+            self.assertEqual(agent.pick_device("binary", "ios"), rows[1])
+            self.assertEqual(agent.pick_device("binary", "ios", "ios:booted"), rows[1])
+
+
 class StreamTests(unittest.TestCase):
     def test_counts_tools_stale_refs_and_final_result(self):
         fixture = [

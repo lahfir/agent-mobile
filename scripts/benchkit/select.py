@@ -11,7 +11,8 @@ def select_device(devices, selector):
     exact_key = [d for d in devices if d.get("key") == selector]
     if len(exact_key) == 1:
         return exact_key[0]
-    stable = [d for d in devices if selector in (d.get("id"), d.get("udid"))]
+    stable = [d for d in devices if selector in (
+        (d.get("key") or "").split(":", 1)[-1], d.get("id"), d.get("udid"))]
     if len(stable) == 1:
         return stable[0]
     names = [d for d in devices if d.get("name") == selector]
@@ -28,10 +29,11 @@ def canonical_bench_selection(selected, selector):
 def android_avd_name(selected):
     """AVD name for an Android row, or None when only a bare serial is known
     (the cold boot then resolves it live via `emu avd name`)."""
-    for field in ("id", "udid"):
-        value = (selected or {}).get(field) or ""
-        if value.startswith("avd:"):
-            return value[len("avd:"):]
+    row = selected or {}
+    key = row.get("key") or ""
+    value = key.split(":", 1)[-1] or row.get("id") or row.get("udid") or ""
+    if value.startswith("avd:"):
+        return value[len("avd:"):]
     return None
 
 
@@ -46,7 +48,7 @@ def bench_target(selected, selector):
         raise SystemExit(f"no device matching {selector!r}; pass --device <name> (see `agent-mobile devices`)")
     platform = selected.get("platform") or "ios"
     if platform == "ios":
-        udid = selected.get("id") or selected.get("udid")
+        udid = (selected.get("key") or "").split(":", 1)[-1] or selected.get("id") or selected.get("udid")
         if not udid:
             raise SystemExit(f"no simulator UDID for {selector!r}; pass --device <name> (see `agent-mobile devices`)")
         return ("ios", udid, udid)

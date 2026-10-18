@@ -2,94 +2,15 @@
 
 #[allow(dead_code, reason = "shared CLI and driver fixtures")]
 mod common;
+#[path = "common/mcp_client.rs"]
+mod mcp_client;
 
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout};
 use std::time::{Duration, Instant};
+
+use mcp_client::Client;
 
 use agent_mobile_core::error::Failure;
 use serde_json::{Value, json};
-
-struct Client {
-    child: Child,
-    input: Option<ChildStdin>,
-    output: BufReader<ChildStdout>,
-}
-
-impl Client {
-    fn new(envs: &[(&str, &str)]) -> Result<Self, Failure> {
-        Self::at(&common::tmp_home("mcp")?, envs)
-    }
-
-    fn at(home: &PathBuf, envs: &[(&str, &str)]) -> Result<Self, Failure> {
-        let mut child = common::spawn_stdio(&["--json", "mcp"], home, envs)?;
-        let input = child.stdin.take().ok_or_else(|| common::fail("stdin"))?;
-        let output = child.stdout.take().ok_or_else(|| common::fail("stdout"))?;
-        Ok(Self {
-            child,
-            input: Some(input),
-            output: BufReader::new(output),
-        })
-    }
-
-    fn send(&mut self, value: &Value) -> Result<(), Failure> {
-        self.line(value.to_string().as_bytes())
-    }
-
-    fn line(&mut self, line: &[u8]) -> Result<(), Failure> {
-        let input = self
-            .input
-            .as_mut()
-            .ok_or_else(|| common::fail("closed stdin"))?;
-        input.write_all(line)?;
-        input.write_all(b"\n")?;
-        input.flush()?;
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<Value, Failure> {
-        let mut line = String::new();
-        assert!(self.output.read_line(&mut line)? > 0, "unexpected EOF");
-        serde_json::from_str(&line).map_err(|error| common::fail(&error.to_string()))
-    }
-
-    fn request(&mut self, id: i64, method: &str, params: &Value) -> Result<Value, Failure> {
-        self.send(&json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))?;
-        let reply = self.read()?;
-        assert_eq!(reply["jsonrpc"], "2.0");
-        assert_eq!(reply["id"], id);
-        Ok(reply)
-    }
-
-    fn legacy(&mut self) -> Result<Value, Failure> {
-        let reply = self.request(
-            0,
-            "initialize",
-            &json!({
-                "protocolVersion":"2025-11-25", "capabilities":{},
-                "clientInfo":{"name":"test", "version":"1"}
-            }),
-        )?;
-        self.send(&json!({"jsonrpc":"2.0", "method":"notifications/initialized"}))?;
-        Ok(reply)
-    }
-
-    fn finish(mut self) -> Result<(), Failure> {
-        self.input.take();
-        let mut extra = String::new();
-        assert_eq!(self.output.read_line(&mut extra)?, 0, "{extra}");
-        assert!(self.child.wait()?.success());
-        Ok(())
-    }
-}
-
-impl Drop for Client {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 #[test]
 fn legacy_initialize_list_ping_and_eof() -> Result<(), Failure> {
@@ -110,36 +31,15 @@ fn legacy_initialize_list_ping_and_eof() -> Result<(), Failure> {
         assert!(instructions.contains(rule), "{rule}");
     }
     let list = client.request(1, "tools/list", &json!({}))?;
-    let tools = list["result"]["tools"]
-        .as_array()
-        .ok_or_else(|| common::fail("tools"))?;
-    let names: Vec<_> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap_or_default())
-        .collect();
-    let expected = "devices status snapshot tap type swipe scroll_until_visible home doubletap pinch hold back twofinger center launch screenshot stop skills";
-    assert_eq!(names, expected.split_whitespace().collect::<Vec<_>>());
-    check_catalog(tools);
+    assert_eq!(list["result"], fixture()?);
     assert_eq!(client.request(2, "ping", &json!({}))?["result"], json!({}));
     client.finish()
 }
 
-fn check_catalog(tools: &[Value]) {
-    for tool in tools {
-        let name = tool["name"].as_str().unwrap_or_default();
-        let read = matches!(
-            name,
-            "devices" | "status" | "snapshot" | "screenshot" | "skills"
-        );
-        assert_eq!(
-            tool["annotations"],
-            json!({"readOnlyHint":read, "destructiveHint":!read, "idempotentHint":read || name == "stop", "openWorldHint":!read})
-        );
-        assert_eq!(tool["inputSchema"]["type"], "object");
-        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-        assert!(tool["inputSchema"].get("oneOf").is_none());
-        assert!(tool["inputSchema"].get("anyOf").is_none());
-    }
+/// The reviewed `tools/list` result the registry must produce (KTD10).
+fn fixture() -> Result<Value, Failure> {
+    serde_json::from_str(include_str!("fixtures/tools-list.json"))
+        .map_err(|e| common::fail(&e.to_string()))
 }
 
 fn modern() -> Value {
@@ -168,10 +68,8 @@ fn modern_discovery_and_metadata_validation() -> Result<(), Failure> {
     check_metadata_errors(&mut client)?;
     client.legacy()?;
     assert_eq!(
-        client.request(5, "tools/list", &json!({"_meta":modern()}))?["result"]["tools"]
-            .as_array()
-            .map(Vec::len),
-        Some(18)
+        client.request(5, "tools/list", &json!({"_meta":modern()}))?["result"]["tools"],
+        fixture()?["tools"]
     );
     client.finish()
 }
@@ -213,29 +111,82 @@ fn protocol_faults_keep_reading_and_arguments_fail_before_io() -> Result<(), Fai
         client.request(1, "unknown", &json!({}))?["error"]["code"],
         -32601
     );
-    for params in [
-        json!({"name":"serve"}),
-        json!({"name":"unknown"}),
-        json!({"name":"status","arguments":{"token":"secret"}}),
-        json!({"name":"screenshot","arguments":{"output":"/tmp/no-write"}}),
-        json!({"name":"tap","arguments":{"ref":"@s:e1","x":1,"y":2}}),
-        json!({"name":"tap","arguments":{"ref":"bad"}}),
-        json!({"name":"tap","arguments":{"x":1}}),
-        json!({"name":"hold","arguments":{"x":1,"y":2,"duration":0}}),
-        json!({"name":"type","arguments":{"text":3}}),
-        json!({"name":"swipe","arguments":{"direction":"bad"}}),
-        json!({"name":"pinch","arguments":{"ref":"@s:e1","scale":1}}),
-        json!({"name":"launch","arguments":{"bundle_id":"a/b"}}),
-        json!({"name":"snapshot","arguments":{"max_depth":-1}}),
-    ] {
+    for params in [json!({"name":"serve"}), json!({"name":"unknown"})] {
         assert_eq!(
             client.request(2, "tools/call", &params)?["error"]["code"],
             -32602,
             "{params}"
         );
     }
+    check_argument_faults(&mut client)?;
     assert_eq!(client.request(3, "ping", &json!({}))?["result"], json!({}));
     client.finish()
+}
+
+/// Every argument fault is an `isError` tool result naming the field (R10).
+fn check_argument_faults(client: &mut Client) -> Result<(), Failure> {
+    for (params, field) in [
+        (
+            json!({"name":"status","arguments":{"token":"secret"}}),
+            "token",
+        ),
+        (
+            json!({"name":"screenshot","arguments":{"output":"/tmp/no-write"}}),
+            "output",
+        ),
+        (
+            json!({"name":"tap","arguments":{"target":{"ref":"@s:e1","x":1,"y":2}}}),
+            "target",
+        ),
+        (
+            json!({"name":"tap","arguments":{"target":{"ref":"bad"}}}),
+            "target.ref",
+        ),
+        (
+            json!({"name":"tap","arguments":{"target":{"x":1}}}),
+            "target.y",
+        ),
+        (json!({"name":"tap","arguments":{"ref":"@s:e1"}}), "ref"),
+        (
+            json!({"name":"hold","arguments":{"target":{"x":1,"y":2},"duration":0}}),
+            "duration",
+        ),
+        (json!({"name":"type","arguments":{"text":3}}), "text"),
+        (
+            json!({"name":"swipe","arguments":{"direction":"bad"}}),
+            "direction",
+        ),
+        (
+            json!({"name":"pinch","arguments":{"ref":"@s:e1","scale":0}}),
+            "scale",
+        ),
+        (
+            json!({"name":"launch","arguments":{"app_id":"a/b"}}),
+            "app_id",
+        ),
+        (
+            json!({"name":"launch","arguments":{"bundle_id":"com.a"}}),
+            "bundle_id",
+        ),
+        (
+            json!({"name":"snapshot","arguments":{"max_depth":-1}}),
+            "max_depth",
+        ),
+        (json!({"name":"tap","arguments":[]}), "arguments"),
+    ] {
+        let reply = client.request(2, "tools/call", &params)?;
+        assert!(reply.get("error").is_none(), "{params}");
+        assert_eq!(reply["result"]["isError"], true, "{params}");
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            text.contains(&format!("BAD_REQUEST: {field}: ")),
+            "{params}: {text}"
+        );
+        assert!(text.contains("\nnext: "), "{params}: {text}");
+    }
+    Ok(())
 }
 
 #[test]
@@ -256,7 +207,7 @@ fn driver_errors_images_and_untrusted_snapshot_text() -> Result<(), Failure> {
     let stale = client.request(
         1,
         "tools/call",
-        &json!({"name":"tap","arguments":{"ref":"@snap1:e2"}}),
+        &json!({"name":"tap","arguments":{"target":{"ref":"@snap1:e2"}}}),
     )?;
     assert!(stale.get("error").is_none());
     assert_eq!(stale["result"]["isError"], true);
@@ -303,7 +254,7 @@ fn action_timeout_and_cancellation_drop_late_replies_and_serialize() -> Result<(
             ("AGENT_MOBILE_MCP_CALL_SECS", "0.5"),
         ])?;
         client.legacy()?;
-        client.send(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tap","arguments":{"ref":"@snap1:e2"}}}))?;
+        client.send(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tap","arguments":{"target":{"ref":"@snap1:e2"}}}}))?;
         let first = observed
             .recv_timeout(Duration::from_secs(5))
             .map_err(|e| common::fail(&e.to_string()))?;

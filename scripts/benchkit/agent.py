@@ -184,8 +184,8 @@ def run_plan(tasks, seeds, platforms):
 def pick_device(binary, platform, pinned=None):
     out = subprocess.run([str(binary), "--json", "devices"], capture_output=True, text=True).stdout
     rows = [d for d in json.loads(out or "{}").get("devices", []) if d.get("platform") == platform
-            and d.get("kind") in ("simulator", "emulator") and pinned in (None, d.get("key"), d.get("id"), d.get("name"))]
-    rows.sort(key=lambda d: d.get("state") not in ("Booted", "device"))
+            and d.get("kind") in ("simulator", "emulator") and pinned in (None, d.get("key"), d.get("key", "").split(":", 1)[-1], d.get("name"))]
+    rows.sort(key=lambda d: d.get("state") not in ("booted", "device"))
     return rows[0] if rows else None
 
 
