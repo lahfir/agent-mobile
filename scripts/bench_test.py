@@ -17,9 +17,9 @@ def dev(**kw):
     return kw
 
 
-IOS = dev(name="iPhone 17", platform="ios", key="ios:UDID-1", id="UDID-1", udid="UDID-1", kind="simulator")
-IOS2 = dev(name="iPhone 17 Pro", platform="ios", key="ios:UDID-2", id="UDID-2", udid="UDID-2", kind="simulator")
-AND = dev(name="api37", platform="android", key="android:avd:api37", id="avd:api37", udid="avd:api37", kind="emulator")
+IOS = dev(name="iPhone 17", platform="ios", key="ios:UDID-1", kind="simulator")
+IOS2 = dev(name="iPhone 17 Pro", platform="ios", key="ios:UDID-2", kind="simulator")
+AND = dev(name="api37", platform="android", key="android:avd:api37", kind="emulator")
 LEGACY = dev(name="iPhone 17", udid="UDID-9", kind="simulator")  # old binary: no platform/key/id
 
 
@@ -37,8 +37,8 @@ class SelectDeviceTests(unittest.TestCase):
         self.assertIs(select.select_device([IOS, IOS2], "iPhone 17 Pro"), IOS2)
 
     def test_ambiguous_returns_none(self):
-        dup_a = dev(name="iPhone 17", key="ios:A", id="A", udid="A")
-        dup_b = dev(name="iPhone 17", key="ios:B", id="B", udid="B")
+        dup_a = dev(name="iPhone 17", key="ios:A")
+        dup_b = dev(name="iPhone 17", key="ios:B")
         self.assertIsNone(select.select_device([dup_a, dup_b], "iPhone 17"))
 
     def test_no_match_returns_none(self):
@@ -71,9 +71,9 @@ class BenchTargetTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             select.bench_target(None, "nope")
 
-    def test_ios_row_without_id_rejected(self):
-        with self.assertRaises(SystemExit):
-            select.bench_target(dev(name="x", platform="ios", key="ios:x"), "x")
+    def test_ios_key_supplies_boot_handle_without_id_field(self):
+        self.assertEqual(select.bench_target(dev(name="x", platform="ios", key="ios:x"), "x"),
+                         ("ios", "x", "x"))
 
 
 class StopDriverTests(unittest.TestCase):
@@ -185,11 +185,11 @@ class AndroidAvdNameTests(unittest.TestCase):
         self.assertEqual(select.android_avd_name(AND), "api37")
 
     def test_avd_prefixed_udid_fallback(self):
-        row = dev(name="e", platform="android", id="emulator-5554", udid="avd:api37")
+        row = dev(name="e", platform="android", key="android:avd:api37")
         self.assertEqual(select.android_avd_name(row), "api37")
 
     def test_bare_serial_yields_none(self):
-        row = dev(name="e", platform="android", id="emulator-5554", kind="emulator")
+        row = dev(name="e", platform="android", key="android:emulator-5554", kind="emulator")
         self.assertIsNone(select.android_avd_name(row))
 
     def test_missing_ids_yield_none(self):
@@ -200,11 +200,11 @@ class AndroidAvdNameTests(unittest.TestCase):
 
 class CanonicalSelectionTest(unittest.TestCase):
     def test_display_name_becomes_canonical_key(self):
-        row = {"name": "iPhone 17", "key": "ios:UDID-1", "id": "UDID-1", "platform": "ios"}
+        row = {"name": "iPhone 17", "key": "ios:UDID-1", "platform": "ios"}
         self.assertEqual(("ios:UDID-1", True), select.canonical_bench_selection(row, "iPhone 17"))
 
     def test_key_stays_key(self):
-        row = {"name": "iPhone 17", "key": "ios:UDID-1", "id": "UDID-1", "platform": "ios"}
+        row = {"name": "iPhone 17", "key": "ios:UDID-1", "platform": "ios"}
         self.assertEqual(("ios:UDID-1", True), select.canonical_bench_selection(row, "ios:UDID-1"))
 
     def test_legacy_row_keeps_selector_pinned(self):

@@ -121,6 +121,44 @@ fn tool_list_comes_from_the_registry() {
 }
 
 #[test]
+fn devices_filters_are_shared() -> Result<(), std::io::Error> {
+    let device = find("devices").ok_or_else(|| std::io::Error::other("missing devices verb"))?;
+    let input = serde_json::Map::from_iter([
+        ("platform".to_owned(), json!("android")),
+        ("kind".to_owned(), json!("emulator")),
+        ("state".to_owned(), json!("offline")),
+    ]);
+    let checked = super::kind::check_args(device, &input, false);
+    assert!(checked.is_ok());
+    if let Ok(checked) = checked {
+        assert_eq!(checked["platform"], "android");
+        assert_eq!(checked["kind"], "emulator");
+    }
+    let invalid = serde_json::Map::from_iter([("platform".to_owned(), json!("windows"))]);
+    assert!(super::kind::check_args(device, &invalid, false).is_err());
+    Ok(())
+}
+
+#[test]
+fn devices_output_schema_matches_json_rows() -> Result<(), std::io::Error> {
+    let schema =
+        listed("devices").ok_or_else(|| std::io::Error::other("missing MCP devices tool"))?;
+    for name in ["platform", "kind", "state"] {
+        assert!(schema["inputSchema"]["properties"].get(name).is_some());
+    }
+    let output = &schema["outputSchema"]["properties"]["devices"]["items"]["properties"];
+    for name in ["key", "name", "platform", "kind", "os", "state", "serving"] {
+        assert!(output.get(name).is_some(), "missing {name}");
+    }
+    for name in ["os", "state", "serving"] {
+        assert_eq!(output[name]["type"], json!(["string", "null"]));
+    }
+    assert!(output.get("id").is_none());
+    assert!(output.get("udid").is_none());
+    Ok(())
+}
+
+#[test]
 fn point_targets_are_a_nested_one_of() {
     let tap = listed("tap");
     let shapes = tap.as_ref().and_then(|t| {

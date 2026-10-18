@@ -7,6 +7,8 @@ use super::{
 use crate::cmd;
 
 const DIRECTIONS: &[&str] = &["up", "down", "left", "right"];
+const DEVICE_PLATFORMS: &[&str] = &["ios", "android"];
+const DEVICE_KINDS: &[&str] = &["simulator", "device", "emulator", "usb", "wireless"];
 const SESSION: &[Global] = &[Global::Device];
 const ACTING: &[Global] = &[Global::Device, Global::MaxDepth];
 const SELECTING: &[Global] = &[Global::Device, Global::App, Global::MaxDepth];
@@ -93,11 +95,30 @@ pub const VERBS: &[Verb] = &[
         )
     },
     read(
-        verb(
-            "devices",
-            "List reachable simulators, devices, and AVDs",
-            Exec::Local(cmd::devices::exec),
-        ),
+        Verb {
+            args: &[
+                flag(arg(
+                    "platform",
+                    "Filter by platform",
+                    Kind::Enum(DEVICE_PLATFORMS),
+                )),
+                flag(arg(
+                    "kind",
+                    "Filter by device kind",
+                    Kind::Enum(DEVICE_KINDS),
+                )),
+                flag(arg(
+                    "state",
+                    "Filter by lowercase device state",
+                    Kind::Text(1024),
+                )),
+            ],
+            ..verb(
+                "devices",
+                "List reachable simulators, devices, and AVDs",
+                Exec::Local(cmd::devices::exec),
+            )
+        },
         ReplyKind::Devices,
         &[],
     ),

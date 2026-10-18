@@ -169,15 +169,21 @@ pub fn output_schema(reply: ReplyKind) -> Option<Value> {
         )),
         ReplyKind::Terminate => Some(object(&[("terminated", "string")], &["terminated"])),
         ReplyKind::Devices => {
-            let row = object(
+            let mut row = object(
                 &[
                     ("key", "string"),
                     ("name", "string"),
                     ("platform", "string"),
                     ("kind", "string"),
+                    ("os", "string"),
+                    ("state", "string"),
+                    ("serving", "string"),
                 ],
-                &["key", "name", "platform", "kind"],
+                &["key", "name", "platform", "kind", "os", "state", "serving"],
             );
+            for field in ["os", "state", "serving"] {
+                row["properties"][field]["type"] = json!(["string", "null"]);
+            }
             Some(
                 json!({"type": "object", "properties": {"devices": {"type": "array", "items": row}}, "required": ["devices"]}),
             )
