@@ -18,6 +18,8 @@ echo "npm package version -> $CRATE_VER"
 # 2. Binary: release build staged at npm/bin/agent-mobile.
 cargo build --release --locked
 mkdir -p npm/bin
+# A new inode: overwriting a signed binary in place makes macOS kill it (signal 9).
+rm -f npm/bin/agent-mobile
 cp target/release/agent-mobile npm/bin/agent-mobile
 chmod 755 npm/bin/agent-mobile
 echo "staged bin/agent-mobile ($(target/release/agent-mobile --version))"
