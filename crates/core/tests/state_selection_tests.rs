@@ -189,6 +189,7 @@ fn no_selector_uses_the_one_live_session_and_never_guesses_between_two() -> Resu
     std::fs::create_dir_all(store.root())?;
     store.write_token("t0k", "secret")?;
     store.upsert("ios:A", &live_entry("A", "iPhone A"))?;
+    store.upsert("iPhone A", &dead_entry("A", "iPhone A"))?;
     let resolved = store.resolve_with(None, None, None)?;
     assert_eq!(resolved.and_then(|r| r.device).as_deref(), Some("ios:A"));
     store.upsert("ios:B", &live_entry("B", "iPhone B"))?;

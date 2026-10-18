@@ -115,14 +115,16 @@ pub(super) fn choose_device_key(
         }
     }
     if device.is_none() {
-        let mut live = Vec::new();
-        for key in state.devices.keys() {
-            if let Some(found) = state.resolve_live_device_key(key)? {
-                live.push(found);
-            }
-        }
+        let live: Vec<&String> = state
+            .devices
+            .iter()
+            .filter(|(_, e)| {
+                crate::process::process_matches(e.pid, e.process_started_at.as_deref())
+            })
+            .map(|(key, _)| key)
+            .collect();
         if let [only] = live.as_slice() {
-            return Ok(Some(only.clone()));
+            return Ok(Some((*only).clone()));
         }
     }
     Ok(selectors.first().map(|s| (*s).to_owned()))
