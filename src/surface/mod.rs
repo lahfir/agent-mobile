@@ -5,6 +5,8 @@
 pub mod cli;
 pub mod kind;
 pub mod mcp;
+#[cfg(test)]
+mod parity_tests;
 pub mod usage;
 mod verbs;
 

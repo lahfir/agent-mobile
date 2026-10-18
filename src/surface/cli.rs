@@ -4,6 +4,7 @@
 use clap::builder::PossibleValuesParser;
 use clap::{Arg as ClapArg, ArgAction, ArgMatches, Command};
 use serde_json::{Map, Value, json};
+use std::ffi::OsString;
 
 use agent_mobile_core::contract::Ref;
 use agent_mobile_core::error::Failure;
@@ -83,7 +84,15 @@ fn clap_arg(arg: &Arg) -> ClapArg {
 /// Parse the process arguments. Clap faults exit 2 inside clap; the
 /// returned name and `--json` flag shape the failure report.
 pub fn parse() -> (Result<Call, Failure>, &'static str, bool) {
-    let matches = command().get_matches();
+    parse_from(std::env::args_os())
+}
+
+pub(super) fn parse_from<I, T>(argv: I) -> (Result<Call, Failure>, &'static str, bool)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let matches = command().get_matches_from(argv);
     let json = matches.get_flag(JSON);
     let Some((name, sub)) = matches.subcommand() else {
         return (Err(Failure::usage("name a command; see --help")), "", json);
