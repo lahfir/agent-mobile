@@ -102,7 +102,9 @@ fn schema(arg: &Arg) -> Value {
         Kind::AppId => {
             json!({"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[A-Za-z0-9._-]+$"})
         }
-        Kind::Number { gt, max, default } => {
+        Kind::Number {
+            gt, max, default, ..
+        } => {
             let mut n = json!({"type": "number"});
             if let Some(v) = gt {
                 n["exclusiveMinimum"] = json!(v);

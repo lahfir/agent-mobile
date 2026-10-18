@@ -111,22 +111,22 @@ fn pinch_bad_scale_text_exits_2() -> Result<(), Failure> {
     Ok(())
 }
 
-/// Near-1 scales ride the wire unchanged; the driver owns the rejection.
+/// Near-1 scales fail locally like over MCP (KTD2), before any request.
 #[test]
-fn pinch_near_one_scale_passes_through() -> Result<(), Failure> {
+fn pinch_near_one_scale_exits_2_without_request() -> Result<(), Failure> {
     let home = tmp_home("pinch-near1")?;
-    let s = stub(&[SNAPSHOT])?;
+    let s = stub(&[])?;
     let out = run_wired(&["pinch", "@snap1:e2", "1.0"], &home, &s)?;
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let req = only_request(s, "pinch-near1")?;
-    assert!(req.contains("POST /pinch "), "{req}");
-    let v = body_of(&req)?;
-    assert_eq!(v["scale"], 1.0);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("scale: too close to 1"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(s.captured()?.len(), 0);
     Ok(())
 }
 
-/// Non-finite scales never reach the wire: JSON cannot carry them, so the
-/// CLI rejects them like `hold` rejects non-finite durations.
 #[test]
 fn pinch_nonfinite_scale_exits_2_without_request() -> Result<(), Failure> {
     let home = tmp_home("pinch-nan")?;

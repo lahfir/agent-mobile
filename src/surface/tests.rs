@@ -182,3 +182,20 @@ fn data_replies_declare_output_schemas_and_images_do_not() {
     }
     assert!(find("launch").is_some_and(|v| !v.hints.read_only));
 }
+
+#[test]
+fn only_driver_verbs_start_a_session() {
+    for name in [
+        "status",
+        "snapshot",
+        "tap",
+        "screenshot",
+        "scroll_until_visible",
+        "stop",
+    ] {
+        assert!(find(name).is_some_and(super::Verb::drives), "{name}");
+    }
+    for name in ["release", "devices", "skills", "mcp", "serve"] {
+        assert!(find(name).is_some_and(|v| !v.drives()), "{name}");
+    }
+}

@@ -77,6 +77,8 @@ pub enum Kind {
         max: Option<f64>,
         /// Value used when the caller omits it.
         default: Option<f64>,
+        /// A value the number must not be within 0.01 of.
+        except: Option<f64>,
     },
     /// Whole number that fits `u32`.
     Integer,
@@ -223,6 +225,16 @@ pub enum Timeout {
     Long,
     /// Press time plus settle and headroom, clamped so a huge value cannot wedge the client.
     Hold,
+}
+
+impl Verb {
+    /// Whether the verb talks to a driver, so a call may need a session
+    /// first: every wire verb, and local verbs that reply with driver data.
+    #[must_use]
+    pub fn drives(&self) -> bool {
+        matches!(self.exec, Exec::Wire { .. })
+            || !matches!(self.reply, ReplyKind::Text | ReplyKind::Devices)
+    }
 }
 
 /// The verb named `name`.

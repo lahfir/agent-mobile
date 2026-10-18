@@ -26,11 +26,17 @@ pub fn exec(call: &Call) -> Result<Reply, Failure> {
         &store,
         call.str("device").unwrap_or_default(),
         call.str("app"),
+        call.json,
     )
     .map(Reply::Exit)
 }
 
-fn run(store: &StateStore, device_name: &str, app: Option<&str>) -> Result<i32, Failure> {
+fn run(
+    store: &StateStore,
+    device_name: &str,
+    app: Option<&str>,
+    json: bool,
+) -> Result<i32, Failure> {
     crate::cmd::ensure_state_dir(store)?;
     let lock = acquire_lock(store)?;
     let term = term_flag()?;
@@ -61,6 +67,7 @@ fn run(store: &StateStore, device_name: &str, app: Option<&str>) -> Result<i32, 
             "launch",
             &serde_json::json!({ "bundle_id": app }),
             agent_mobile_core::wire::LONG_TIMEOUT,
+            json,
         );
         match launch {
             Ok(0) => {}

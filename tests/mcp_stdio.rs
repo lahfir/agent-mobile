@@ -31,38 +31,15 @@ fn legacy_initialize_list_ping_and_eof() -> Result<(), Failure> {
         assert!(instructions.contains(rule), "{rule}");
     }
     let list = client.request(1, "tools/list", &json!({}))?;
-    let tools = list["result"]["tools"]
-        .as_array()
-        .ok_or_else(|| common::fail("tools"))?;
-    let names: Vec<_> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap_or_default())
-        .collect();
-    let expected = "devices status snapshot tap type swipe scroll_until_visible home doubletap pinch hold back twofinger center launch screenshot stop release skills";
-    assert_eq!(names, expected.split_whitespace().collect::<Vec<_>>());
-    check_catalog(tools);
+    assert_eq!(list["result"], fixture()?);
     assert_eq!(client.request(2, "ping", &json!({}))?["result"], json!({}));
     client.finish()
 }
 
-fn check_catalog(tools: &[Value]) {
-    for tool in tools {
-        let name = tool["name"].as_str().unwrap_or_default();
-        let read = matches!(
-            name,
-            "devices" | "status" | "snapshot" | "screenshot" | "skills"
-        );
-        assert_eq!(
-            tool["annotations"],
-            json!({"readOnlyHint":read, "destructiveHint":!read,
-                "idempotentHint":read || matches!(name, "stop" | "release"),
-                "openWorldHint":!read && name != "release"})
-        );
-        assert_eq!(tool["inputSchema"]["type"], "object");
-        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-        assert!(tool["inputSchema"].get("oneOf").is_none());
-        assert!(tool["inputSchema"].get("anyOf").is_none());
-    }
+/// The reviewed `tools/list` result the registry must produce (KTD10).
+fn fixture() -> Result<Value, Failure> {
+    serde_json::from_str(include_str!("fixtures/tools-list.json"))
+        .map_err(|e| common::fail(&e.to_string()))
 }
 
 fn modern() -> Value {
@@ -91,10 +68,8 @@ fn modern_discovery_and_metadata_validation() -> Result<(), Failure> {
     check_metadata_errors(&mut client)?;
     client.legacy()?;
     assert_eq!(
-        client.request(5, "tools/list", &json!({"_meta":modern()}))?["result"]["tools"]
-            .as_array()
-            .map(Vec::len),
-        Some(19)
+        client.request(5, "tools/list", &json!({"_meta":modern()}))?["result"]["tools"],
+        fixture()?["tools"]
     );
     client.finish()
 }

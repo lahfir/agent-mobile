@@ -240,6 +240,7 @@ pub const VERBS: &[Verb] = &[
                     gt: Some(0.0),
                     max: None,
                     default: None,
+                    except: Some(1.0),
                 },
             ),
             flag(arg(
@@ -249,6 +250,7 @@ pub const VERBS: &[Verb] = &[
                     gt: None,
                     max: None,
                     default: None,
+                    except: None,
                 },
             )),
         ],
@@ -265,6 +267,7 @@ pub const VERBS: &[Verb] = &[
                     gt: Some(0.0),
                     max: Some(10.0),
                     default: Some(1.0),
+                    except: None,
                 },
             )),
         ],

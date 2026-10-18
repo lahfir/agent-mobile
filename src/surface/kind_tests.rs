@@ -63,6 +63,7 @@ fn bounded_numbers_reject_both_edges_and_non_finite() {
         gt: Some(0.0),
         max: Some(10.0),
         default: Some(1.0),
+        except: None,
     });
     for bad in ["0", "-1", "11", "nan", "inf", "long"] {
         let value = from_words(duration.kind, &words(&[bad]));
@@ -110,4 +111,22 @@ fn defaults_fill_omitted_numbers() {
         args.and_then(|a| a.get("duration").cloned()),
         Some(json!(1.0))
     );
+}
+
+#[test]
+fn pinch_scales_near_one_fail_locally() {
+    let input = |scale: f64| json!({"ref": "@s:e1", "scale": scale});
+    for (scale, ok) in [
+        (1.0, false),
+        (1.005, false),
+        (0.995, false),
+        (1.02, true),
+        (0.5, true),
+    ] {
+        let value = input(scale);
+        let result = find("pinch")
+            .zip(value.as_object())
+            .map(|(pinch, m)| check_args(pinch, m, false));
+        assert_eq!(result.map(|r| r.is_ok()), Some(ok), "{scale}");
+    }
 }

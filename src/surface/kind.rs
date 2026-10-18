@@ -149,7 +149,9 @@ pub fn check(arg: &Arg, value: &Value) -> Result<Value, Fault> {
             )),
         },
         Kind::Ref => parse_ref(name, value),
-        Kind::Number { gt, max, .. } => number(name, value, gt, max),
+        Kind::Number {
+            gt, max, except, ..
+        } => number(name, value, gt, max, except),
         Kind::Integer => match value.as_u64().filter(|n| u32::try_from(*n).is_ok()) {
             Some(_) => Ok(value.clone()),
             None => Err(Fault::new(
@@ -199,7 +201,13 @@ fn parse_ref(name: &str, value: &Value) -> Result<Value, Fault> {
         .ok_or_else(|| Fault::new(name, "not a ref", REF_FIX))
 }
 
-fn number(name: &str, value: &Value, gt: Option<f64>, max: Option<f64>) -> Result<Value, Fault> {
+fn number(
+    name: &str,
+    value: &Value,
+    gt: Option<f64>,
+    max: Option<f64>,
+    except: Option<f64>,
+) -> Result<Value, Fault> {
     let range = match (gt, max) {
         (Some(lo), Some(hi)) => format!("give a number above {lo} and at most {hi}"),
         (Some(lo), None) => format!("give a number above {lo}"),
@@ -213,6 +221,14 @@ fn number(name: &str, value: &Value, gt: Option<f64>, max: Option<f64>) -> Resul
         Some(_) => Err(Fault::new(name, "out of range", range)),
         None => Err(Fault::new(name, "must be a finite number", range)),
     }
+    .and_then(|n| match (except, n.as_f64()) {
+        (Some(e), Some(v)) if (v - e).abs() < 0.01 => Err(Fault::new(
+            name,
+            format!("too close to {e}"),
+            format!("give a value at least 0.01 away from {e}"),
+        )),
+        _ => Ok(n),
+    })
 }
 
 fn point(name: &str, value: &Value) -> Result<Value, Fault> {

@@ -114,5 +114,16 @@ pub(super) fn choose_device_key(
             return Ok(Some(key));
         }
     }
+    if device.is_none() {
+        let mut live = Vec::new();
+        for key in state.devices.keys() {
+            if let Some(found) = state.resolve_live_device_key(key)? {
+                live.push(found);
+            }
+        }
+        if let [only] = live.as_slice() {
+            return Ok(Some(only.clone()));
+        }
+    }
     Ok(selectors.first().map(|s| (*s).to_owned()))
 }

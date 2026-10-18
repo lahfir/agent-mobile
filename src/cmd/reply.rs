@@ -94,10 +94,11 @@ pub fn round_trip_within(
     verb: &str,
     body: &Value,
     timeout: Duration,
+    json: bool,
 ) -> Result<i32, Failure> {
     Ok(finish(
         session.call_within(verb, body, timeout)?,
-        false,
+        json,
         None,
     ))
 }

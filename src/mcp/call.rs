@@ -7,7 +7,7 @@ use agent_mobile_core::error::Failure;
 use serde_json::{Map, Value, json};
 
 use crate::cmd::{self, Call, Ctx, Reply, reply};
-use crate::surface::{self, Global};
+use crate::surface;
 
 use super::{Event, frame};
 
@@ -44,7 +44,7 @@ fn execute(
             call.args.insert(name.to_owned(), value.clone());
         }
     }
-    if call.verb.globals.contains(&Global::Device) {
+    if call.verb.drives() {
         let _ = events.send(Event::Boot(job.sequence, true));
         Ctx::for_call(&call)?.session()?;
         let _ = events.send(Event::Boot(job.sequence, false));

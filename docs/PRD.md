@@ -180,7 +180,7 @@ the twenty-one commands map to a same-named driver verb; `devices`, `serve`, `mc
 | `scroll_until_visible` | `<text> [direction]` | `snapshot`, `swipe` | Exact node-name match; direction defaults to up; stops at the list end or bound. |
 | `home` | none | `home` | |
 | `doubletap` | `<ref>`, or `<x> <y>` | `doubletap` | One argument is read as `ref`; two are read as `x y`. |
-| `pinch` | `<ref> <scale> [--velocity <V>]` | `pinch` | `scale` above 1 zooms out, below 1 zooms in; near-1 or non-positive scales are `BAD_REQUEST`; finite and range checks run locally on both surfaces (KTD2). Unaddressable elements fail as `DRIVER_ERROR`; the driver stays up. |
+| `pinch` | `<ref> <scale> [--velocity <V>]` | `pinch` | `scale` above 1 zooms out, below 1 zooms in; non-positive, non-finite, or near-1 (within 0.01) scales fail locally on both surfaces (KTD2). Unaddressable elements fail as `DRIVER_ERROR`; the driver stays up. |
 | `hold` | `<ref>`, or `<x> <y>`, `[--duration <SECS>]` | `hold` | `duration` defaults to 1.0 and must satisfy 0 < d <= 10; finite and range checks run locally on both surfaces (KTD2), and the CLI sizes its wire timeout from the duration. |
 | `back` | none | `back` | |
 | `twofinger` | `<ref>` | `twofinger` | |
