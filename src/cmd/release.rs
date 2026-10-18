@@ -52,7 +52,7 @@ pub fn exec(call: &Call) -> Result<Reply, Failure> {
     if selected.is_none() && live.len() > 1 {
         return Err(Failure::local(
             "more than one driver is running",
-            "select one with `agent-mobile release --device <key>`",
+            "call release again with the device key from `devices`",
         ));
     }
     let _ = agent_mobile_core::process::terminate(entry.pid);

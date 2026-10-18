@@ -85,7 +85,7 @@ impl ErrorCode {
         match self {
             Self::StaleRef => "re-snapshot, then retry the action with a fresh ref",
             Self::AmbiguousTarget => {
-                "pick a ref with a firmer native_id, walk --json bounds, or coordinate-tap from --json, then retry"
+                "pick a ref with a firmer native_id, or tap the node's center as an x,y point, then retry"
             }
             Self::BadRequest => "fix the request; do not retry unchanged",
             Self::UnknownCommand => "fix the client; do not retry",
