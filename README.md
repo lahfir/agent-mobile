@@ -75,7 +75,7 @@ agent-mobile launch com.apple.mobilecal # iOS bundle id — Android takes a pack
 agent-mobile tap @1abc:e7               # act on a ref from the last snapshot
 agent-mobile type "Dentist tomorrow"    # type into the focused field
 agent-mobile screenshot shot.png        # PNG file; omit the path for base64 on stdout
-agent-mobile skills                     # the one-page agent guide
+agent-mobile skills                     # the agent guide (skills/agent-mobile/SKILL.md)
 ```
 
 To run the driver explicitly (one session total, foreground, Ctrl-C cleans up):
@@ -110,7 +110,7 @@ devices share a name the CLI refuses to guess — pick by key.
 | `screenshot [path]` | PNG to a file, or base64 to stdout |
 | `stop` | terminate the active app; the driver stays up |
 | `release` | stop the running driver session and owned resources; the device stays up |
-| `skills` | print the one-page agent guide |
+| `skills` | print the agent guide, `skills/agent-mobile/SKILL.md` |
 | `mcp` | serve the tools over MCP on stdio (see MCP server) |
 
 Global flags: `--json` (raw JSON envelope instead of text), `--app <id>` (app selector for
@@ -129,6 +129,12 @@ remembered default. A different device cannot take over while another holds the 
 
 ```sh
 claude mcp add agent-mobile -- agent-mobile mcp --device "iPhone 16"
+```
+
+opencode takes a `local` server in `~/.config/opencode/opencode.json`:
+
+```json
+{ "mcp": { "agent-mobile": { "type": "local", "command": ["agent-mobile", "mcp"], "environment": { "AGENT_MOBILE_HEADED": "1" } } } }
 ```
 
 Other clients accept a generic `mcpServers` block:
@@ -151,7 +157,7 @@ requests remain JSON-RPC errors.
 
 What an agent must know:
 
-- Refs die after every action. On `STALE_REF`, run `snapshot` again and use the new refs.
+- Refs die after every action. On `STALE_REF`, use the newest tree, or run `snapshot` again.
 - The first call while a driver boots returns "driver is starting; call again" within about 45 s.
   The boot continues in the background, so call again.
 - A call that times out may already have run. `snapshot` before you repeat the action.
@@ -165,6 +171,21 @@ npx @modelcontextprotocol/inspector@2.11.0 --cli agent-mobile mcp --method tools
 
 The Inspector does not pass your shell environment to the server. Give each variable the server needs with `-e`, for example `-e ANDROID_HOME="$ANDROID_HOME"`.
 
+## Agent skill
+
+`skills/agent-mobile/SKILL.md` is the guide an agent reads before it drives a device: the start
+steps, the rules for refs, and what to do for each error. `agent-mobile skills` prints the same
+file, and its command list is generated from the registry. Install it where your agent finds
+skills, for example:
+
+```sh
+mkdir -p ~/.agents/skills/agent-mobile
+agent-mobile skills > ~/.agents/skills/agent-mobile/SKILL.md
+```
+
+opencode and Claude Code also read `~/.config/opencode/skills/` and `~/.claude/skills/`.
+Run the command again after you update agent-mobile.
+
 ## Environment
 
 | Variable | Effect |
@@ -176,6 +197,7 @@ The Inspector does not pass your shell environment to the server. Give each vari
 | `ANDROID_HOME` / `ANDROID_SDK_ROOT` | SDK location, in that order; then the platform default, then PATH |
 | `AGENT_MOBILE_BOOT_BUDGET_SECS` | lazy-boot deadline in seconds (default 240); raise it past 600 before the first Android boot, which can run a cold Gradle build |
 | `AGENT_MOBILE_REPO_ROOT` | checkout root that holds `drivers/android`; needed only outside a checkout |
+| `AGENT_MOBILE_HEADED` | set to `1` to show the device window when agent-mobile boots a device: the Simulator window on iOS, the emulator window on Android. An emulator that already runs without a window keeps running that way |
 | `AGENT_MOBILE_MCP_CALL_SECS` | time limit for one MCP tool call (default and maximum: 45 s) |
 | `TEST_RUNNER_AGENT_MOBILE_PORT` / `_TOKEN` / `_BIND` | iOS driver-side env, set through xcodebuild's `TEST_RUNNER_` prefix (see `drivers/ios/am.sh`) |
 
@@ -361,6 +383,7 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
 ## Layout
 
 - `src/`, `crates/core/` — the CLI and the shared core (contract, wire client, state, process).
+- `skills/agent-mobile/SKILL.md` — the agent guide that `agent-mobile skills` prints.
 - `crates/android/` — the Android host adapter: ADB discovery/boot/install/provision/forward,
   the loopback HTTP bridge, and `AndroidAdapter`/`AndroidSession`.
 - `drivers/android/` — the Android driver: a Kotlin `AccessibilityService` serving the same

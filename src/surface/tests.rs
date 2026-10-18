@@ -199,3 +199,30 @@ fn only_driver_verbs_start_a_session() {
         assert!(find(name).is_some_and(|v| !v.drives()), "{name}");
     }
 }
+
+#[test]
+fn skill_command_list_matches_the_registry() {
+    let skill = crate::cmd::skills::SKILL;
+    let block = skill
+        .split_once(super::usage::START)
+        .and_then(|(_, rest)| rest.split_once(super::usage::END))
+        .map(|(block, _)| block);
+    let expected = super::usage::command_list();
+    assert_eq!(
+        block,
+        Some(expected.as_str()),
+        "replace the block between the commands markers in skills/agent-mobile/SKILL.md with:\n{expected}"
+    );
+}
+
+#[test]
+fn mcp_descriptions_are_sentences_without_cli_syntax() {
+    for tool in tools()["tools"].as_array().into_iter().flatten() {
+        let text = tool["description"].as_str().unwrap_or_default();
+        assert!(text.ends_with('.'), "{text}");
+        assert!(
+            !text.contains("--"),
+            "CLI flag in an MCP description: {text}"
+        );
+    }
+}

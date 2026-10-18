@@ -157,7 +157,8 @@ fn boot_completed(adb: &Adb, serial: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Boot `name` headless, or reuse it when an emulator already reports
+/// Boot `name` (headless unless [`agent_mobile_core::process::HEADED_ENV`]
+/// is set), or reuse it when an emulator already reports
 /// it. Bounded by `budget`; offline/unauthorized states surface remedies.
 /// The flag is checked before the probes and again immediately before
 /// spawn, so a pre-cancelled call never issues `-avd`; once an emulator
@@ -202,19 +203,12 @@ pub(crate) fn boot_avd_until(
         if cancelled.load(Ordering::Relaxed) {
             return Err(cancel_err());
         }
-        pid = spawn_detached(
-            emulator,
-            &[
-                "-avd",
-                name,
-                "-no-window",
-                "-no-audio",
-                "-no-boot-anim",
-                "-gpu",
-                "swiftshader_indirect",
-            ],
-            log,
-        )?;
+        let mut args = vec!["-avd", name];
+        if !agent_mobile_core::process::headed() {
+            args.push("-no-window");
+        }
+        args.extend(["-no-audio", "-no-boot-anim", "-gpu", "swiftshader_indirect"]);
+        pid = spawn_detached(emulator, &args, log)?;
     }
     let serial = await_avd_ready(adb, name, deadline, first, cancelled)?;
     Ok(BootedAvd {

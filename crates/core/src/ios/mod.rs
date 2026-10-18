@@ -8,6 +8,7 @@ mod runner;
 
 pub use runner::{
     DriverSource, boot_simulator, driver_addr, driver_source, driver_url, serve_command,
+    show_simulator,
 };
 
 use std::process::Command;

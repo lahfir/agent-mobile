@@ -38,6 +38,15 @@ fn budget_from(raw: Option<&str>) -> Duration {
         .map_or(BOOT_BUDGET_DEFAULT, Duration::from_secs)
 }
 
+/// Env var that shows the device window when agent-mobile boots a device.
+pub const HEADED_ENV: &str = "AGENT_MOBILE_HEADED";
+
+/// Whether [`HEADED_ENV`] is set to a non-empty value other than `0`.
+#[must_use]
+pub fn headed() -> bool {
+    std::env::var(HEADED_ENV).is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
 /// Poll interval for boot waits in `serve` and lazy start.
 pub const BOOT_POLL: Duration = Duration::from_millis(500);
 
