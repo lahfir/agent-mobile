@@ -6,7 +6,8 @@
 git config core.hooksPath .githooks
 ```
 
-The hook runs the same gates as CI before every commit that touches Rust.
+The hook runs the source rules, `cargo fmt`, `cargo clippy`, and `cargo test` before every commit
+that touches Rust. CI also runs the script tests and `cargo deny`.
 
 ## Rust rules
 
@@ -29,7 +30,7 @@ All of these fail the build. They are the Rust equivalent of an "anti-slop" rule
 ## Deterministic gates
 
 ```
-python3 scripts/check_rust_comments_test.py   # comment-rule self-tests
+python3 -m unittest discover -s scripts -p '*_test.py'   # all script self-tests, as CI
 scripts/check-rust-source.sh                  # file size + test hygiene
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings

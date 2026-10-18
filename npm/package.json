@@ -1,7 +1,7 @@
 {
   "name": "agent-mobile",
   "version": "0.1.0",
-  "description": "Drive iOS apps through a snapshot -> act loop",
+  "description": "Drive iOS and Android apps through a snapshot -> act loop",
   "license": "Apache-2.0",
   "author": "Lahfir",
   "os": ["darwin"],
@@ -25,6 +25,8 @@
     "xctest",
     "agent",
     "automation",
-    "simulator"
+    "simulator",
+    "android",
+    "mcp"
   ]
 }
