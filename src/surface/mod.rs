@@ -5,6 +5,7 @@
 pub mod cli;
 pub mod kind;
 pub mod mcp;
+pub mod usage;
 mod verbs;
 
 use std::time::Duration;

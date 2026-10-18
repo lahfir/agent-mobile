@@ -14,14 +14,14 @@ so any tunnel can forward it. Sibling of agent-browser (web) and agent-desktop (
   bridge with one owned `adb forward`, and exact owned-resource cleanup. A headless
   Ubuntu emulator job gates the rail; the local live gate passed, and Experiment 10
   created a real Clock alarm.
-- P3 shipped: the MCP server (`agent-mobile mcp`, 18 tools), three-read settle on both drivers,
+- P3 shipped: the MCP server (`agent-mobile mcp`, 19 tools), three-read settle on both drivers,
   iOS system alerts in snapshots, `scroll_until_visible`, and the agent-task benchmark over MCP.
   Experiment 11 ran (results in PR #8). The physical-iPhone loopback bind is deferred.
 - Probe evidence stands (Experiments 1–10, in the local experiment record): agent-driven Calendar
   events on the iOS 26 simulator and on a physical iPhone 14 Pro over Wi-Fi, plus the Android
   17 emulator alarm. Experiment 10's physical Android leg is explicitly not run because no
   authorized phone was available; its manual procedure remains in the experiment record.
-- Not built (later phases): P4 release (npm and cargo publish, MCP Registry listing), the iOS
+- Not built (later phases): P4 package publication (npm and cargo publishing, MCP Registry listing), the iOS
   in-app SDK, end-to-end encryption on the LAN hop.
 
 ## Install
@@ -69,7 +69,7 @@ saves the session under `~/.agent-mobile/`, and runs the verb. The first call ca
 minute; progress prints to stderr.
 
 ```
-agent-mobile devices                    # rows: name, udid, platform, key, id, kind, os, state, serving
+agent-mobile devices                    # rows: key, name, platform, kind, os, state, serving
 agent-mobile snapshot                   # lazy-boots, prints the accessibility tree
 agent-mobile launch com.apple.mobilecal # iOS bundle id — Android takes a package name
 agent-mobile tap @1abc:e7               # act on a ref from the last snapshot
@@ -94,7 +94,7 @@ devices share a name the CLI refuses to guess — pick by key.
 
 | Command | What it does |
 |---|---|
-| `devices` | list iOS simulators/phones and Android AVD/USB/wireless targets |
+| `devices [--platform <platform>] [--kind <kind>] [--state <state>]` | list iOS simulators/phones and Android AVD/USB/wireless targets; filters combine with AND |
 | `serve <device>` | start a driver in the foreground; prints the session token once |
 | `status` | active app, device, os, current snapshot id |
 | `snapshot` | mint refs and print the accessibility tree |
@@ -109,6 +109,7 @@ devices share a name the CLI refuses to guess — pick by key.
 | `launch <app_id>` | cold-start or restart an app (iOS bundle id / Android package); app data is kept |
 | `screenshot [path]` | PNG to a file, or base64 to stdout |
 | `stop` | terminate the active app; the driver stays up |
+| `release` | stop the running driver session and owned resources; the device stays up |
 | `skills` | print the one-page agent guide |
 | `mcp` | serve the tools over MCP on stdio (see MCP server) |
 
@@ -120,8 +121,11 @@ remembered for later calls).
 
 ## MCP server
 
-`agent-mobile mcp` is a stdio MCP server (newline-delimited JSON-RPC). One server process drives one
-device: the one fixed by `--device`, or else the remembered default.
+`agent-mobile mcp` is a stdio MCP server (newline-delimited JSON-RPC). Its tools and argument
+definitions come from the same registry as the CLI. One server process owns one active serve at a
+time; each tool that talks to a device accepts optional `device` to select its target for that call without changing the
+remembered default. A different device cannot take over while another holds the single serve; call
+`release` first.
 
 ```sh
 claude mcp add agent-mobile -- agent-mobile mcp --device "iPhone 16"
@@ -133,9 +137,17 @@ Other clients accept a generic `mcpServers` block:
 { "mcpServers": { "agent-mobile": { "command": "agent-mobile", "args": ["mcp", "--device", "iPhone 16"] } } }
 ```
 
-Tools (18): `devices`, `status`, `snapshot`, `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`,
-`hold`, `back`, `twofinger`, `center`, `launch`, `screenshot`, `stop`, `skills`, `scroll_until_visible`.
-Tools take the CLI's argument shapes. `screenshot` takes no arguments and returns an image.
+Tools (19): `devices`, `status`, `snapshot`, `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`,
+`hold`, `back`, `twofinger`, `center`, `launch`, `screenshot`, `stop`, `release`, `skills`,
+`scroll_until_visible`. `mcp` and `serve` are CLI commands, not tools. `launch` takes `app_id` (an
+iOS bundle id or Android package). `tap`, `doubletap`, and `hold` take a `target` object shaped as
+`{"ref": "@snapshot:e1"}` or `{"x": 12, "y": 34}`. `screenshot` takes no arguments and returns an image.
+
+Data replies include `structuredContent` governed by output schemas for device-list, status,
+snapshot/action, and stop (`terminate`) replies. Their text content keeps the framed compact listing; snapshot metadata
+is structured separately so the listing is not duplicated as JSON. Argument faults return an
+`isError` tool result naming the field, problem, and fix. Unknown tools and malformed protocol
+requests remain JSON-RPC errors.
 
 What an agent must know:
 

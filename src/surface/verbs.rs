@@ -96,6 +96,7 @@ pub const VERBS: &[Verb] = &[
     },
     read(
         Verb {
+            guide: "Filters combine with AND. Rows begin with a stable `key`, followed by name, platform, kind, OS, state, and serving status.",
             args: &[
                 flag(arg(
                     "platform",
@@ -129,6 +130,7 @@ pub const VERBS: &[Verb] = &[
             "Device name, id, or stable key from `agent-mobile devices`",
             Kind::Text(1024),
         )],
+        guide: "Accepts a name, raw id, or collision-free `platform:id` key (`ios:<udid>`, `android:avd:<name>`, `android:<serial>`). `--app` launches the app after the driver binds. Prints the URL and device; the token is shown only in a terminal and otherwise stored under `~/.agent-mobile/tokens/<device>`.",
         globals: &[Global::App],
         reply: ReplyKind::Text,
         ..verb(
@@ -148,7 +150,7 @@ pub const VERBS: &[Verb] = &[
     ),
     read(
         Verb {
-            guide: "--app selects the target: iOS targets the bundle; Android only validates the foreground package, so use launch to change apps.",
+            guide: "`--app` selects the target: iOS targets the bundle; Android only validates the foreground package, so use launch to change apps.",
             ..verb(
                 "snapshot",
                 "Capture the accessibility tree and mint refs",
@@ -160,7 +162,7 @@ pub const VERBS: &[Verb] = &[
     ),
     Verb {
         args: &[TARGET],
-        guide: "Tap a node's center (x + w/2, y + h/2); at=x,y in the listing is its top-left origin.",
+        guide: "Tap a node's center (x + w/2, y + h/2); `at=x,y` in the listing is its top-left origin.",
         ..verb(
             "tap",
             "Tap a ref, or an x y point from the app frame's top-left",
@@ -173,7 +175,7 @@ pub const VERBS: &[Verb] = &[
             "Text to append; a leading ref-shaped word on the CLI selects the field",
             Kind::RefThenText,
         )],
-        guide: "With a ref the driver writes that field's value directly; otherwise keystrokes go to the focused field. A newline requests IME Return when the field exposes it (Android). On the CLI, text starting with `-` needs `--` first.",
+        guide: "With a ref the driver writes that field's value directly; otherwise keystrokes go to the focused field (the field may not keep focus). A newline requests IME Return when the field exposes it (Android), otherwise it is appended literally. On the CLI, text starting with `-` needs `--` first.",
         ..verb(
             "type",
             "Append text to a ref or the focused field",
@@ -208,7 +210,7 @@ pub const VERBS: &[Verb] = &[
             )),
         ],
         globals: SELECTING,
-        guide: "Stops after 15 swipes, 40 s, or when the list stops moving; returns the snapshot that shows the node.",
+        guide: "Matches the exact node name. Direction defaults to up. Stops after 15 swipes, 40 s, or when the list stops moving; returns the snapshot that shows the node.",
         ..verb(
             "scroll_until_visible",
             "Swipe until an exact node name appears in the snapshot",
@@ -250,6 +252,7 @@ pub const VERBS: &[Verb] = &[
                 },
             )),
         ],
+        guide: "Above 1 zooms out and below 1 zooms in. Near-1 or non-positive scales are rejected; non-finite scale or velocity is invalid.",
         ..verb("pinch", "Pinch-zoom on a ref", wire("pinch"))
     },
     Verb {
@@ -265,7 +268,7 @@ pub const VERBS: &[Verb] = &[
                 },
             )),
         ],
-        guide: "Native context menus surface in the returned snapshot.",
+        guide: "The duration is 0 < d <= 10 seconds, default 1.0. Context menus appear in the returned snapshot; web long-press is unproven.",
         ..verb(
             "hold",
             "Press a ref or point for a duration; surfaces context menus",
@@ -289,7 +292,7 @@ pub const VERBS: &[Verb] = &[
             "Which sheet to open",
             Kind::Enum(&["notification"]),
         )],
-        guide: "Earlier refs die. Take a snapshot to return to your app; on Android, back out first.",
+        guide: "Earlier refs die. Take a snapshot to return to your app (iOS also accepts `--app`). On Android, back out of the shade first; `snapshot --app` fails while System UI holds the foreground.",
         ..verb(
             "center",
             "Open notifications from the system UI session",
@@ -302,7 +305,7 @@ pub const VERBS: &[Verb] = &[
             "iOS bundle id or Android package, e.g. com.apple.mobilecal",
             Kind::AppId,
         )],
-        guide: "Keeps app data but loses transient state.",
+        guide: "Keeps app data but loses transient state. On Android, terminate refuses the driver, System UI, and the current launcher.",
         ..verb(
             "launch",
             "Cold-start or restart an app",
@@ -319,6 +322,7 @@ pub const VERBS: &[Verb] = &[
                 "PNG file to write; omitted prints base64",
                 Kind::Path,
             ))],
+            guide: "Writes a PNG to the supplied path or prints base64 to stdout. With `--json`, base64 stays in the envelope; a path cannot be combined with `--json`.",
             ..verb(
                 "screenshot",
                 "Capture a PNG screenshot",
@@ -332,7 +336,7 @@ pub const VERBS: &[Verb] = &[
         hints: STOP,
         reply: ReplyKind::Terminate,
         globals: SESSION,
-        guide: "The driver stays up. Take a snapshot to verify.",
+        guide: "The driver stays up and no tree comes back; take a snapshot to verify.",
         ..verb("stop", "Terminate the active app", wire("terminate"))
     },
     Verb {
@@ -344,6 +348,7 @@ pub const VERBS: &[Verb] = &[
             open_world: false,
         },
         reply: ReplyKind::Text,
+        guide: "If no session is running, reports that and succeeds.",
         ..verb(
             "release",
             "Stop the running driver session; the device stays up",
