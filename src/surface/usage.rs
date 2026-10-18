@@ -23,11 +23,11 @@ pub fn guide_sections() -> String {
     };
     let wrapped_row = |usage: &str, description: &str| {
         let continued = "                                 ";
-        let long_usage = usage.chars().count() > 31;
+        let long_usage = usage.chars().count() > 30;
         let prefix = if long_usage {
             continued.to_owned()
         } else {
-            format!("  {usage:<31}  ")
+            format!("  {usage:<31}")
         };
         let mut result = if long_usage {
             format!("  {usage}\n")
