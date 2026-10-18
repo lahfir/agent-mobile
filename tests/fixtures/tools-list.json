@@ -57,35 +57,23 @@
                   "type": "string"
                 },
                 "os": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string"
                 },
                 "platform": {
                   "type": "string"
                 },
                 "serving": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string"
                 },
                 "state": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
+                  "type": "string"
                 }
               },
               "required": [
                 "key",
                 "name",
                 "platform",
-                "kind",
-                "os",
-                "state",
-                "serving"
+                "kind"
               ],
               "type": "object"
             },

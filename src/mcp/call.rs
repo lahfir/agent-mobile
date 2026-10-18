@@ -59,6 +59,7 @@ fn render(call: &Call, reply: Reply) -> Result<Value, Failure> {
         Reply::Envelope(env) => envelope(call, env),
         Reply::Devices { rows, text } => {
             let mut result = frame::text(&frame::redact(text), false);
+            let rows: Vec<Value> = rows.into_iter().map(without_nulls).collect();
             result["structuredContent"] = frame::clean(json!({ "devices": rows }));
             Ok(result)
         }
@@ -89,14 +90,20 @@ fn envelope(call: &Call, mut env: Envelope) -> Result<Value, Failure> {
     let text = reply::text(env, None)?;
     let mut result = frame::text(&frame::redact(text), false);
     if surface::mcp::output_schema(call.verb.reply).is_some()
-        && let Some(mut structured) = structured
+        && let Some(structured) = structured
     {
-        if let Some(map) = structured.as_object_mut() {
-            map.retain(|_, v| !v.is_null());
-        }
-        result["structuredContent"] = frame::clean(structured);
+        result["structuredContent"] = frame::clean(without_nulls(structured));
     }
     Ok(result)
+}
+
+/// Drop null fields: an absent optional field is what the output schemas
+/// declare, and `["string", "null"]` unions port poorly across clients.
+fn without_nulls(mut value: Value) -> Value {
+    if let Some(map) = value.as_object_mut() {
+        map.retain(|_, v| !v.is_null());
+    }
+    value
 }
 
 /// Timeout recovery depends on whether the worker is booting or executing.

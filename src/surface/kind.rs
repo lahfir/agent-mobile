@@ -8,8 +8,7 @@ use serde_json::{Map, Value, json};
 use super::{Arg, Args, Kind, Verb};
 
 const TEXT_LIMIT: usize = 65_536;
-const REF_FIX: &str =
-    "use a ref from the most recent snapshot or action reply, like @<snapshot>:e<N>";
+const REF_FIX: &str = "use a ref from the most recent snapshot or action reply, like @snapshot:e1";
 
 /// A field-named argument fault: what was wrong and how to fix it.
 #[derive(Debug, PartialEq, Eq)]
@@ -217,7 +216,7 @@ fn number(name: &str, value: &Value, gt: Option<f64>, max: Option<f64>) -> Resul
 }
 
 fn point(name: &str, value: &Value) -> Result<Value, Fault> {
-    const FIX: &str = "give {\"ref\": \"@<snapshot>:e<N>\"} or {\"x\": <number>, \"y\": <number>}";
+    const FIX: &str = "give {\"ref\": \"@snapshot:e1\"} or {\"x\": 12, \"y\": 34}";
     let Some(object) = value.as_object() else {
         return Err(Fault::new(name, "must be an object", FIX));
     };

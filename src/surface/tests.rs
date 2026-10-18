@@ -151,8 +151,10 @@ fn devices_output_schema_matches_json_rows() -> Result<(), std::io::Error> {
         assert!(output.get(name).is_some(), "missing {name}");
     }
     for name in ["os", "state", "serving"] {
-        assert_eq!(output[name]["type"], json!(["string", "null"]));
+        assert_eq!(output[name]["type"], "string");
     }
+    let required = &schema["outputSchema"]["properties"]["devices"]["items"]["required"];
+    assert_eq!(required, &json!(["key", "name", "platform", "kind"]));
     assert!(output.get("id").is_none());
     assert!(output.get("udid").is_none());
     Ok(())

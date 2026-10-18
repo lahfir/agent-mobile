@@ -278,23 +278,38 @@ fn canonical_with_alias(
         }
         return Ok(key);
     }
-    if let Some((key, entry)) = state.devices.iter().find(|(_, entry)| {
-        agent_mobile_core::process::process_matches(entry.pid, entry.process_started_at.as_deref())
-    }) {
-        return Err(Failure::local(
-            format!(
-                "{key} is being served (pid {}); one driver runs at a time",
-                entry.pid
-            ),
-            "run `agent-mobile release` (MCP: call the `release` tool), then retry",
-        ));
-    }
+    served_elsewhere(&state, None)?;
     let device = discover(raw)?;
     let canonical = device.key();
     if remember {
         store.remember_device_selection(&canonical, device.name())?;
     }
     Ok(canonical)
+}
+
+/// One driver runs at a time (R9): a live serve for any device other than
+/// `except` fails at once, naming it and pointing to `release`.
+fn served_elsewhere(
+    state: &agent_mobile_core::state::State,
+    except: Option<&str>,
+) -> Result<(), Failure> {
+    let live = state.devices.iter().find(|(key, entry)| {
+        except != Some(key.as_str())
+            && agent_mobile_core::process::process_matches(
+                entry.pid,
+                entry.process_started_at.as_deref(),
+            )
+    });
+    match live {
+        Some((key, entry)) => Err(Failure::local(
+            format!(
+                "{key} is being served (pid {}); one driver runs at a time",
+                entry.pid
+            ),
+            "run `agent-mobile release` (MCP: call the `release` tool), then retry",
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Create the `~/.agent-mobile` state dir before locks or logs touch it.
