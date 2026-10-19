@@ -44,6 +44,8 @@ before the package's `bin` moved to `npm/bin/agent-mobile` points at a deleted `
 
 `scripts/bench_install.py <tarball>` installs a packed `npm/` with npm, pnpm, bun, and yarn
 into temp prefixes and reports start-up times and install gates as JSON.
+`scripts/bench_agent_loop.py` drives the MCP server through a fixed Settings session on the
+iOS simulator and the Android emulator and reports warm-up, per-action wall time, and gates as JSON.
 
 For the CLI alone (also the headless Android host on Linux x86_64), build it and use
 `target/release/agent-mobile`:
@@ -198,9 +200,9 @@ Run the command again after you update agent-mobile.
 | `AGENT_MOBILE_URL` | driver URL override for the call (e.g. a tunnel or a phone on the LAN) |
 | `AGENT_MOBILE_TOKEN` | bearer token paired with the URL override |
 | `AGENT_MOBILE_DRIVER_DIR` | iOS driver source override: an Xcode project dir or a `runner/` dir holding `*.xctestrun` |
-| `AGENT_MOBILE_ANDROID_APK` | Android driver APK override; otherwise the checked-in Gradle wrapper builds the debug APK |
+| `AGENT_MOBILE_ANDROID_APK` | Android driver APK override; otherwise the APK the npm package ships in `android/`, else the checked-in Gradle wrapper builds the debug APK |
 | `ANDROID_HOME` / `ANDROID_SDK_ROOT` | SDK location, in that order; then the platform default, then PATH |
-| `AGENT_MOBILE_BOOT_BUDGET_SECS` | lazy-boot deadline in seconds (default 240); raise it past 600 before the first Android boot, which can run a cold Gradle build |
+| `AGENT_MOBILE_BOOT_BUDGET_SECS` | lazy-boot deadline in seconds (default 240); raise it past 600 before the first Android boot from a checkout, which can run a cold Gradle build |
 | `AGENT_MOBILE_REPO_ROOT` | checkout root that holds `drivers/android`; needed only outside a checkout |
 | `AGENT_MOBILE_HEADED` | set to `1` to show the device window when agent-mobile boots a device: the Simulator window on iOS, the emulator window on Android. An emulator that already runs without a window keeps running that way |
 | `AGENT_MOBILE_MCP_CALL_SECS` | time limit for one MCP tool call (default and maximum: 45 s) |
@@ -227,10 +229,11 @@ conflict.
 ## Android bring-up and cleanup
 
 The first Android `serve` boots the AVD if shutdown (or reuses a running/physical target),
-uses `AGENT_MOBILE_ANDROID_APK` as supplied when set, otherwise invokes the checked-in Gradle
-wrapper — which incrementally validates source/build inputs and skips unchanged tasks even when
-a prior APK artifact exists — then installs with `-r`, enables `Agent Mobile Driver` in
-Settings > Accessibility
+uses `AGENT_MOBILE_ANDROID_APK` as supplied when set, otherwise the APK the npm package ships
+beside the binary (`android/agent-mobile-driver.apk`), and only from a checkout with neither
+invokes the checked-in Gradle wrapper. It installs with `-r` unless the device already holds
+the same APK (same MD5), since a reinstall restarts the driver and its accessibility bind;
+then enables `Agent Mobile Driver` in Settings > Accessibility
 (preserving every other enabled service), provisions a fresh bearer through the app's
 `ContentProvider`, creates one owned `adb forward`, and exposes a loopback bridge. It never
 installs SDK packages at session startup — run `scripts/setup-android-sdk.sh` first.
@@ -394,7 +397,7 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
 - `drivers/android/` — the Android driver: a Kotlin `AccessibilityService` serving the same
   protocol, a `ProvisionProvider` for token minting, and its Gradle project (`gradlew` wrapper).
 - `npm/` — the darwin-only package. Its `bin` is the bundled native binary itself (no JS shim,
-  no install script); `bin/` + `runner/` are produced by `scripts/sync-npm-version.sh`.
+  no install script); `bin/`, `runner/`, and `android/` are produced by `scripts/sync-npm-version.sh`.
 - `drivers/ios/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
   server (`Driver/AgentMobileServer.swift`); `Host/` is the minimal app the runner attaches to.
   `am.sh` is a curl helper and `tunnel-cloudflared.sh` is the reference tunnel adapter.

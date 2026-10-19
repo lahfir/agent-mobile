@@ -444,7 +444,8 @@ Releases run through release-please. Conventional Commit titles drive the versio
 changelog. The binary crate publishes to crates.io and npm wraps the prebuilt binary; `crates/core`
 stays `publish = false`. The npm package's `bin` is the native binary itself, with no JS shim and
 no install script, so every package manager runs it directly and none asks to approve a build
-script. `preferUnplugged` keeps Yarn Plug'n'Play from leaving it inside a zip archive.
+script. `preferUnplugged` keeps Yarn Plug'n'Play from leaving it inside a zip archive. The package also ships the iOS runner (`runner/`) and the Android driver APK (`android/`), so
+an installed CLI drives both platforms without a checkout, Xcode build, or Gradle run.
 
 The protocol version stays independent of the crate version. A breaking protocol change needs a
 `feat!:` title or a `BREAKING CHANGE:` footer, bumps the envelope version string, and ships the
