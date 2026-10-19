@@ -22,7 +22,8 @@ pub fn discover() -> Result<PlatformScan, Failure> {
 /// side is not probed and adds no notes.
 ///
 /// # Errors
-/// [`Failure::Local`] when every probed side fails.
+/// [`Failure::Local`] when every probed side fails; with a platform, that
+/// platform's own failure and remedy.
 pub fn discover_on(platform: Option<&str>) -> Result<PlatformScan, Failure> {
     let wants = |side: &str| platform.is_none_or(|only| only == side);
     std::thread::scope(|scope| {
@@ -47,6 +48,14 @@ pub fn discover_on(platform: Option<&str>) -> Result<PlatformScan, Failure> {
             },
             |probe| join_probe(probe, "android"),
         );
+        let only = match platform {
+            Some("ios") => ios.as_ref().err(),
+            Some("android") => android.as_ref().err(),
+            _ => None,
+        };
+        if let Some(failure) = only {
+            return Err(failure.clone());
+        }
         combine(ios, android)
     })
 }

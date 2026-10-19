@@ -45,7 +45,10 @@ exec "$AM_BENCH_REAL_NPM" "$@"
 
 
 def sh(cmd, env=None, cwd=None, timeout=300):
-    r = subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    try:
+        r = subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as e:
+        return 127, str(e)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -53,7 +56,8 @@ def real_links():
     """The real global `agent-mobile` links this run must never change."""
     env = {k: v for k, v in os.environ.items() if k != "npm_config_prefix"}
     prefix = sh(["npm", "prefix", "-g"], env=env)[1].strip()
-    yarn_bin = sh(["yarn", "global", "bin"], env=env)[1].strip().splitlines()
+    code, out = sh(["yarn", "global", "bin"], env=env)
+    yarn_bin = out.strip().splitlines() if code == 0 else []
     paths = [Path(prefix, "bin", PKG), Path(prefix, "lib", "node_modules", PKG),
              Path.home() / ".bun" / "bin" / PKG]
     if os.environ.get("PNPM_HOME"):

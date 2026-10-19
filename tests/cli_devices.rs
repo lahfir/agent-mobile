@@ -50,3 +50,24 @@ fn platform_filter_skips_the_other_platform() -> Result<(), Failure> {
     assert!(home.join("adb.log").exists(), "the fake SDK was not used");
     Ok(())
 }
+
+/// A platform filter whose only probe fails is an error with that
+/// platform's remedy, not an empty list.
+#[test]
+fn filtered_platform_failure_is_an_error() -> Result<(), Failure> {
+    let home = tmp_home("devices-no-sdk")?;
+    let empty = home.to_string_lossy();
+    let envs = [
+        ("ANDROID_HOME", &*empty),
+        ("ANDROID_SDK_ROOT", &*empty),
+        ("PATH", "/usr/bin:/bin"),
+    ];
+    let out = run(&["devices", "--platform", "android"], &home, &envs)?;
+    assert_ne!(
+        code(&out),
+        0,
+        "a missing SDK listed no devices and succeeded"
+    );
+    assert!(stderr(&out).contains("adb"), "{}", stderr(&out));
+    Ok(())
+}
