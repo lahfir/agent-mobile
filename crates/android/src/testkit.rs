@@ -29,6 +29,8 @@ pub(crate) struct FakeRunner {
     calls: Mutex<Vec<(PathBuf, Vec<String>)>>,
     timeouts: Mutex<Vec<Duration>>,
     replies: Mutex<VecDeque<CommandOutput>>,
+    keyed: Option<Mutex<Vec<(String, CommandOutput)>>>,
+    delay: Duration,
     bound_port: Mutex<Option<String>>,
 }
 
@@ -40,8 +42,43 @@ impl FakeRunner {
             calls: Mutex::new(Vec::new()),
             timeouts: Mutex::new(Vec::new()),
             replies: Mutex::new(replies.into()),
+            keyed: None,
+            delay: Duration::ZERO,
             bound_port: Mutex::new(None),
         })
+    }
+
+    /// Fake for concurrent callers: each reply goes to the first call whose
+    /// `program args` line contains its key, after `delay`, so call order
+    /// does not matter.
+    #[must_use]
+    pub(crate) fn keyed(replies: Vec<(&str, CommandOutput)>, delay: Duration) -> Arc<Self> {
+        let keyed = replies
+            .into_iter()
+            .map(|(k, r)| (k.to_owned(), r))
+            .collect();
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
+            replies: Mutex::new(VecDeque::new()),
+            keyed: Some(Mutex::new(keyed)),
+            delay,
+            bound_port: Mutex::new(None),
+        })
+    }
+
+    fn keyed_reply(
+        keyed: &Mutex<Vec<(String, CommandOutput)>>,
+        line: &str,
+    ) -> Result<CommandOutput, Failure> {
+        let mut keyed = keyed
+            .lock()
+            .map_err(|_| Failure::local("fake runner lock poisoned", "rerun the test"))?;
+        let i = keyed
+            .iter()
+            .position(|(key, _)| line.contains(key.as_str()))
+            .ok_or_else(|| Failure::local(format!("no keyed reply for `{line}`"), "add one"))?;
+        Ok(keyed.remove(i).1)
     }
 
     /// Every argv observed so far.
@@ -73,6 +110,10 @@ impl CommandRunner for FakeRunner {
         }
         if let Ok(mut timeouts) = self.timeouts.lock() {
             timeouts.push(timeout);
+        }
+        if let Some(keyed) = &self.keyed {
+            std::thread::sleep(self.delay);
+            return Self::keyed_reply(keyed, &format!("{} {}", program.display(), args.join(" ")));
         }
         if let Some(i) = args.iter().position(|a| *a == "--no-rebind")
             && let Some(tcp) = args.get(i + 1).and_then(|a| a.strip_prefix("tcp:"))

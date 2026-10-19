@@ -9,7 +9,7 @@ mod refusal;
 mod runtime;
 
 pub use android_ops::{cleanup_stale, sweep_pending_forwards};
-pub use discovery::discover;
+pub use discovery::{discover, discover_on};
 pub use refusal::refusal;
 pub use runtime::{PlatformRuntime, RuntimeExit};
 
