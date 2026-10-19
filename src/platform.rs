@@ -253,7 +253,14 @@ pub fn select(scan: &PlatformScan, query: &str) -> Result<PlatformDevice, Failur
 /// `ios:`-prefixed miss that carries that platform's discovery note,
 /// which surfaces the note and its toolchain remedy instead.
 pub fn resolve(query: &str) -> Result<PlatformDevice, Failure> {
-    let scan = discover()?;
+    let side = if query.starts_with("ios:") {
+        Some("ios")
+    } else if query.starts_with("android:") || query.starts_with("avd:") {
+        Some("android")
+    } else {
+        None
+    };
+    let scan = discover_on(side)?;
     resolve_from(&scan, query)
 }
 

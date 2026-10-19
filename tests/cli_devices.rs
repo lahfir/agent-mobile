@@ -71,3 +71,21 @@ fn filtered_platform_failure_is_an_error() -> Result<(), Failure> {
     assert!(stderr(&out).contains("adb"), "{}", stderr(&out));
     Ok(())
 }
+
+/// A platform-keyed `--device` resolves on that platform only.
+#[test]
+fn ios_device_key_never_probes_android() -> Result<(), Failure> {
+    let home = tmp_home("device-key-ios")?;
+    let sdk = fake_sdk(&home)?;
+    let sdk = sdk.to_string_lossy();
+    let envs = [("ANDROID_HOME", &*sdk), ("ANDROID_SDK_ROOT", &*sdk)];
+    let key = "ios:00000000-0000-0000-0000-000000000000";
+    let out = run(&["--device", key, "status"], &home, &envs)?;
+    assert_ne!(code(&out), 0, "an unknown device answered status");
+    assert!(
+        !home.join("adb.log").exists(),
+        "an iOS key ran adb: {}",
+        stderr(&out)
+    );
+    Ok(())
+}
