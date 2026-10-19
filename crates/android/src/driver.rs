@@ -217,22 +217,27 @@ fn installed_matches(adb: &Adb, serial: &str, apk: &str) -> bool {
     else {
         return false;
     };
-    let local = adb.tool(Path::new("/sbin/md5"), &["-q", apk]);
+    let (hasher, args) = if cfg!(target_os = "macos") {
+        ("/sbin/md5", ["-q", apk])
+    } else {
+        ("md5sum", ["--", apk])
+    };
+    let local = adb.tool(Path::new(hasher), &args);
     let remote = adb.remote_shell(serial, &["md5sum", remote_path]);
     match (local, remote) {
         (Ok(l), Ok(r)) if l.success && r.success => {
-            let sum = l.stdout.trim();
+            let sum = l.stdout.split_whitespace().next().unwrap_or("");
             sum.len() == 32 && r.stdout.split_whitespace().next() == Some(sum)
         }
         _ => false,
     }
 }
 
-/// Locate the debug APK: `AGENT_MOBILE_ANDROID_APK` is used as supplied when
-/// it names an existing file (an invalid explicit override fails); without
-/// an override the checked-in Gradle wrapper runs — it incrementally
-/// validates source/build inputs and skips unchanged tasks even when a
-/// prior artifact exists.
+/// Locate the debug APK: a supplied path (the `AGENT_MOBILE_ANDROID_APK`
+/// override, else the APK the npm package ships beside the binary) is used
+/// as given and must exist; without one the checked-in Gradle wrapper runs —
+/// it incrementally validates source/build inputs and skips unchanged tasks
+/// even when a prior artifact exists.
 ///
 /// # Errors
 /// [`Failure::Local`] when no APK can be produced; never installs SDK,

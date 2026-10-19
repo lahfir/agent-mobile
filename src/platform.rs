@@ -253,15 +253,19 @@ pub fn select(scan: &PlatformScan, query: &str) -> Result<PlatformDevice, Failur
 /// `ios:`-prefixed miss that carries that platform's discovery note,
 /// which surfaces the note and its toolchain remedy instead.
 pub fn resolve(query: &str) -> Result<PlatformDevice, Failure> {
-    let side = if query.starts_with("ios:") {
+    let scan = discover_on(key_side(query))?;
+    resolve_from(&scan, query)
+}
+
+/// The platform a stable key names: `ios:`, or `android:`/`avd:`.
+fn key_side(query: &str) -> Option<&'static str> {
+    if query.starts_with("ios:") {
         Some("ios")
     } else if query.starts_with("android:") || query.starts_with("avd:") {
         Some("android")
     } else {
         None
-    };
-    let scan = discover_on(side)?;
-    resolve_from(&scan, query)
+    }
 }
 
 /// Select inside an existing scan, rewriting an *unknown* stable-key miss
@@ -278,15 +282,13 @@ fn contextualize(scan: &PlatformScan, query: &str, err: Failure) -> Failure {
     if !err.message().contains("unknown device") {
         return err;
     }
-    let (prefix, remedy) = if query.starts_with("android:") || query.starts_with("avd:") {
-        (
+    let (prefix, remedy) = match key_side(query) {
+        Some("android") => (
             "android:",
             "run `scripts/setup-android-sdk.sh --check`, then retry",
-        )
-    } else if query.starts_with("ios:") {
-        ("ios:", "fix the Xcode toolchain, then retry")
-    } else {
-        return err;
+        ),
+        Some(_) => ("ios:", "fix the Xcode toolchain, then retry"),
+        None => return err,
     };
     scan.notes
         .iter()

@@ -51,11 +51,16 @@ ls npm/runner/*.xctestrun >/dev/null 2>&1 || { echo "no xctestrun staged in npm/
 echo "staged npm/runner ($(ls npm/runner/*.xctestrun | wc -l | tr -d ' ') xctestrun, $(du -sh npm/runner | cut -f1))"
 
 # 4. Android driver APK: the CLI uses bin/../android/ before any Gradle build.
-drivers/android/gradlew -p drivers/android :app:assembleDebug --no-daemon -q
+#    No Android SDK or JDK (an iOS-only checkout) stages no APK; the CLI then
+#    builds from the checkout, and a package to publish must not be packed.
 rm -rf npm/android
-mkdir -p npm/android
-cp drivers/android/app/build/outputs/apk/debug/app-debug.apk npm/android/agent-mobile-driver.apk
-echo "staged npm/android ($(du -sh npm/android | cut -f1))"
+if drivers/android/gradlew -p drivers/android :app:assembleDebug --no-daemon -q; then
+  mkdir -p npm/android
+  cp drivers/android/app/build/outputs/apk/debug/app-debug.apk npm/android/agent-mobile-driver.apk
+  echo "staged npm/android ($(du -sh npm/android | cut -f1))"
+else
+  echo "warning: Android APK not staged (gradle failed; see above); do not pack this for release" >&2
+fi
 
 # 5. A global link left from an older layout points at a file that no longer exists.
 if link=$(command -v agent-mobile) && [ ! -e "$(readlink -f "$link")" ]; then

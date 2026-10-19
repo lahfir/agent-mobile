@@ -89,3 +89,35 @@ fn ios_device_key_never_probes_android() -> Result<(), Failure> {
     );
     Ok(())
 }
+
+/// An `android:` or `avd:` key never runs the iOS toolchain.
+#[test]
+fn android_device_keys_never_probe_ios() -> Result<(), Failure> {
+    for key in ["android:avd:nope", "avd:nope"] {
+        let home = tmp_home("device-key-android")?;
+        let sdk = fake_sdk(&home)?;
+        let bin = home.join("fakebin");
+        std::fs::create_dir_all(&bin)?;
+        let xcrun = bin.join("xcrun");
+        let log = home.join("xcrun.log");
+        std::fs::write(
+            &xcrun,
+            format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", log.display()),
+        )?;
+        std::fs::set_permissions(&xcrun, std::fs::Permissions::from_mode(0o755))?;
+        let (sdk, path) = (
+            sdk.to_string_lossy(),
+            format!("{}:/usr/bin:/bin", bin.display()),
+        );
+        let envs = [
+            ("ANDROID_HOME", &*sdk),
+            ("ANDROID_SDK_ROOT", &*sdk),
+            ("PATH", path.as_str()),
+        ];
+        let out = run(&["--device", key, "status"], &home, &envs)?;
+        assert_ne!(code(&out), 0, "{key}: an unknown device answered status");
+        assert!(!log.exists(), "{key} ran xcrun: {}", stderr(&out));
+        assert!(home.join("adb.log").exists(), "{key} never probed Android");
+    }
+    Ok(())
+}

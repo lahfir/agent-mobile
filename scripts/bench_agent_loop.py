@@ -54,8 +54,10 @@ class Mcp:
         self.p = subprocess.Popen([binary, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1)
         self.n = 0
-        self.rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
-                                "clientInfo": {"name": "bench", "version": "0"}})
+        init = self.rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                       "clientInfo": {"name": "bench", "version": "0"}})
+        if "result" not in init:
+            raise SystemExit(f"MCP initialize failed: {init.get('error')}")
         self.p.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
 
     def rpc(self, method, params):
@@ -70,8 +72,11 @@ class Mcp:
         start = time.perf_counter()
         msg = self.rpc("tools/call", {"name": name, "arguments": args})
         ms = (time.perf_counter() - start) * 1000
-        res = msg.get("result") or {}
-        text = "".join(c.get("text", "") for c in res.get("content", []))
+        res = msg.get("result")
+        if not isinstance(res, dict) or not isinstance(res.get("content"), list):
+            # A JSON-RPC error or a malformed result is a failed step, never a pass.
+            return ms, {"isError": True}, f"protocol error: {msg.get('error') or msg}"
+        text = "".join(c.get("text", "") for c in res["content"])
         return ms, res, text
 
     def close(self):
@@ -115,7 +120,8 @@ def run_platform(mcp, platform, smoke):
         if expect and f'"{expect}' not in text:
             # The reply came before the screen changed; an agent snapshots again.
             out["late"] += 1
-            _, res, text = mcp.call("snapshot", {"device": dev})
+            extra, res, text = mcp.call("snapshot", {"device": dev})
+            out["steps"][-1]["ms"] += round(extra)
         if expect and f'"{expect}' not in text:
             out["found"], out["fail"] = False, f"{expect!r} missing after {tool}"
             break
