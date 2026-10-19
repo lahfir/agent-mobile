@@ -174,12 +174,23 @@ pub(crate) fn list_avds(adb: &Adb, emulator: &Path) -> Result<Vec<String>, Failu
 }
 
 /// Full scan: `devices -l` rows plus configured AVDs, correlating running
-/// emulators to their AVD names.
+/// emulators to their AVD names. The two listings run concurrently.
 ///
 /// # Errors
 /// [`Failure::Local`] when `adb devices` itself cannot run.
 pub(crate) fn discover(adb: &Adb, emulator: &Path) -> Result<AndroidScan, Failure> {
-    let out = adb.unscoped(&["devices", "-l"])?;
+    let (out, avds) = std::thread::scope(|scope| {
+        let avds = scope.spawn(|| list_avds(adb, emulator));
+        let out = adb.unscoped(&["devices", "-l"]);
+        let avds = avds.join().unwrap_or_else(|_| {
+            Err(Failure::local(
+                "emulator -list-avds panicked",
+                "report a bug",
+            ))
+        });
+        (out, avds)
+    });
+    let out = out?;
     if !out.success {
         return Err(Failure::local(
             format!("adb devices failed: {}", diagnostic_output(&out)),
@@ -187,40 +198,50 @@ pub(crate) fn discover(adb: &Adb, emulator: &Path) -> Result<AndroidScan, Failur
         ));
     }
     let mut notes = Vec::new();
-    let configured = match list_avds(adb, emulator) {
+    let configured = match avds {
         Ok(avds) => avds,
         Err(e) => {
             notes.push(format!("emulator -list-avds: {}", e.message()));
             Vec::new()
         }
     };
-    let mut targets = Vec::new();
-    let mut running_avds = HashSet::new();
-    for row in parse_devices(&out.stdout) {
-        targets.push(target_for(adb, &row, &configured, &mut running_avds));
-    }
+    let rows = parse_devices(&out.stdout);
+    let mut targets: Vec<AndroidTarget> = std::thread::scope(|scope| {
+        let probes: Vec<_> = rows
+            .iter()
+            .map(|row| scope.spawn(|| probed_target(adb, row, &configured)))
+            .collect();
+        probes
+            .into_iter()
+            .zip(&rows)
+            .map(|(probe, row)| probe.join().unwrap_or_else(|_| target_for(adb, row, &[])))
+            .collect()
+    });
+    let running: HashSet<String> = targets.iter().filter_map(|t| t.avd.clone()).collect();
     for name in configured {
-        if !running_avds.contains(&name) {
+        if !running.contains(&name) {
             targets.push(cold_avd(&name));
-        }
-    }
-    for t in &mut targets {
-        if t.state == AndroidDeviceState::Device
-            && let Some(serial) = t.serial.as_deref()
-        {
-            t.os = probe_os(adb, serial);
         }
     }
     Ok(AndroidScan { targets, notes })
 }
 
+/// One row's target with its OS version; the AVD-name and OS probes are
+/// independent `adb` round trips, so they run at the same time.
+fn probed_target(adb: &Adb, row: &DeviceRow, configured: &[String]) -> AndroidTarget {
+    std::thread::scope(|scope| {
+        let os = (state_of(&row.state) == AndroidDeviceState::Device)
+            .then(|| scope.spawn(|| probe_os(adb, &row.serial)));
+        let target = target_for(adb, row, configured);
+        AndroidTarget {
+            os: os.and_then(|probe| probe.join().ok().flatten()),
+            ..target
+        }
+    })
+}
+
 /// Turn one device row into a target, correlating running emulators.
-fn target_for(
-    adb: &Adb,
-    row: &DeviceRow,
-    configured: &[String],
-    running: &mut HashSet<String>,
-) -> AndroidTarget {
+fn target_for(adb: &Adb, row: &DeviceRow, configured: &[String]) -> AndroidTarget {
     let kind = kind_of(&row.serial);
     let state = state_of(&row.state);
     let mut id = row.serial.clone();
@@ -237,7 +258,6 @@ fn target_for(
     {
         id = format!("avd:{found}");
         name.clone_from(&found);
-        running.insert(found.clone());
         avd = Some(found);
     }
     AndroidTarget {

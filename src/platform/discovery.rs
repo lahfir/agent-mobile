@@ -15,12 +15,47 @@ use super::{PlatformDevice, PlatformScan};
 /// # Errors
 /// [`Failure::Local`] when both sides fail.
 pub fn discover() -> Result<PlatformScan, Failure> {
+    discover_on(None)
+}
+
+/// [`discover`] limited to one platform (`"ios"` or `"android"`); the other
+/// side is not probed and adds no notes.
+///
+/// # Errors
+/// [`Failure::Local`] when every probed side fails; with a platform, that
+/// platform's own failure and remedy.
+pub fn discover_on(platform: Option<&str>) -> Result<PlatformScan, Failure> {
+    let wants = |side: &str| platform.is_none_or(|only| only == side);
     std::thread::scope(|scope| {
-        let ios_probe = scope.spawn(ios::list_devices);
-        let android_probe =
-            scope.spawn(|| AndroidAdapter::from_environment().and_then(|a| a.discover()));
-        let ios = join_probe(ios_probe, "ios");
-        let android = join_probe(android_probe, "android");
+        let ios_probe = wants("ios").then(|| scope.spawn(ios::list_devices));
+        let android_probe = wants("android")
+            .then(|| scope.spawn(|| AndroidAdapter::from_environment().and_then(|a| a.discover())));
+        let ios = ios_probe.map_or_else(
+            || {
+                Ok(ios::DeviceScan {
+                    devices: Vec::new(),
+                    notes: Vec::new(),
+                })
+            },
+            |probe| join_probe(probe, "ios"),
+        );
+        let android = android_probe.map_or_else(
+            || {
+                Ok(agent_mobile_android::AndroidScan {
+                    targets: Vec::new(),
+                    notes: Vec::new(),
+                })
+            },
+            |probe| join_probe(probe, "android"),
+        );
+        let only = match platform {
+            Some("ios") => ios.as_ref().err(),
+            Some("android") => android.as_ref().err(),
+            _ => None,
+        };
+        if let Some(failure) = only {
+            return Err(failure.clone());
+        }
         combine(ios, android)
     })
 }

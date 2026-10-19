@@ -4,14 +4,14 @@
 use agent_mobile_core::error::Failure;
 use agent_mobile_core::state::{State, StateStore};
 
-use crate::platform::{PlatformDevice, discover};
+use crate::platform::{PlatformDevice, discover_on};
 
 /// The `devices` verb: pure discovery, never touches the wire.
 ///
 /// # Errors
 /// Discovery failures on both platforms.
 pub fn exec(call: &super::Call) -> Result<super::Reply, Failure> {
-    let scan = discover()?;
+    let scan = discover_on(call.str("platform"))?;
     for note in &scan.notes {
         eprintln!("note: {note}");
     }

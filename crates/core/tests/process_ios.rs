@@ -150,6 +150,33 @@ fn driver_source_finds_the_checkout_layout() -> TestResult {
     Ok(())
 }
 
+/// A package manager runs the binary through a symlink outside the package
+/// (a global bin dir, or pnpm's `node_modules/<pkg>` link). The bundled
+/// runner beside the real binary must still win over the checkout fallback.
+#[test]
+fn driver_source_follows_a_symlinked_exe_to_the_bundled_runner() -> TestResult {
+    let root = tmp("symlinked-exe")?;
+    let pkg = root.join("lib/node_modules/agent-mobile");
+    std::fs::create_dir_all(pkg.join("bin"))?;
+    std::fs::create_dir_all(pkg.join("runner"))?;
+    std::fs::write(pkg.join("bin/agent-mobile"), "")?;
+    std::fs::write(pkg.join("runner/AgentMobileDriver.xctestrun"), "<plist/>")?;
+    std::fs::create_dir_all(root.join("bin"))?;
+    std::os::unix::fs::symlink(pkg.join("bin/agent-mobile"), root.join("bin/agent-mobile"))?;
+    match ios::driver_source_from(None, Some(root.join("bin/agent-mobile")))? {
+        DriverSource::Prebuilt { dir, .. } => {
+            assert_eq!(dir.canonicalize()?, pkg.join("runner").canonicalize()?);
+        }
+        DriverSource::Project(dir) => {
+            return Err(Failure::local(
+                format!("fell back to the checkout at {}", dir.display()),
+                "canonicalize the executable path",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn prebuilt_runner_uses_test_without_building() -> TestResult {
     let dir = tmp("prebuilt")?;

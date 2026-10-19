@@ -28,7 +28,7 @@ so any tunnel can forward it. Sibling of agent-browser (web) and agent-desktop (
 
 agent-mobile is not published to a package registry yet (P4). Install it from a checkout. The
 pins in `rust-toolchain.toml` and `Cargo.toml` apply. On macOS, this builds the release CLI and
-the prebuilt iOS simulator runner into `npm/`, then puts `agent-mobile` on your PATH (Node >= 18):
+the prebuilt iOS simulator runner into `npm/`, then puts `agent-mobile` on your PATH:
 
 ```
 scripts/sync-npm-version.sh
@@ -36,9 +36,14 @@ scripts/sync-npm-version.sh
 agent-mobile --version
 ```
 
-The linked command runs the staged copy in `npm/bin/`, which does not rebuild itself. Run
+The linked command is the staged native binary in `npm/bin/`, which does not rebuild itself. Run
 `scripts/sync-npm-version.sh` again after every `git pull`. If a command that the docs list is
-missing (for example `unrecognized subcommand 'mcp'`), the staged copy is old.
+missing (for example `unrecognized subcommand 'mcp'`), the staged copy is old. A link made
+before the package's `bin` moved to `npm/bin/agent-mobile` points at a deleted `run.js`; run
+`(cd npm && npm link)` once more, and the sync script warns when it finds such a link.
+
+`scripts/bench_install.py <tarball>` installs a packed `npm/` with npm, pnpm, bun, and yarn
+into temp prefixes and reports start-up times and install gates as JSON.
 
 For the CLI alone (also the headless Android host on Linux x86_64), build it and use
 `target/release/agent-mobile`:
@@ -388,8 +393,8 @@ lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
   the loopback HTTP bridge, and `AndroidAdapter`/`AndroidSession`.
 - `drivers/android/` — the Android driver: a Kotlin `AccessibilityService` serving the same
   protocol, a `ProvisionProvider` for token minting, and its Gradle project (`gradlew` wrapper).
-- `npm/` — the darwin-only package: `run.js` shim, `install.js` postinstall verifier, bundled
-  `bin/` + `runner/` produced by `scripts/sync-npm-version.sh`.
+- `npm/` — the darwin-only package. Its `bin` is the bundled native binary itself (no JS shim,
+  no install script); `bin/` + `runner/` are produced by `scripts/sync-npm-version.sh`.
 - `drivers/ios/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
   server (`Driver/AgentMobileServer.swift`); `Host/` is the minimal app the runner attaches to.
   `am.sh` is a curl helper and `tunnel-cloudflared.sh` is the reference tunnel adapter.

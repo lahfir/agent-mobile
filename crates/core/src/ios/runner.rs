@@ -82,11 +82,24 @@ pub enum DriverSource {
 /// Returns [`Failure::Local`] when neither a project nor a bundled runner
 /// exists at any probed path.
 pub fn driver_source() -> Result<DriverSource, Failure> {
-    let mut probes: Vec<PathBuf> = std::env::var_os("AGENT_MOBILE_DRIVER_DIR")
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-    if let Ok(exe) = std::env::current_exe()
+    driver_source_from(
+        std::env::var_os("AGENT_MOBILE_DRIVER_DIR").map(PathBuf::from),
+        std::env::current_exe().ok(),
+    )
+}
+
+/// [`driver_source`] with its inputs passed in. The executable path is
+/// canonicalized first: a package manager runs the binary through a symlink
+/// or shim, and `current_exe` on macOS returns that path, not the package's.
+///
+/// # Errors
+/// Returns [`Failure::Local`] when no probed path holds a driver source.
+pub fn driver_source_from(
+    env_dir: Option<PathBuf>,
+    exe: Option<PathBuf>,
+) -> Result<DriverSource, Failure> {
+    let mut probes: Vec<PathBuf> = env_dir.into_iter().collect();
+    if let Some(exe) = exe.map(|e| std::fs::canonicalize(&e).unwrap_or(e))
         && let Some(dir) = exe.parent()
     {
         probes.push(dir.join("../runner"));

@@ -1,6 +1,7 @@
 //! Discovery parsing and AVD correlation.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use agent_mobile_core::error::Failure;
 
@@ -8,20 +9,33 @@ use super::{AndroidDeviceKind, AndroidDeviceState, avd_name, discover, parse_dev
 use crate::adb::Adb;
 use crate::testkit::{FakeRunner, output};
 
-/// Every `getprop` probe must be serial-scoped, in row order.
+/// Every live row gets one serial-scoped `getprop` probe.
 fn assert_os_probes_scoped(calls: &[Vec<String>]) {
-    let probes: Vec<_> = calls
+    let mut probed: Vec<&str> = calls
         .iter()
         .filter(|c| c.iter().any(|a| a.contains("'getprop'")))
+        .map(|c| c[1].as_str())
         .collect();
-    assert_eq!(probes.len(), 3);
-    for (probe, serial) in probes.iter().zip([
-        "emulator-5554".to_owned(),
-        "0a1b2c3d4e".to_owned(),
-        "192.168.1.9:5555".to_owned(),
-    ]) {
-        assert_eq!(probe[1], serial, "getprop must scope the row's serial");
-    }
+    probed.sort_unstable();
+    assert_eq!(probed, ["0a1b2c3d4e", "192.168.1.9:5555", "emulator-5554"]);
+}
+
+/// Replies for the LIST fixture, keyed so concurrent probes match.
+fn list_replies() -> Vec<(&'static str, crate::adb::CommandOutput)> {
+    vec![
+        ("devices -l", output(true, LIST, "")),
+        (
+            "-list-avds",
+            output(true, "agent-mobile-api37\nPixel_8_api37\n", ""),
+        ),
+        (
+            "emulator-5554 emu avd name",
+            output(true, "agent-mobile-api37\nOK\n", ""),
+        ),
+        ("emulator-5554 shell", output(true, "16\n", "")),
+        ("0a1b2c3d4e shell", output(true, "15\n", "")),
+        ("192.168.1.9:5555 shell", output(false, "", "boom")),
+    ]
 }
 
 const LIST: &str = "List of devices attached\n\
@@ -45,14 +59,7 @@ fn parses_every_state_and_kind() {
 
 #[test]
 fn discover_classifies_and_correlates() -> Result<(), Failure> {
-    let runner = FakeRunner::scripted(vec![
-        output(true, LIST, ""),
-        output(true, "agent-mobile-api37\nPixel_8_api37\n", ""),
-        output(true, "agent-mobile-api37\nOK\n", ""),
-        output(true, "16\n", ""),
-        output(true, "15\n", ""),
-        output(false, "", "boom"),
-    ]);
+    let runner = FakeRunner::keyed(list_replies(), Duration::ZERO);
     let adb = Adb::with_runner(PathBuf::from("adb"), runner.clone());
     let scan = discover(&adb, PathBuf::from("emulator").as_path())?;
     assert_eq!(scan.targets.len(), 6);
@@ -80,11 +87,7 @@ fn assert_target_shapes(targets: &[super::AndroidTarget]) {
 
 #[test]
 fn shutdown_avd_listed_once_not_duplicated() -> Result<(), Failure> {
-    let runner = FakeRunner::scripted(vec![
-        output(true, LIST, ""),
-        output(true, "agent-mobile-api37\nPixel_8_api37\n", ""),
-        output(true, "agent-mobile-api37\nOK\n", ""),
-    ]);
+    let runner = FakeRunner::keyed(list_replies(), Duration::ZERO);
     let adb = Adb::with_runner(PathBuf::from("adb"), runner);
     let scan = discover(&adb, PathBuf::from("emulator").as_path())?;
     let avd_rows: Vec<_> = scan
@@ -101,11 +104,15 @@ fn shutdown_avd_listed_once_not_duplicated() -> Result<(), Failure> {
 
 #[test]
 fn uncorrelated_emulator_keeps_serial_id() -> Result<(), Failure> {
-    let runner = FakeRunner::scripted(vec![
-        output(true, "emulator-5554\tdevice\n", ""),
-        output(true, "agent-mobile-api37\n", ""),
-        output(true, "other-avd\nOK\n", ""),
-    ]);
+    let runner = FakeRunner::keyed(
+        vec![
+            ("devices -l", output(true, "emulator-5554\tdevice\n", "")),
+            ("-list-avds", output(true, "agent-mobile-api37\n", "")),
+            ("emu avd name", output(true, "other-avd\nOK\n", "")),
+            ("shell", output(true, "17\n", "")),
+        ],
+        Duration::ZERO,
+    );
     let adb = Adb::with_runner(PathBuf::from("adb"), runner);
     let scan = discover(&adb, PathBuf::from("emulator").as_path())?;
     let emu = &scan.targets[0];
@@ -114,6 +121,31 @@ fn uncorrelated_emulator_keeps_serial_id() -> Result<(), Failure> {
         scan.targets
             .iter()
             .any(|t| t.id == "avd:agent-mobile-api37")
+    );
+    Ok(())
+}
+
+/// The listings run together, and so do a row's AVD-name and OS probes:
+/// four 150 ms calls finish in two rounds, not four.
+#[test]
+fn discover_overlaps_independent_adb_calls() -> Result<(), Failure> {
+    let runner = FakeRunner::keyed(
+        vec![
+            ("devices -l", output(true, "emulator-5554\tdevice\n", "")),
+            ("-list-avds", output(true, "agent-mobile-api37\n", "")),
+            ("emu avd name", output(true, "agent-mobile-api37\nOK\n", "")),
+            ("shell", output(true, "17\n", "")),
+        ],
+        Duration::from_millis(150),
+    );
+    let adb = Adb::with_runner(PathBuf::from("adb"), runner);
+    let started = Instant::now();
+    let scan = discover(&adb, PathBuf::from("emulator").as_path())?;
+    assert_eq!(scan.targets[0].os.as_deref(), Some("17"));
+    assert!(
+        started.elapsed() < Duration::from_millis(450),
+        "{:?}",
+        started.elapsed()
     );
     Ok(())
 }

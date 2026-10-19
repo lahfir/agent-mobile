@@ -442,8 +442,9 @@ Workflow hygiene: `permissions: {}` at the top, per-job `contents: read`, SHA-pi
 
 Releases run through release-please. Conventional Commit titles drive the version bump and the
 changelog. The binary crate publishes to crates.io and npm wraps the prebuilt binary; `crates/core`
-stays `publish = false`. The npm package points `bin` at a JS shim, runs a `postinstall` script,
-and sets `engines.node >=18`.
+stays `publish = false`. The npm package's `bin` is the native binary itself, with no JS shim and
+no install script, so every package manager runs it directly and none asks to approve a build
+script. `preferUnplugged` keeps Yarn Plug'n'Play from leaving it inside a zip archive.
 
 The protocol version stays independent of the crate version. A breaking protocol change needs a
 `feat!:` title or a `BREAKING CHANGE:` footer, bumps the envelope version string, and ships the
