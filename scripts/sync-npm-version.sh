@@ -3,6 +3,7 @@
 # tarball ships (KTD14):
 #   npm/bin/agent-mobile   <- cargo build --release
 #   npm/runner/            <- xcodebuild build-for-testing products
+#   npm/android/           <- gradle assembleDebug driver APK
 # Run from the repo root before `npm pack`; the artifacts are gitignored
 # build output, not committed source. The package's bin is the native binary
 # itself, so the tarball needs no install script; this script is where the
@@ -49,7 +50,14 @@ cp -R drivers/ios/dd/Build/Products/Debug-iphonesimulator npm/runner/
 ls npm/runner/*.xctestrun >/dev/null 2>&1 || { echo "no xctestrun staged in npm/runner" >&2; exit 1; }
 echo "staged npm/runner ($(ls npm/runner/*.xctestrun | wc -l | tr -d ' ') xctestrun, $(du -sh npm/runner | cut -f1))"
 
-# 4. A global link left from an older layout points at a file that no longer exists.
+# 4. Android driver APK: the CLI uses bin/../android/ before any Gradle build.
+drivers/android/gradlew -p drivers/android :app:assembleDebug --no-daemon -q
+rm -rf npm/android
+mkdir -p npm/android
+cp drivers/android/app/build/outputs/apk/debug/app-debug.apk npm/android/agent-mobile-driver.apk
+echo "staged npm/android ($(du -sh npm/android | cut -f1))"
+
+# 5. A global link left from an older layout points at a file that no longer exists.
 if link=$(command -v agent-mobile) && [ ! -e "$(readlink -f "$link")" ]; then
   echo "warning: $link points at a missing file; run \`npm link\` in npm/ to relink it" >&2
 fi

@@ -41,6 +41,14 @@ fn apk_override() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The APK the npm package ships beside the binary (`bin/../android/`), so
+/// an installed CLI needs no checkout and runs no Gradle per session.
+pub(crate) fn bundled_apk(exe: Option<PathBuf>) -> Option<PathBuf> {
+    let exe = exe.map(|e| std::fs::canonicalize(&e).unwrap_or(e))?;
+    let apk = exe.parent()?.join("../android/agent-mobile-driver.apk");
+    apk.is_file().then_some(apk)
+}
+
 impl AndroidAdapter {
     /// Resolve the SDK tools (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, platform
     /// default, PATH) and the driver checkout; validates `adb` answers.
@@ -52,7 +60,8 @@ impl AndroidAdapter {
         let tools = resolve_sdk(|k| std::env::var(k).ok(), Path::is_file);
         let adb = Adb::real(tools.adb.clone());
         probe_tool(&adb)?;
-        Ok(Self::for_test(adb, tools.emulator, apk_override()))
+        let apk = apk_override().or_else(|| bundled_apk(std::env::current_exe().ok()));
+        Ok(Self::for_test(adb, tools.emulator, apk))
     }
 
     /// Injectable constructor for tests.

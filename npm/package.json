@@ -12,7 +12,8 @@
   },
   "files": [
     "bin/agent-mobile",
-    "runner/"
+    "runner/",
+    "android/"
   ],
   "preferUnplugged": true,
   "keywords": [

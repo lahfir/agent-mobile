@@ -159,3 +159,22 @@ fn session_reports_running_state() -> Result<(), Failure> {
     session.close()?;
     Ok(())
 }
+
+#[test]
+fn bundled_apk_follows_a_symlinked_exe_to_the_package() -> Result<(), Failure> {
+    let root = std::env::temp_dir().join(format!("am-bundled-apk-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("pkg/bin"))?;
+    std::fs::create_dir_all(root.join("pkg/android"))?;
+    std::fs::create_dir_all(root.join("global/bin"))?;
+    std::fs::write(root.join("pkg/bin/agent-mobile"), b"")?;
+    let link = root.join("global/bin/agent-mobile");
+    std::os::unix::fs::symlink(root.join("pkg/bin/agent-mobile"), &link)?;
+    assert_eq!(crate::session::bundled_apk(Some(link.clone())), None);
+    std::fs::write(root.join("pkg/android/agent-mobile-driver.apk"), b"apk")?;
+    let got = crate::session::bundled_apk(Some(link)).map(|p| std::fs::canonicalize(p).ok());
+    let want = std::fs::canonicalize(root.join("pkg/android/agent-mobile-driver.apk")).ok();
+    assert_eq!(got, Some(want));
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
