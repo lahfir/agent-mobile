@@ -4,22 +4,16 @@
   "description": "Drive iOS and Android apps through a snapshot -> act loop",
   "license": "Apache-2.0",
   "author": "Lahfir",
-  "os": ["darwin"],
-  "engines": {
-    "node": ">=18"
-  },
+  "os": [
+    "darwin"
+  ],
   "bin": {
-    "agent-mobile": "run.js"
+    "agent-mobile": "bin/agent-mobile"
   },
   "files": [
-    "run.js",
-    "install.js",
     "bin/agent-mobile",
     "runner/"
   ],
-  "scripts": {
-    "postinstall": "node install.js"
-  },
   "keywords": [
     "ios",
     "xctest",
