@@ -7,7 +7,9 @@ Prints one JSON object: per-platform medians plus gates. Drives the
 devices only through agent-mobile.
 
     python3 scripts/bench_agent_loop.py [--bin npm/bin/agent-mobile]
-        [--platform ios|android] [--smoke]
+        [--platform ios|android] [--smoke] [--ios-key KEY] [--android-key KEY]
+
+Keys come from `agent-mobile devices`; the defaults are the run's own devices.
 """
 import argparse
 import json
@@ -133,7 +135,10 @@ def main():
     ap.add_argument("--bin", default="npm/bin/agent-mobile")
     ap.add_argument("--platform", choices=["ios", "android"], action="append")
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--ios-key", default=KEYS["ios"])
+    ap.add_argument("--android-key", default=KEYS["android"])
     a = ap.parse_args()
+    KEYS.update(ios=a.ios_key, android=a.android_key)
     mcp, result, worst = Mcp(a.bin), {}, {}
     ok, found, stale, late = True, True, 0, 0
     for platform in a.platform or ["ios", "android"]:
