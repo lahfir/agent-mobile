@@ -1,7 +1,7 @@
 import XCTest
 
 // Private XCTest input paths: pointer events through XCPointerEventPath +
-// XCSynthesizedEventRecord (the WebDriverAgent path, docs/research/11) and
+// XCSynthesizedEventRecord (docs/research/11) and
 // value writes through the accessibility client. Every selector's type
 // encoding is checked before its IMP is cast, so a renamed or reshaped API
 // throws DRIVER_ERROR instead of crashing the runner.
