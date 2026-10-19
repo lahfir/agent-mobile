@@ -52,8 +52,8 @@ enum Runtime {
     }
 
     // XCTest waits for app idle inside every interaction — unbounded, ~1 s in
-    // practice. WebDriverAgent disables it by swizzling the private wait on
-    // XCUIApplicationProcess (docs/research/11 §1.2); our own bounded settle
+    // practice. Swizzling the private wait on XCUIApplicationProcess
+    // disables it (docs/research/11 §1.2); our own bounded settle
     // check replaces it. Guarded: a renamed method degrades to the stock
     // wait instead of a crash.
     static func killQuiescenceWait() {

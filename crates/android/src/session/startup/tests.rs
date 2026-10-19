@@ -31,6 +31,7 @@ fn cancel_after_forward_removes_exact_row_without_probe() -> Result<(), Failure>
     let flag = std::sync::Arc::new(AtomicBool::new(false));
     let mut replies = vec![
         output(true, "device\n", ""),
+        output(true, "", ""),
         output(true, "Success\n", ""),
         output(true, SVC, ""),
         output(true, "1", ""),

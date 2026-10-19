@@ -2,7 +2,7 @@ import XCTest
 import UIKit
 
 // The driver's entry point: one never-ending XCUITest method that hosts the
-// HTTP server (WebDriverAgent shape). XCUITest is the hidden mechanism; the
+// HTTP server. XCUITest is the hidden mechanism; the
 // CLI only sees HTTP.
 final class AgentMobileServer: XCTestCase {
     static let drv = Driver()
