@@ -37,15 +37,21 @@ extension Driver {
                 "reads": reads, "settle_ms": settleMs, "text": lines.joined(separator: "\n"), "tree": tree]
     }
 
+    // The settle hash covers the set of distinct nodes. Snapshots of a still
+    // screen differ run to run only in sibling order or in one more or one
+    // fewer copy of an identical node, and a visible change always alters
+    // some node's type, label, identifier, value, or frame.
     func hash(_ s: XCUIElementSnapshot) -> Int {
-        var h = Hasher()
+        var nodes = Set<Int>()
         func walk(_ n: XCUIElementSnapshot) {
+            var h = Hasher()
             h.combine(n.elementType.rawValue); h.combine(Driver.qi(n.frame.minX)); h.combine(Driver.qi(n.frame.minY))
             h.combine(Driver.qi(n.frame.width)); h.combine(Driver.qi(n.frame.height)); h.combine(Driver.snapString(n, "label")); h.combine(Driver.snapString(n, "identifier"))
             h.combine(n.value.map { String(describing: $0) } ?? "")
+            nodes.insert(h.finalize())
             n.children.forEach(walk)
         }
-        walk(s); return h.finalize()
+        walk(s); return nodes.hashValue
     }
 
     func build(_ n: XCUIElementSnapshot, pdepth: Int, lines: inout [String]) -> [String: Any] {
