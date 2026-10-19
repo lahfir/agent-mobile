@@ -119,6 +119,7 @@ pub(super) fn adapter_with_body(
 ) -> Result<(AndroidAdapter, std::sync::Arc<FakeRunner>), Failure> {
     let mut replies = vec![
         output(true, "device\n", ""),
+        output(true, "", ""),
         output(true, "Success\n", ""),
         output(true, SVC, ""),
         output(true, "1", ""),

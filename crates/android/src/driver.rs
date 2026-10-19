@@ -181,6 +181,9 @@ fn extract_port(output: &str) -> Option<u16> {
 /// [`Failure::Local`] on any non-success result or `Failure [...]` text.
 pub(crate) fn install(adb: &Adb, serial: &str, apk: &Path) -> Result<(), Failure> {
     let path = apk.to_string_lossy().into_owned();
+    if installed_matches(adb, serial, &path) {
+        return Ok(());
+    }
     let out = adb.scoped_with(serial, &["install", "-r", &path], INSTALL_TIMEOUT)?;
     let text = format!("{} {}", out.stdout, out.stderr);
     if out.success && !text.contains("Failure") && !text.contains("Error") {
@@ -197,6 +200,32 @@ pub(crate) fn install(adb: &Adb, serial: &str, apk: &Path) -> Result<(), Failure
         format!("install failed on {serial}: {detail}"),
         "check the APK and device state, then retry",
     ))
+}
+
+/// Does the device already hold this exact APK? `install -r` restarts the
+/// driver process, which drops its accessibility binding and costs a rebind
+/// wait, so a byte-identical APK is not installed again. Any doubt installs.
+fn installed_matches(adb: &Adb, serial: &str, apk: &str) -> bool {
+    let Ok(listed) = adb.remote_shell(serial, &["pm", "path", PACKAGE]) else {
+        return false;
+    };
+    let Some(remote_path) = listed
+        .stdout
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("package:"))
+        .find(|p| p.ends_with("/base.apk"))
+    else {
+        return false;
+    };
+    let local = adb.tool(Path::new("/sbin/md5"), &["-q", apk]);
+    let remote = adb.remote_shell(serial, &["md5sum", remote_path]);
+    match (local, remote) {
+        (Ok(l), Ok(r)) if l.success && r.success => {
+            let sum = l.stdout.trim();
+            sum.len() == 32 && r.stdout.split_whitespace().next() == Some(sum)
+        }
+        _ => false,
+    }
 }
 
 /// Locate the debug APK: `AGENT_MOBILE_ANDROID_APK` is used as supplied when

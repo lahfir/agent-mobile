@@ -123,11 +123,14 @@ fn enable_writes_only_the_diff() -> Result<(), Failure> {
 
 #[test]
 fn install_incompatible_gives_explicit_remedy() {
-    let (adb, runner) = adb_with(vec![output(
-        false,
-        "adb: failed",
-        "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]",
-    )]);
+    let (adb, runner) = adb_with(vec![
+        output(true, "", ""),
+        output(
+            false,
+            "adb: failed",
+            "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]",
+        ),
+    ]);
     let err = install(
         &adb,
         "emulator-5554",
@@ -136,8 +139,8 @@ fn install_incompatible_gives_explicit_remedy() {
     let text = format!("{:?}", err.err());
     assert!(text.contains(&format!("adb -s emulator-5554 uninstall {PACKAGE}")));
     let calls = runner.calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0][2], "install");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1][2], "install");
 }
 
 #[test]
@@ -368,3 +371,22 @@ fn emulator_enabled_needs_no_qemu_probe() -> Result<(), Failure> {
 }
 
 mod corrections;
+
+#[test]
+fn install_skips_an_identical_apk_and_reinstalls_a_changed_one() -> Result<(), Failure> {
+    let sum = "0123456789abcdef0123456789abcdef";
+    let listed = "package:/data/app/~~x/com.lahfir.agentmobile.driver-y/base.apk\n";
+    for (remote, installs) in [(sum, false), ("ffffffffffffffffffffffffffffffff", true)] {
+        let mut replies = vec![output(true, listed, ""), output(true, sum, "")];
+        replies.push(output(true, &format!("{remote}  /data/app/base.apk\n"), ""));
+        replies.push(output(true, "Success\n", ""));
+        let (adb, runner) = adb_with(replies);
+        install(&adb, "s1", std::path::Path::new("/tmp/driver.apk"))?;
+        let ran = runner
+            .calls()
+            .iter()
+            .any(|c| c.contains(&"install".to_owned()));
+        assert_eq!(ran, installs, "remote {remote}");
+    }
+    Ok(())
+}
