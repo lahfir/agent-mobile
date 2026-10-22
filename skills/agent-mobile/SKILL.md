@@ -48,7 +48,7 @@ Each error names the cause and a `next:` step. Follow the step.
 
 ## Show the device window
 
-Devices boot without a window. To watch, the user sets `AGENT_MOBILE_HEADED=1` in the MCP server's environment, or in front of a CLI command, before the device boots. An Android emulator that already runs without a window keeps running that way.
+Devices boot without a window. To watch, the user sets `AGENT_MOBILE_HEADED=1`. Set it in the MCP server's environment, or as a prefix of a CLI command, before the device boots. An Android emulator that already runs without a window keeps running that way.
 
 ## Commands
 
