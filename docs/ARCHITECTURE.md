@@ -91,7 +91,7 @@ A settled snapshot has this shape: `data: {app, snapshot_id, ref_count, complete
 | `terminate` | none | `terminated: app id` | The only verb that does not return a settled snapshot. See the Android notes below. |
 | `snapshot` | `app?` | settled snapshot | iOS targets the named app. Android only checks that the package is already in front; `launch` changes apps. |
 | `tap` | `ref`, or `x` and `y` | settled snapshot | `x,y` are points from the top-left corner of the app frame, not a 0 to 1 fraction. |
-| `type` | `text`, `ref?` | settled snapshot | Taps `ref` first if given. Otherwise types into the current focus. |
+| `type` | `text`, `ref?` | settled snapshot | With `ref`, adds the text to that field's value (iOS taps the field and types if it cannot set the value). Without `ref`, types into the current focus. |
 | `swipe` | `direction`, `ref?` | settled snapshot | `direction` is up, down, left, or right, else `BAD_REQUEST`. Swipes `ref` if given, else the whole app. |
 | `home` | none | settled snapshot | Goes to SpringBoard on iOS, or the active launcher on Android. |
 | `doubletap` | `ref`, or `x` and `y` | settled snapshot | Target required. Same shapes as `tap`. |

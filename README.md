@@ -14,7 +14,7 @@ agent-mobile tap @1abc:e7                   # taps a ref from that tree, prints 
 1. Install from a checkout (macOS):
 
    ```sh
-   scripts/sync-npm-version.sh   # builds the CLI, the iOS simulator runner, and the Android APK into npm/
+   scripts/sync-npm-version.sh   # builds the CLI, the iOS runner, and (if Gradle works) the Android APK into npm/
    (cd npm && npm link)          # puts agent-mobile on your PATH
    agent-mobile --version
    ```
@@ -97,8 +97,7 @@ opencode and Claude Code also read `~/.config/opencode/skills/` and `~/.claude/s
 - The first call while a driver boots returns "driver is starting; call again" within about 45 s. The boot continues, so call again.
 - A call that times out can still run on the device. Call `snapshot` before you repeat it.
 - `AGENT_MOBILE_MCP_CALL_SECS` lowers the time limit per call. The default and the maximum is 45 s.
-- Data replies have `structuredContent` that matches an output schema: device list, status, snapshot or action, and stop (`terminate`).
-- The text content keeps the framed compact tree. The snapshot metadata is in `structuredContent`, so the tree is not sent twice.
+- Data replies also carry `structuredContent` ([reply format](docs/ARCHITECTURE.md#replies)).
 - A bad argument returns a tool result with `isError` that names the field, the problem, and the fix.
 - An unknown tool or a malformed request returns a JSON-RPC error.
 
@@ -122,7 +121,7 @@ agent-mobile screenshot shot.png        # PNG file; no path prints base64
 agent-mobile skills                     # print the agent guide
 ```
 
-**Any command starts a driver** if none runs. It finds devices on both platforms, picks one, saves the session in `~/.agent-mobile/`, and runs the command. The first call can take a minute. Progress goes to stderr.
+**A device command starts a driver** if none runs (`devices`, `skills`, `release`, and `mcp` do not). It finds devices on both platforms, picks one, saves the session in `~/.agent-mobile/`, and runs the command. The first call can take a minute. Progress goes to stderr.
 
 The default device is the first match in this order:
 
@@ -190,7 +189,7 @@ app=... device="..." os=... snapshot=@... refs=N settled=true complete=true read
 ```
 
 - `settled=false`: the screen did not stop moving within the time limit. The tree is still usable.
-- `complete=false`: the tree is cut short. `--max-depth` cut it, or the driver hit a traversal limit, a cycle, or a child it could not read. Ref actions on this tree fail, because the driver cannot prove that a ref is unique.
+- `complete=false`: the tree is cut short. If `--max-depth` cut it, the refs you see still work. If the driver hit a traversal limit, a cycle, or a child it could not read, ref actions fail, because the driver cannot prove that a ref is unique.
 
 Each error names the next step:
 
