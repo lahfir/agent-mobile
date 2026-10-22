@@ -123,7 +123,7 @@ pub fn simulators() -> Result<Vec<Device>, Failure> {
     Ok(devices)
 }
 
-/// Paired physical devices only; best-effort — `devicectl` failures return
+/// Paired physical devices only, skipping the simulators Xcode 27 also lists; best-effort — `devicectl` failures return
 /// an empty list so callers that just want a device never see them.
 #[must_use]
 pub fn physical() -> Vec<Device> {
@@ -165,6 +165,12 @@ pub fn physical_probe() -> Result<Vec<Device>, String> {
         .and_then(Value::as_array)
         .map_or(&[][..], Vec::as_slice)
     {
+        if d.pointer("/hardwareProperties/reality")
+            .and_then(Value::as_str)
+            == Some("simulated")
+        {
+            continue;
+        }
         let props = d.get("deviceProperties").unwrap_or(&Value::Null);
         let conn = d.get("connectionProperties").unwrap_or(&Value::Null);
         let name = field(props, "name").trim().to_owned();
