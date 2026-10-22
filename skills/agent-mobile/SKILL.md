@@ -42,13 +42,13 @@ Each error names the cause and a `next:` step. Follow the step.
 | `UNAUTHORIZED` | Do not retry. Tell the user the driver token is wrong. |
 
 - `settled=false`: the screen was still moving. The tree is usable.
-- `complete=false`: the tree is cut short, so ref actions fail. Take a snapshot without `max_depth`.
+- `complete=false`: the tree is cut short. After `max_depth`, the refs you see still work; take a snapshot without it to see deeper nodes. Otherwise ref actions fail; take a new snapshot.
 - A prompt on the phone (USB debugging, Android "Restricted settings", the "Agent Mobile Driver" accessibility switch) needs a person. Stop and tell the user.
 - A boot that times out writes its log to `~/.agent-mobile/driver-*.log`. Read it and report the cause.
 
 ## Show the device window
 
-Devices boot without a window. To watch, the user sets `AGENT_MOBILE_HEADED=1` in the MCP server's environment, or in front of a CLI command, before the device boots. An Android emulator that already runs without a window keeps running that way.
+Devices boot without a window. To watch, the user sets `AGENT_MOBILE_HEADED=1`. Set it in the MCP server's environment, or as a prefix of a CLI command, before the device boots. An Android emulator that already runs without a window keeps running that way.
 
 ## Commands
 

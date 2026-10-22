@@ -1,410 +1,307 @@
 # agent-mobile
 
-Let an AI agent drive iOS and Android apps through a snapshot -> act loop, on the
-simulator/emulator and on physical devices, with the driver exposed on a plain local HTTP port
-so any tunnel can forward it. Sibling of agent-browser (web) and agent-desktop (native desktop).
+Let an AI agent use iOS and Android apps. The agent reads the screen as an accessibility tree, acts on a ref, and gets the next tree back.
 
-## Status (2026-10-18)
+Works on the iOS simulator, the Android emulator, and real phones.
 
-- P1 iOS shipped: the Rust CLI (`agent-mobile`) wraps the proven XCUITest driver. Any verb
-  lazy-starts a driver when none runs; `serve` runs one in the foreground.
-- P2 Android shipped: a Kotlin
-  `AccessibilityService` driver plus a Rust ADB adapter serve the same protocol —
-  cross-platform `devices`/`serve`, normalized `platform:id` device keys, a loopback
-  bridge with one owned `adb forward`, and exact owned-resource cleanup. A headless
-  Ubuntu emulator job gates the rail; the local live gate passed, and Experiment 10
-  created a real Clock alarm.
-- P3 shipped: the MCP server (`agent-mobile mcp`, 19 tools), three-read settle on both drivers,
-  iOS system alerts in snapshots, `scroll_until_visible`, and the agent-task benchmark over MCP.
-  Experiment 11 ran (results in PR #8). The physical-iPhone loopback bind is deferred.
-- Probe evidence stands (Experiments 1–10, in the local experiment record): agent-driven Calendar
-  events on the iOS 26 simulator and on a physical iPhone 14 Pro over Wi-Fi, plus the Android
-  17 emulator alarm. Experiment 10's physical Android leg is explicitly not run because no
-  authorized phone was available; its manual procedure remains in the experiment record.
-- Not built (later phases): P4 package publication (npm and cargo publishing, MCP Registry listing), the iOS
-  in-app SDK, end-to-end encryption on the LAN hop.
+```
+agent-mobile launch com.apple.Preferences   # boots a simulator, opens Settings, prints the tree
+agent-mobile tap @1abc:e7                   # taps a ref from that tree, prints the next tree
+```
+
+## Quick start
+
+1. Install from a checkout (macOS):
+
+   ```sh
+   scripts/sync-npm-version.sh   # builds the CLI, the iOS runner, and (if Gradle works) the Android APK into npm/
+   (cd npm && npm link)          # puts agent-mobile on your PATH
+   agent-mobile --version
+   ```
+
+2. Add the MCP server to your agent (other agents: [MCP](#use-with-an-agent-mcp)):
+
+   ```sh
+   claude mcp add agent-mobile -- agent-mobile mcp
+   ```
+
+3. Ask the agent: "Open Settings on the iPhone simulator and turn on Dark Mode."
+
+The first call boots a device and starts the driver. It can take a minute. Later calls are fast.
 
 ## Install
 
-agent-mobile is not published to a package registry yet (P4). Install it from a checkout. The
-pins in `rust-toolchain.toml` and `Cargo.toml` apply. On macOS, this builds the release CLI and
-the prebuilt iOS simulator runner into `npm/`, then puts `agent-mobile` on your PATH:
+Quick start step 1 is the full install on macOS. The pins in `rust-toolchain.toml` and `Cargo.toml` apply.
 
-```
-scripts/sync-npm-version.sh
-(cd npm && npm link)
-agent-mobile --version
-```
+`agent-mobile` runs the copy in `npm/bin/`. It does not rebuild itself. Run `scripts/sync-npm-version.sh` again after each `git pull`.
 
-The linked command is the staged native binary in `npm/bin/`, which does not rebuild itself. Run
-`scripts/sync-npm-version.sh` again after every `git pull`. If a command that the docs list is
-missing (for example `unrecognized subcommand 'mcp'`), the staged copy is old. A link made
-before the package's `bin` moved to `npm/bin/agent-mobile` points at a deleted `run.js`; run
-`(cd npm && npm link)` once more, and the sync script warns when it finds such a link.
-
-`scripts/bench_install.py <tarball>` installs a packed `npm/` with npm, pnpm, bun, and yarn
-into temp prefixes and reports start-up times and install gates as JSON.
-`scripts/bench_agent_loop.py` drives the MCP server through a fixed Settings session on the
-iOS simulator and the Android emulator and reports warm-up, per-action wall time, and gates as JSON.
-
-For the CLI alone (also the headless Android host on Linux x86_64), build it and use
-`target/release/agent-mobile`:
-
-```
-cargo build --release --locked
-```
-
-For Android you need only the command-line SDK pieces — the setup does not install or require
-Android Studio. It installs only missing pinned components and is idempotent (a second run
-changes nothing):
-
-```
-scripts/setup-android-sdk.sh          # install missing pinned components
-scripts/setup-android-sdk.sh --check  # verify without installing anything
-```
-
-Add the `ANDROID_HOME`/`ANDROID_SDK`/`ANDROID_SDK_ROOT`/`PATH` exports the script prints to
-your shell profile; set `ANDROID_AVD_HOME` separately only when your AVDs live somewhere
-nondefault.
-
-## Quickstart
-
-Any verb lazy-starts a driver when no session exists — it discovers devices on both platforms,
-picks the default (an iPhone-named iOS simulator, then any iOS simulator, then an iOS
-physical device, then a ready Android target, then any Android target),
-saves the session under `~/.agent-mobile/`, and runs the verb. The first call can take a
-minute; progress prints to stderr.
-
-```
-agent-mobile devices                    # rows: key, name, platform, kind, os, state, serving
-agent-mobile snapshot                   # lazy-boots, prints the accessibility tree
-agent-mobile launch com.apple.mobilecal # iOS bundle id — Android takes a package name
-agent-mobile tap @1abc:e7               # act on a ref from the last snapshot
-agent-mobile type "Dentist tomorrow"    # type into the focused field
-agent-mobile screenshot shot.png        # PNG file; omit the path for base64 on stdout
-agent-mobile skills                     # the agent guide (skills/agent-mobile/SKILL.md)
-```
-
-To run the driver explicitly (one session total, foreground, Ctrl-C cleans up):
-
-```
-agent-mobile serve "iPhone 17 Pro Max"           # iOS display name
-agent-mobile serve "ios:YOUR-UDID"               # iOS stable key
-agent-mobile serve android:avd:agent-mobile-api37  # Android AVD stable key
-agent-mobile serve "android:YOUR-SERIAL"         # Android USB/wireless serial
-```
-
-`<device>` accepts a display name, a raw id, or the collision-free `platform:id` key. When two
-devices share a name the CLI refuses to guess — pick by key.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `devices [--platform <platform>] [--kind <kind>] [--state <state>]` | list iOS simulators/phones and Android AVD/USB/wireless targets; filters combine with AND |
-| `serve <device>` | start a driver in the foreground; prints the session token once |
-| `status` | active app, device, os, current snapshot id |
-| `snapshot` | mint refs and print the accessibility tree |
-| `tap <ref>` or `tap <x> <y>` | tap an element ref, or a point in the app frame |
-| `type [<ref>] <text...>` | append text: a leading ref writes that field's value directly, otherwise keystrokes go to the focused field; use `--` before hyphen-leading text |
-| `swipe <up\|down\|left\|right> [<ref>]` | swipe the app, or one element |
-| `scroll_until_visible <name> [up\|down\|left\|right]` | swipe until a node with that exact name appears (at most 15 swipes) |
-| `home` | go to the launcher/home; returns that tree |
-| `back` | navigate back |
-| `doubletap`, `pinch`, `hold`, `twofinger` | two-tap, zoom, press-and-hold, two-finger tap |
-| `center notification` | open notifications from the system UI session |
-| `launch <app_id>` | cold-start or restart an app (iOS bundle id / Android package); app data is kept |
-| `screenshot [path]` | PNG to a file, or base64 to stdout |
-| `stop` | terminate the active app; the driver stays up |
-| `release` | stop the running driver session and owned resources; the device stays up |
-| `skills` | print the agent guide, `skills/agent-mobile/SKILL.md` |
-| `mcp` | serve the tools over MCP on stdio (see MCP server) |
-
-Global flags: `--json` (raw JSON envelope instead of text), `--app <id>` (app selector for
-`snapshot`/`serve` — iOS targets the bundle; Android `snapshot --app` only validates the
-already-foreground package, so use `launch` to change apps), `--max-depth <n>` (trim the tree
-client-side; `complete=false` follows), `--device <device>` (name, id, or `platform:id`;
-remembered for later calls).
-
-## MCP server
-
-`agent-mobile mcp` is a stdio MCP server (newline-delimited JSON-RPC). Its tools and argument
-definitions come from the same registry as the CLI. One server process owns one active serve at a
-time; each tool that talks to a device accepts optional `device` to select its target for that call without changing the
-remembered default. A different device cannot take over while another holds the single serve; call
-`release` first.
+**CLI only, or a headless Android host on Linux x86_64:**
 
 ```sh
-claude mcp add agent-mobile -- agent-mobile mcp --device "iPhone 16"
+cargo build --release --locked   # binary: target/release/agent-mobile
 ```
 
-opencode takes a `local` server in `~/.config/opencode/opencode.json`:
+**Android SDK.** You need the command-line SDK only, not Android Studio. The script installs only the missing pinned parts. A second run changes nothing.
+
+```sh
+scripts/setup-android-sdk.sh          # install the missing parts
+scripts/setup-android-sdk.sh --check  # check only, install nothing
+```
+
+Add the `ANDROID_HOME`, `ANDROID_SDK`, `ANDROID_SDK_ROOT`, and `PATH` exports that the script prints to your shell profile. Set `ANDROID_AVD_HOME` only if your AVDs are not in the default folder.
+
+**If a command is missing** (for example `unrecognized subcommand 'mcp'`), your copy in `npm/` is old. Run the sync script again. If `agent-mobile` points at a deleted `run.js`, your link is from an old layout: run `(cd npm && npm link)` again. The sync script warns about this link.
+
+## Use with an agent (MCP)
+
+`agent-mobile mcp` is an MCP server on stdio. It has the same commands as the CLI.
+
+Claude Code: see Quick start step 2.
+
+**opencode** (`~/.config/opencode/opencode.json`):
 
 ```json
 { "mcp": { "agent-mobile": { "type": "local", "command": ["agent-mobile", "mcp"], "environment": { "AGENT_MOBILE_HEADED": "1" } } } }
 ```
 
-Other clients accept a generic `mcpServers` block:
+**Other clients:**
 
 ```json
-{ "mcpServers": { "agent-mobile": { "command": "agent-mobile", "args": ["mcp", "--device", "iPhone 16"] } } }
+{ "mcpServers": { "agent-mobile": { "command": "agent-mobile", "args": ["mcp"] } } }
 ```
 
-Tools (19): `devices`, `status`, `snapshot`, `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`,
-`hold`, `back`, `twofinger`, `center`, `launch`, `screenshot`, `stop`, `release`, `skills`,
-`scroll_until_visible`. `mcp` and `serve` are CLI commands, not tools. `launch` takes `app_id` (an
-iOS bundle id or Android package). `tap`, `doubletap`, and `hold` take a `target` object shaped as
-`{"ref": "@snapshot:e1"}` or `{"x": 12, "y": 34}`. `screenshot` takes no arguments and returns an image.
+Add `--device "iPhone 16"` after `mcp` to choose the default device.
 
-Data replies include `structuredContent` governed by output schemas for device-list, status,
-snapshot/action, and stop (`terminate`) replies. Their text content keeps the framed compact listing; snapshot metadata
-is structured separately so the listing is not duplicated as JSON. Argument faults return an
-`isError` tool result naming the field, problem, and fix. Unknown tools and malformed protocol
-requests remain JSON-RPC errors.
-
-What an agent must know:
-
-- Refs die after every action. On `STALE_REF`, use the newest tree, or run `snapshot` again.
-- The first call while a driver boots returns "driver is starting; call again" within about 45 s.
-  The boot continues in the background, so call again.
-- A call that times out may already have run. `snapshot` before you repeat the action.
-- `AGENT_MOBILE_MCP_CALL_SECS` lowers the time limit for one call (default and maximum: 45 s).
-
-Smoke check, listing the tools:
-
-```sh
-npx @modelcontextprotocol/inspector@2.11.0 --cli agent-mobile mcp --method tools/list
-```
-
-The Inspector does not pass your shell environment to the server. Give each variable the server needs with `-e`, for example `-e ANDROID_HOME="$ANDROID_HOME"`.
-
-## Agent skill
-
-`skills/agent-mobile/SKILL.md` is the guide an agent reads before it drives a device: the start
-steps, the rules for refs, and what to do for each error. `agent-mobile skills` prints the same
-file, and its command list is generated from the registry. Install it where your agent finds
-skills, for example:
+**Install the agent guide.** `skills/agent-mobile/SKILL.md` tells the agent how to start, how refs work, and what to do for each error. Put it where your agent looks for skills:
 
 ```sh
 mkdir -p ~/.agents/skills/agent-mobile
 agent-mobile skills > ~/.agents/skills/agent-mobile/SKILL.md
 ```
 
-opencode and Claude Code also read `~/.config/opencode/skills/` and `~/.claude/skills/`.
-Run the command again after you update agent-mobile.
+opencode and Claude Code also read `~/.config/opencode/skills/` and `~/.claude/skills/`. Run the command again after you update agent-mobile.
 
-## Environment
+### Tools
+
+19 tools: `devices`, `status`, `snapshot`, `tap`, `type`, `swipe`, `home`, `doubletap`, `pinch`, `hold`, `back`, `twofinger`, `center`, `launch`, `screenshot`, `stop`, `release`, `skills`, `scroll_until_visible`.
+
+- `mcp` and `serve` are CLI commands only.
+- `launch` takes `app_id`: an iOS bundle id or an Android package.
+- `tap`, `doubletap`, and `hold` take `target`: `{"ref": "@snapshot:e1"}` or `{"x": 12, "y": 34}`.
+- `screenshot` takes no arguments and returns an image.
+- Each device tool takes an optional `device`. It picks the device for that call only and does not change the default.
+
+### Rules and replies
+
+- One server runs one driver at a time. To use another device, call `release` first.
+- The first call while a driver boots returns "driver is starting; call again" within about 45 s. The boot continues, so call again.
+- A call that times out can still run on the device. Call `snapshot` before you repeat it.
+- `AGENT_MOBILE_MCP_CALL_SECS` lowers the time limit per call. The default and the maximum is 45 s.
+- Data replies also carry `structuredContent` ([reply format](docs/ARCHITECTURE.md#replies)).
+- A bad argument returns a tool result with `isError` that names the field, the problem, and the fix.
+- An unknown tool or a malformed request returns a JSON-RPC error.
+
+### Test the server
+
+```sh
+npx @modelcontextprotocol/inspector@2.11.0 --cli agent-mobile mcp --method tools/list
+```
+
+The Inspector does not pass your shell environment to the server. Pass each variable with `-e`, for example `-e ANDROID_HOME="$ANDROID_HOME"`.
+
+## Use from the shell (CLI)
+
+```sh
+agent-mobile devices                    # list devices: key, name, platform, kind, os, state, serving
+agent-mobile snapshot                   # boots a device if needed, prints the tree
+agent-mobile launch com.apple.mobilecal # iOS bundle id; Android takes a package name
+agent-mobile tap @1abc:e7               # act on a ref from the last tree
+agent-mobile type "Dentist tomorrow"    # type into the focused field
+agent-mobile screenshot shot.png        # PNG file; no path prints base64
+agent-mobile skills                     # print the agent guide
+```
+
+**A device command starts a driver** if none runs (`devices`, `skills`, `release`, and `mcp` do not). It finds devices on both platforms, picks one, saves the session in `~/.agent-mobile/`, and runs the command. The first call can take a minute. Progress goes to stderr.
+
+The default device is the first match in this order:
+
+1. an iOS simulator with "iPhone" in its name
+2. any iOS simulator
+3. a physical iPhone
+4. a ready Android target
+5. any Android target
+
+**Choose a device** with `--device`. It takes a display name, a raw id, or a `platform:id` key, and it is remembered. If two devices have the same name, the CLI does not guess: use the key.
+
+**Run the driver in the foreground** (one session at a time; Ctrl-C cleans up):
+
+```sh
+agent-mobile serve "iPhone 17 Pro Max"            # iOS display name
+agent-mobile serve "ios:YOUR-UDID"                # iOS key
+agent-mobile serve android:avd:agent-mobile-api37 # Android AVD key
+agent-mobile serve "android:YOUR-SERIAL"          # Android USB or wireless serial
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `devices [--platform <platform>] [--kind <kind>] [--state <state>]` | List iOS simulators and phones, and Android AVD, USB, and wireless targets. Filters combine with AND. `--platform`: `ios`, `android`. `--kind`: `simulator`, `device`, `emulator`, `usb`, `wireless`. `--state` is lowercase. |
+| `serve <device>` | Run a driver in the foreground. Prints the session token once. |
+| `status` | Show the active app, device, OS, and current snapshot id. |
+| `snapshot` | Read the screen as a tree with refs. |
+| `tap <ref>` or `tap <x> <y>` | Tap a ref, or a point in the app frame. |
+| `type [<ref>] <text...>` | Add text. With a ref, it writes that field's value. Without a ref, it types into the focused field. Put `--` before text that starts with `-`. |
+| `swipe <up\|down\|left\|right> [<ref>]` | Swipe the app, or one element. |
+| `scroll_until_visible <name> [up\|down\|left\|right]` | Swipe until a node with that exact name shows. At most 15 swipes. |
+| `home` | Go to the home screen. Returns its tree. |
+| `back` | Go back one screen. |
+| `doubletap`, `pinch`, `hold`, `twofinger` | Double-tap, zoom, press and hold, two-finger tap. |
+| `center notification` | Open the notifications. |
+| `launch <app_id>` | Start or restart an app (iOS bundle id or Android package). The app keeps its data. |
+| `screenshot [path]` | Save a PNG, or print base64. |
+| `stop` | Close the active app. The driver keeps running. |
+| `release` | Stop the driver session and what it owns. The device keeps running. |
+| `skills` | Print the agent guide, `skills/agent-mobile/SKILL.md`. |
+| `mcp` | Run the MCP server on stdio. |
+
+Run `agent-mobile <command> --help` for the full rules of a command.
+
+**Global flags:**
+
+| Flag | Effect |
+|---|---|
+| `--json` | Print the raw JSON reply instead of text. |
+| `--device <device>` | Name, id, or `platform:id` key. Remembered for later calls. |
+| `--app <id>` | App for `snapshot` and `serve`. On iOS it targets that app. On Android, `snapshot --app` only checks that the app is in front; use `launch` to change apps. |
+| `--max-depth <n>` | Cut the tree at depth n. The reply then shows `complete=false`. |
+
+## Output
+
+- stdout has the data. stderr has hints and errors. A closed stdout pipe exits 0.
+- Exit codes: `0` ok, `1` driver or connection failure, `2` usage error.
+- Refs look like `@<snapshot>:e<N>`. They stop working after the next action. Each action returns the next tree, so new refs are never more than one call old.
+
+The snapshot header:
+
+```
+app=... device="..." os=... snapshot=@... refs=N settled=true complete=true reads=N elapsed_ms=N
+```
+
+- `settled=false`: the screen did not stop moving within the time limit. The tree is still usable.
+- `complete=false`: the tree is cut short. If `--max-depth` cut it, the refs you see still work. If the driver hit a traversal limit, a cycle, or a child it could not read, ref actions fail, because the driver cannot prove that a ref is unique.
+
+Each error names the next step:
+
+| Error | Next step |
+|---|---|
+| `STALE_REF` | Take a new snapshot and retry. |
+| `AMBIGUOUS_TARGET` | Use a ref with a firmer `native_id`, read the bounds with `--json`, or tap x,y. |
+| Connection failure | The CLI prints a checklist: is serve running, is the certificate trusted, same Wi-Fi, is the Mac awake? |
+
+## Configuration
 
 | Variable | Effect |
 |---|---|
-| `AGENT_MOBILE_URL` | driver URL override for the call (e.g. a tunnel or a phone on the LAN) |
-| `AGENT_MOBILE_TOKEN` | bearer token paired with the URL override |
-| `AGENT_MOBILE_DRIVER_DIR` | iOS driver source override: an Xcode project dir or a `runner/` dir holding `*.xctestrun` |
-| `AGENT_MOBILE_ANDROID_APK` | Android driver APK override; otherwise the APK the npm package ships in `android/`, else the checked-in Gradle wrapper builds the debug APK |
-| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | SDK location, in that order; then the platform default, then PATH |
-| `AGENT_MOBILE_BOOT_BUDGET_SECS` | lazy-boot deadline in seconds (default 240); raise it past 600 before the first Android boot from a checkout, which can run a cold Gradle build |
-| `AGENT_MOBILE_REPO_ROOT` | checkout root that holds `drivers/android`; needed only outside a checkout |
-| `AGENT_MOBILE_HEADED` | set to `1` to show the device window when agent-mobile boots a device: the Simulator window on iOS, the emulator window on Android. An emulator that already runs without a window keeps running that way |
-| `AGENT_MOBILE_MCP_CALL_SECS` | time limit for one MCP tool call (default and maximum: 45 s) |
-| `TEST_RUNNER_AGENT_MOBILE_PORT` / `_TOKEN` / `_BIND` | iOS driver-side env, set through xcodebuild's `TEST_RUNNER_` prefix (see `drivers/ios/am.sh`) |
+| `AGENT_MOBILE_HEADED` | Set to `1` to show the device window when agent-mobile boots a device (Simulator window on iOS, emulator window on Android). An emulator that already runs without a window stays that way. |
+| `AGENT_MOBILE_URL` | Driver URL for the call, for example a tunnel or a phone on the LAN. |
+| `AGENT_MOBILE_TOKEN` | Token for `AGENT_MOBILE_URL`. |
+| `AGENT_MOBILE_MCP_CALL_SECS` | Time limit for one MCP tool call. Default and maximum: 45 s. |
+| `AGENT_MOBILE_BOOT_BUDGET_SECS` | Time limit for a lazy boot. Default 240 s. Set it above 600 before the first Android boot from a checkout, because that boot can run a cold Gradle build. |
+| `AGENT_MOBILE_DRIVER_DIR` | iOS driver source: an Xcode project folder, or a `runner/` folder with a `*.xctestrun` file. |
+| `AGENT_MOBILE_ANDROID_APK` | Android driver APK. If not set: the APK in the npm package (`android/`), then a Gradle build of the debug APK in the checkout. |
+| `AGENT_MOBILE_REPO_ROOT` | Checkout root that holds `drivers/android`. Needed only outside a checkout. |
+| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | SDK location, in that order. Then the platform default, then PATH. |
+| `TEST_RUNNER_AGENT_MOBILE_PORT` / `_TOKEN` / `_BIND` | iOS driver settings, passed through xcodebuild's `TEST_RUNNER_` prefix (see `drivers/ios/am.sh`). |
 
-## Sessions and state
+## Android
 
-Everything lives under `~/.agent-mobile/`:
+**First start.** The first Android session does these steps:
 
-- `state.json` — session rows keyed by `platform:id` (legacy iOS name keys still resolve):
-  driver URL, serve pid, runner pid or Android serial/forward/bridge/APK metadata, token
-  filename, and the remembered default device. Never holds a token value.
-- `tokens/` — one `0600` file per session; the token itself.
-- `driver-<device>.log` — the driver-side log, written `0600` because it can echo env.
-- `serve.lock`, `boot.lock` — one serve at a time; one lazy boot at a time.
+1. Boots the AVD if it is off. A running emulator or a physical phone is used as is.
+2. Finds the driver APK: `AGENT_MOBILE_ANDROID_APK`, then the APK in the npm package (`android/agent-mobile-driver.apk`), then a Gradle build from the checkout.
+3. Installs it with `-r`. It skips the install when the device has the same APK (same MD5), because a reinstall restarts the driver and its accessibility link.
+4. Turns on `Agent Mobile Driver` in Settings > Accessibility. Other services stay on.
+5. Makes a new token through the app's `ContentProvider`.
+6. Makes one `adb forward` and a loopback bridge.
 
-A second `serve` on a live device reports the URL, the pid, and the remedy. A dead `serve`
-leaves an orphaned runner (iOS) or forward row (Android); the next serve reaps exactly the
-recorded resource — the recorded iOS runner PID or Android serial+forward port, never a broad
-port or process sweep. On iOS a foreign process holding port 8770 fails
-fast and names the `lsof` remedy; Android uses ephemeral loopback ports so there is nothing to
-conflict.
+It never installs SDK packages during a session. Run `scripts/setup-android-sdk.sh` first.
 
-## Android bring-up and cleanup
+**Cleanup.** A stopped session removes only what it made: the bridge, its `adb forward`, and its state and token. The emulator keeps running. The APK stays installed. The accessibility service stays on.
 
-The first Android `serve` boots the AVD if shutdown (or reuses a running/physical target),
-uses `AGENT_MOBILE_ANDROID_APK` as supplied when set, otherwise the APK the npm package ships
-beside the binary (`android/agent-mobile-driver.apk`), and only from a checkout with neither
-invokes the checked-in Gradle wrapper. It installs with `-r` unless the device already holds
-the same APK (same MD5), since a reinstall restarts the driver and its accessibility bind;
-then enables `Agent Mobile Driver` in Settings > Accessibility
-(preserving every other enabled service), provisions a fresh bearer through the app's
-`ContentProvider`, creates one owned `adb forward`, and exposes a loopback bridge. It never
-installs SDK packages at session startup — run `scripts/setup-android-sdk.sh` first.
+**Physical phone:**
 
-Stopping a serve removes only what it owns — the bridge, the exact `adb forward`, and the
-session state/token. The emulator keeps running, the APK stays installed, and the
-accessibility service stays enabled.
+1. Turn on Developer options and USB debugging.
+2. Accept the computer on the phone prompt.
+3. `adb devices` must list the serial.
 
-Physical Android: enable Developer options and USB debugging, authorize the computer at the
-device prompt, then `adb devices` should list the serial. For official wireless debugging
-(Android 11+): `adb pair <ip>:<pair-port>` then `adb connect <ip>:<connect-port>` — the ports
-differ and rotate; the pairing persists until revoked. Authorized adb is one consent boundary;
-nothing touches Play distribution — sideload/debug only. The adapter supports these serials,
-but the Experiment 10 physical-phone leg awaits an available authorized device.
+For wireless debugging (Android 11+): `adb pair <ip>:<pair-port>`, then `adb connect <ip>:<connect-port>`. The two ports are different and they change. The pairing stays until you revoke it.
 
-Accessibility approval is the second consent boundary:
+Authorized adb is the first consent. Accessibility is the second:
 
-- The driver must be explicitly enabled as the `Agent Mobile Driver` service in Settings >
-  Accessibility.
-- Android 13+ Restricted Settings can block accessibility for sideloaded apps: App Info >
-  three-dot menu > "Allow restricted settings", then Settings > Accessibility >
-  Agent Mobile Driver.
-- Android 17 Advanced Protection can block sideload/USB debugging and restrict non-assistive
-  automation — unsupported while the OS blocks it; there is no bypass.
+- Turn on the `Agent Mobile Driver` service in Settings > Accessibility.
+- Android 13+ "Restricted settings" can block accessibility for sideloaded apps. Go to App Info > three-dot menu > "Allow restricted settings", then Settings > Accessibility > Agent Mobile Driver.
+- Android 17 Advanced Protection can block sideloading and USB debugging, and can limit automation. agent-mobile does not work while the OS blocks it. There is no bypass.
 
 ### Android troubleshooting
 
-| Symptom | Remedy |
+| Problem | Fix |
 |---|---|
-| `adb` missing / no SDK | `scripts/setup-android-sdk.sh --check`; add the printed exports |
-| APK missing | `drivers/android/gradlew -p drivers/android :app:assembleDebug --no-daemon`, or set `AGENT_MOBILE_ANDROID_APK` |
-| `unauthorized` row | accept the USB debugging prompt on the device |
-| `offline` row | `adb reconnect` or replug, then retry |
-| service won't bind | enable Restricted Settings (above) then the accessibility toggle |
-| duplicate device names | select with the `platform:id` key |
-| AVD boot timeout | inspect `~/.agent-mobile/driver-*.log` |
-| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | signature mismatch — `adb -s <serial> uninstall com.lahfir.agentmobile.driver` if you choose (removes app data; never done automatically) |
-
-## Output contract
-
-- stdout carries parseable data; stderr carries hints and errors. A broken stdout pipe exits 0.
-- Exit codes: `0` ok, `1` driver or transport failure, `2` usage error.
-- Snapshot header: `app=... device="..." os=... snapshot=@... refs=N settled=true complete=true
-  reads=N elapsed_ms=N`. `settled=false` means the settle loop hit its cap — the tree is still
-  usable. `complete=false` means the tree is
-  incomplete — `--max-depth` trimmed nodes client-side, or the driver hit a traversal cap, a
-  cycle, or an unavailable child. Ref actions on an incomplete tree fail closed because ref
-  uniqueness can't be proven.
-- Refs look like `@<snapshot>:e<N>` and die with their snapshot; every action replies with the
-  next snapshot, so a fresh ref set is always one call old at most.
-- Errors name the next action: `STALE_REF` -> re-snapshot and retry; `AMBIGUOUS_TARGET` -> pick a
-  ref with a firmer `native_id`, walk bounds via `--json`, or coordinate-tap; transport failures
-  print the escalation checklist (serve running? cert trusted? same Wi-Fi? Mac awake?).
-
-## Benchmark
-
-```
-cargo build --release --locked
-python3 scripts/bench.py                     # ~25 min: 3 cold boots, 30 iterations, soak, scenario
-python3 scripts/bench.py --quick             # ~5 min smoke run
-python3 scripts/bench.py --device android:avd:<name>   # same suite against Android
-python3 scripts/bench.py --compare bench-results/<old>.json
-python3 scripts/bench.py --render bench-results/<run>.json   # rebuild the HTML only
-python3 scripts/bench.py --agent --platforms android --seeds 5 --servers <local.json>  # agent tasks over MCP
-```
-
-It drives the release binary against the iOS simulator (or an Android emulator via
-`--device`) and writes `bench-results/<stamp>.json`
-plus a self-contained HTML report: 1280×720 slides, one question each, ready to screenshot. It
-covers cold start, per-verb p50/p95, the CLI/driver/settle split, snapshot cost against tree
-size, typing speed, settle rate, stale-ref refusals, error rate, tokens per snapshot, drift,
-runner memory and CPU, and an end-to-end Settings task. The cold boots shut down the simulator;
-`--cold 0` skips them.
-
-`--agent` runs the agent tasks: a fixed model drives each task through one MCP server per run,
-and a host-side check that uses no tool under test decides success. `--tasks` narrows the task
-list. `--servers` names a local, untracked JSON file with the comparison servers' launch
-commands; without it only agent-mobile runs.
+| `adb` missing, or no SDK | `scripts/setup-android-sdk.sh --check`, then add the printed exports. |
+| APK missing | `drivers/android/gradlew -p drivers/android :app:assembleDebug --no-daemon`, or set `AGENT_MOBILE_ANDROID_APK`. |
+| Row shows `unauthorized` | Accept the USB debugging prompt on the phone. |
+| Row shows `offline` | `adb reconnect` or plug the cable in again, then retry. |
+| Service does not start | Allow restricted settings (above), then turn on the accessibility switch. |
+| Two devices with the same name | Use the `platform:id` key. |
+| AVD boot timeout | Read `~/.agent-mobile/driver-*.log`. |
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | The signatures differ. You can run `adb -s <serial> uninstall com.lahfir.agentmobile.driver`. This deletes the app's data, so agent-mobile never does it for you. |
 
 ## Physical iPhone
 
-A physical device needs a signed runner, which npm cannot ship — clone this repo so `serve`
-finds the source project (`drivers/ios/AgentMobileDriver.xcodeproj`), then:
+A real iPhone needs a signed runner, and npm cannot ship one. Clone this repo so `serve` finds `drivers/ios/AgentMobileDriver.xcodeproj`, then run:
 
-```
-agent-mobile serve "Lahfir's iPhone"
+```sh
+agent-mobile serve "My iPhone"
 ```
 
-`xcodebuild` builds and signs with the project's team, installs the host app plus the runner,
-and binds `0.0.0.0:8770` on the phone — the Mac reaches it over the same Wi-Fi. On first
-install iOS refuses to launch the runner until the Developer App certificate is trusted on the
-phone: Settings > General > VPN & Device Management > trust the certificate, then `serve`
-again — the command detects the refusal and prints these steps. The phone shows "Automation
-Running" while the driver is up. The driver URL is `http://<bonjour-host>.local:8770`; it
-lands in `state.json` automatically, or pass it per call via `AGENT_MOBILE_URL`.
+- `xcodebuild` builds and signs with the project's team, installs the host app and the runner, and binds `0.0.0.0:8770` on the phone. The Mac reaches it over the same Wi-Fi.
+- On the first install, iOS does not launch the runner until you trust the developer certificate: Settings > General > VPN & Device Management > trust it, then run `serve` again. `serve` finds this error and prints these steps.
+- The driver URL is `http://<bonjour-host>.local:8770`. It goes into `state.json` by itself. You can also pass it per call with `AGENT_MOBILE_URL`.
 
 ### iPhone troubleshooting
 
-| Cause | What to do |
-| --- | --- |
-| The iPhone has no free app slot for this signing profile | Delete apps signed by your personal team that you no longer need in Settings > General > VPN & Device Management, then retry. |
-| The iPhone refused to install the driver: this Xcode likely does not support the iPhone's iOS version | Update Xcode to a version that supports the iPhone's iOS, then retry. If Xcode is current, free an app slot for your personal team. |
-| The iPhone does not trust the developer certificate | In Settings > General > VPN & Device Management, trust the developer app, then retry. |
-| The iPhone is locked | Unlock it and keep it unlocked until the driver answers, then retry. |
-| Developer Mode is off on the iPhone | Turn on Settings > Privacy & Security > Developer Mode, restart the iPhone, then retry. |
-| Xcode has no signing team for the driver | Sign in under Xcode > Settings > Accounts. Open the driver's `AgentMobileDriver.xcodeproj`, choose your team under Signing & Capabilities for every target, then retry. |
+| Cause | Fix |
+|---|---|
+| No free app slot for this signing profile | Delete apps signed by your personal team that you do not need (Settings > General > VPN & Device Management), then retry. |
+| The iPhone does not install the driver; this Xcode probably does not support its iOS version | Update Xcode, then retry. If Xcode is current, free an app slot for your personal team. |
+| The iPhone does not trust the developer certificate | Trust the developer app in Settings > General > VPN & Device Management, then retry. |
+| The iPhone is locked | Unlock it. Keep it unlocked until the driver answers, then retry. |
+| Developer Mode is off | Turn on Settings > Privacy & Security > Developer Mode, restart the iPhone, then retry. |
+| Xcode has no signing team for the driver | Sign in under Xcode > Settings > Accounts. Open `AgentMobileDriver.xcodeproj`, choose your team under Signing & Capabilities for each target, then retry. |
 
-## Protocol
+## Limitations
 
-- Every call is `POST /<command>` with a JSON body, `Authorization: Bearer <token>`, and
-  `X-Agent-Mobile-Version: 1`. Missing or wrong token -> 401. Protocol version is `1` on both
-  platforms.
-- Commands: `status`; `launch {bundle_id}`; `terminate`; `snapshot {app?}`; `tap {ref} | {x,y}`;
-  `type {text, ref?}`; `swipe {direction: up|down|left|right, ref?}`; `home`;
-  `back`; `doubletap`; `hold`; `pinch`; `twofinger`; `center`; `screenshot` (PNG base64).
-  `scroll_until_visible` has no wire command: the host loops `swipe` and `snapshot`. `snapshot {app?}` on Android validates that the package is
-  already foreground rather than retargeting — `launch` changes apps. On Android `launch`/
-  `terminate` run through the host bridge with serial-scoped `cmd package`/`am force-stop`/
-  `am start`; `terminate` refuses the driver itself, System UI, and the current launcher.
-  `terminate` targets the package seen by its authenticated status preflight; foreground
-  observation and force-stop are not atomic, and a later foreground change does not retarget
-  the request.
-  If System UI wedges the foreground, `back` is the first recovery move — judge the returned
-  snapshot; `launch` is only a cold-restart fallback and loses transient app state.
-- Response envelope: `{version, ok, command, elapsed_ms, data}` or
-  `{version, ok:false, command, elapsed_ms, error:{code, message}}`. Error codes: STALE_REF,
-  AMBIGUOUS_TARGET, BAD_REQUEST, UNKNOWN_COMMAND, UNAUTHORIZED, DRIVER_ERROR.
-- `data` for snapshot and for every action: `app, snapshot_id, ref_count, complete, settled,
-  reads, settle_ms, text, tree`. Every action returns the fresh post-action tree, so an action
-  costs no extra round trip.
-- Node: `role, name, value, ref_id, states, available_actions, native_id {kind, value},
-  bounds {x,y,width,height}, children`. `native_id.kind` is `ax_identifier` on iOS and
-  `resource_id` on Android.
-- Refs are per-snapshot and qualified: `@<snapshot_id>:eN`. Each action re-resolves its ref
-  against the live tree by element type + identifier + label + frame (1 pt tolerance).
-  Snapshot-id mismatch or no live match -> STALE_REF; more than one match -> AMBIGUOUS_TARGET.
-  No self-healing, by design.
-- Idle check: after every action the driver re-reads the tree until three consecutive tree hashes
-  match, capped at 3 s; `settled` and `reads` report what happened.
-- `Accept: text/plain` returns the compact listing instead of JSON, one line per named or
-  interactive node: `@id:eN role "name" value="..." at=x,y size=WxH [states]`.
+- A physical iPhone needs a Mac with Xcode running for the whole session, a paired phone, Developer Mode, and a trusted developer certificate. No cable is needed after pairing.
+- The phone shows the "Automation Running" cover for the whole session. It cannot be removed.
+- The developer certificate trust can lapse after about an hour. Trust it again, or use a paid developer profile.
+- On a physical iPhone, the driver listens on all interfaces over plain HTTP. The token is the only gate on that link.
+- Canvas UIs, games, and opaque WebViews have no tree.
+- Android: the driver app is sideload only. Play policy bans this use of the accessibility API.
+- Physical Android needs authorized USB or wireless ADB, the accessibility switch, and on some releases Restricted Settings consent.
 
-## Security
+## How it works
 
-- Bearer token per session, generated on `serve`, written to a `0600` file, printed once.
-- iOS physical: the Mac-to-phone hop is plain HTTP on the LAN; the phone binds all interfaces.
-  Tunnel adapters (`drivers/ios/tunnel-cloudflared.sh`, ngrok, tailscale, ssh -R) add
-  encryption on the way out, but the driver itself knows nothing about TLS.
-- Android: the agent endpoint is loopback-only — the bridge and the owned `adb forward` keep
-  device traffic on the host, behind an authorized adb transport.
-- Whoever holds the URL and token has full UI control. No rate limit, expiry, allowlist, or
-  audit log. Use a fresh token per session — on a trusted Wi-Fi for a physical iPhone, and on
-  a host you already trust for Android's authorized-adb transport.
+```
+ AI agent ──MCP (stdio)──┐
+                         ├──► agent-mobile (Rust CLI) ──HTTP + JSON + token──┬──► iOS driver ──► iOS apps
+ You ──────CLI───────────┘                                                    └──► Android driver ──► Android apps
+```
 
-## Layout
+- **iOS driver** (`drivers/ios/`): an XCUITest runner with an HTTP server. It reads the tree with `XCUIElement` snapshots.
+- **Android driver** (`drivers/android/`): an APK with an `AccessibilityService` and an HTTP server.
+- **Settle:** after each action, the driver reads the tree again until three reads in a row match, for at most 3 s. `settled` and `reads` report the result.
+- **Refs:** each action finds its ref again on the live tree. If the element is gone, you get `STALE_REF`. If more than one element matches, you get `AMBIGUOUS_TARGET`. The driver never guesses.
 
-- `src/`, `crates/core/` — the CLI and the shared core (contract, wire client, state, process).
-- `skills/agent-mobile/SKILL.md` — the agent guide that `agent-mobile skills` prints.
-- `crates/android/` — the Android host adapter: ADB discovery/boot/install/provision/forward,
-  the loopback HTTP bridge, and `AndroidAdapter`/`AndroidSession`.
-- `drivers/android/` — the Android driver: a Kotlin `AccessibilityService` serving the same
-  protocol, a `ProvisionProvider` for token minting, and its Gradle project (`gradlew` wrapper).
-- `npm/` — the darwin-only package. Its `bin` is the bundled native binary itself (no JS shim,
-  no install script); `bin/`, `runner/`, and `android/` are produced by `scripts/sync-npm-version.sh`.
-- `drivers/ios/` — the iOS driver: an Xcode project whose UI-test target hosts the HTTP
-  server (`Driver/AgentMobileServer.swift`); `Host/` is the minimal app the runner attaches to.
-  `am.sh` is a curl helper and `tunnel-cloudflared.sh` is the reference tunnel adapter.
-- `scripts/` — `setup-android-sdk.sh` (headless SDK install/check),
-  `ci-boot-android-emulator.sh` (bounded CI lifecycle), `record-fixtures.sh` (fixture capture),
-  `check-*.sh` source gates, `bench.py`.
-- `docs/PRD.md` — the product requirements: contract, phases P1–P4 with experiment exit
-  criteria, engineering practices, risks, and the reliability gate.
-- `docs/research/` and `docs/experiments/` (local only, gitignored) — the research tracks and
-  the experiment record. A clone does not have them.
+Internals, the wire protocol, sessions, and security: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).
