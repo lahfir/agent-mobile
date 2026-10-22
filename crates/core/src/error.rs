@@ -38,7 +38,7 @@ const TRANSPORT_ESCALATION_ANDROID: &str = concat!(
     "there is no retry loop; fix the transport, then retry"
 );
 
-/// The six codes the driver can return in `error.code` (PRD section 5.3).
+/// The six codes the driver can return in `error.code` (docs/ARCHITECTURE.md, Errors).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     /// The ref's snapshot id does not match, or no live element matches it.
