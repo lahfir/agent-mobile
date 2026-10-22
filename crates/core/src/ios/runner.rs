@@ -39,15 +39,19 @@ pub fn boot_simulator(udid: &str) -> Result<(), Failure> {
     ))
 }
 
-/// Open the Simulator window on `udid`. Best effort: the driver works
-/// without the window, so a failure is only reported.
+/// Open the Simulator window on `udid`, falling back to Xcode 27's `DeviceHub`
+/// when `Simulator.app` is absent. Best effort: the driver works without the
+/// window, so a failure is only reported.
 pub fn show_simulator(udid: &str) {
-    let mut cmd = Command::new("open");
-    cmd.args(["-a", "Simulator", "--args", "-CurrentDeviceUDID", udid]);
-    match crate::process::run_bounded(&mut cmd, Duration::from_secs(15)) {
-        Ok(out) if out.status.success() => {}
-        _ => eprintln!("note: could not open the Simulator window; the driver runs without it"),
+    for bundle in ["com.apple.iphonesimulator", "com.apple.dt.Devices"] {
+        let mut cmd = Command::new("open");
+        cmd.args(["-b", bundle, "--args", "-CurrentDeviceUDID", udid]);
+        if matches!(crate::process::run_bounded(&mut cmd, Duration::from_secs(15)), Ok(out) if out.status.success())
+        {
+            return;
+        }
     }
+    eprintln!("note: could not open the Simulator window; the driver runs without it");
 }
 
 /// The `-destination` string for a simulator target.
